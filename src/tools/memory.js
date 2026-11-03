@@ -10,26 +10,18 @@ import { appendMemory, readMemoryRaw, memoryFile } from '../config.js';
 
 export const spec = {
   name: 'Memory',
-  description: `Save a durable note for FUTURE sessions, or list what is already saved.
+  description: `Save a durable note for FUTURE sessions, or list what is saved.
 
-Use it when you learn something that will still be true next week and that you would
-otherwise have to rediscover: a build/test command that works in this repo, a layout
-quirk, a convention the user asked for, a decision they already made, a gotcha that
-cost you a debugging cycle.
+Use it for something still true next week that you would otherwise rediscover: a build or test command that
+works here, a layout quirk, a convention the user asked for, a decision already made, a gotcha that cost a
+debugging cycle.
 
-Do NOT use it for:
-- things already in AGENTS.md or the code (read them instead — they are the source);
-- facts about the CURRENT task or its progress (use TodoList; this file outlives the task);
-- anything the user asked you to keep quiet, secrets, tokens, or credentials;
-- one-off details you will never need again.
+Not for: what is already in AGENTS.md or the code (read it — that is the source); the current task or its
+progress (that is TodoList; this file outlives the task); secrets, tokens, credentials, or anything the user
+asked you to keep quiet; one-off details.
 
-Write ONE short note per call, in the user's own language. Prefer several small notes
-over one long entry: a note that is wrong or stale later can be edited out of a file
-you can read back.
-
-Scope:
-- project (default) — stored in this workspace, follows the repository;
-- global — stored in your home directory, applies to every workspace.`,
+One short note per call, in the user's language. Prefer several small notes over one long entry.
+project (default) follows the repository; global applies to every workspace.`,
   parameters: {
     type: 'object',
     properties: {

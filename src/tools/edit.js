@@ -28,7 +28,7 @@ import { hashRegion as hashLines } from './read.js';
 
 export const spec = {
   name: 'Edit',
-  description: 'Edit a file. THREE shapes:\n- LINE-RANGE mode: path + start_line + end_line + new_string. Replaces lines [start_line, end_line] with new_string.\nPREFERRED — use it whenever you have Read the file and know the line numbers.\n- EXACT-SUBSTRING mode: path + old_string + new_string. Replaces text exactly matching old_string. Use when the exact text is known and a line range is not convenient.\n- RANGED SUBSTRING mode: path + start_line + end_line + old_string + new_string. Searches for old_string ONLY inside [start_line, end_line], and replaces only what it finds there. Use this when the same snippet appears several times and you need exactly one of them: replace_all changes every copy, while plain substring mode refuses an ambiguous match. The range says WHERE to look, old_string says WHAT to replace.\nLEADING WHITESPACE — SPELL IT OUT ON EVERY LINE, INCLUDING THE FIRST. new_string is written VERBATIM in both modes: nothing is re-indented, auto-indented, or trimmed, and there is no tolerance for a missing first-line indent. Reproduce the indentation the code SHOULD have; it need not match the surrounding block. Copy it from the Read output, after its `N\\t` line-number prefix (Read prints `12\\t    return x`, so you send `    return x`).\nWRONG — nothing between the quote and `return`, so the line lands at column 0 inside an indented block. Look at the SHAPE as well: the quote touches the first character, and spaces only turn up after the first newline.\nnew_string: "return total;\n    total += 1;"\nRIGHT — four spaces, then `return`. The opening quote is followed by the indent as well, so every line carries its own indentation INCLUDING the first:\nnew_string: "    return total;\n    total += 1;"\nSame call, same words. The only difference is the spaces at the START of the first line, and that is the whole point — in the RIGHT form the indent sits between the quote and the code, exactly where it sits in the file you copied it from.\nThe same applies to tabs, and to a line whose indentation changes partway through.\nRANGE HYGIENE — COUNT THE LINES BEFORE YOU SEND. Lines [start_line, end_line] are deleted and new_string is inserted in their place. The rule that follows from that is arithmetic, not judgement:\n    new_string must have EXACTLY (end_line - start_line + 1) lines.\nCount them. If you wrote three lines for a two-line range, one of them already exists past end_line — it was not deleted, so it is now duplicated. Do not reason about which line "looks related"; count. A range that should grow is a WRONG RANGE, so widen end_line rather than adding the extra line by hand.\nThe mistake looks like this — end_line: 3 for lines 2-3 is a TWO-line range, given three lines:\nnew_string: "const a = 1;\nconst b = 20;\nconst c = 3;"   (3 lines for a 2-line range: c is now duplicated)\nAnd correct — two lines for a two-line range:\nnew_string: "const a = 1;\nconst b = 20;"\nTo replace line 4 as well, set end_line: 4 — then three lines are correct and the count agrees.\nIN A DIFF, A DUPLICATE SHOWS AS THE SAME LINE NUMBER TWICE: a "-" row and a "+" row numbered alike, or the same number on two rows. That is the signature of this mistake, not of a tool fault. Read the diff before continuing; it costs one look.\nA DUPLICATED SEAM IS REMOVED FOR YOU. If the last line of new_string is the same text as the line at\nend_line + 1 — the line just past the range, which is never deleted — that last line is dropped, because\nit would otherwise appear twice. The reply says what was dropped. Pass allow_dup: true when two\nidentical adjacent lines are what you actually want.\nIn SUBSTRING and RANGED SUBSTRING modes old_string is matched EXACTLY, including the indentation of its own first line.\nOmitting new_string is an error, not an empty replacement.\nMis-indented lines often still parse, so a green test run is not proof that an edit landed correctly — re-Read the region before editing it again.\',',
+  description: 'Edit a file. Three shapes: LINE-RANGE (path + start_line + end_line + new_string), SUBSTRING (path + old_string + new_string, unique unless replace_all), RANGED SUBSTRING (the same plus start_line + end_line, which narrows where old_string is searched). \nBOTH BOUNDS ARE INCLUSIVE: start_line=3, end_line=5 replaces lines 3, 4 and 5 — three lines, so new_string must have exactly three lines. A fourth line is a duplicate, not an addition. \nnew_string is VERBATIM: no re-indent, no trim. Every line carries its own leading whitespace, the first one included — copy it from the Read output after the tab that follows each line number. old_string is matched exactly, including its own first-line indentation. \nOmitting new_string is an error. After a multi-line edit, Read the region again: mis-indented code still parses, so a green test is not proof the edit landed where you meant.',
   parameters: {
     type: 'object',
     properties: {
@@ -37,9 +37,8 @@ export const spec = {
       new_string: { type: 'string', description: 'Replacement text, written VERBATIM in BOTH modes — no indentation is added, removed, or re-derived. Write the leading spaces on EVERY line yourself, including the FIRST one, copying them from the Read output after its `N\\t` line-number prefix (Read prints `12\\t    return x`, so you send `    return x`). In LINE-RANGE mode it must contain EXACTLY the lines being replaced: a line that sits outside [start_line, end_line] is not deleted, so restating it here leaves a duplicate. In SUBSTRING mode it replaces old_string, which is itself matched exactly including its own indentation.' },
 
       replace_all: { type: 'boolean', default: false, description: 'Replace all occurrences of old_string.' },
-      allow_dup: { type: 'boolean', default: false, description: 'Default OFF, and when off duplicate lines are removed automatically: if new_string repeats a line that already exists next to it, that copy is not inserted. The file\'s own lines are never touched. Set true to KEEP the repetition — needed only when two identical adjacent lines are the intended result.' },
-      start_line: { type: 'integer', minimum: 1, description: 'PREFERRED MODE. 1-based first line to replace (requires end_line and new_string). With old_string too, it is the first line to SEARCH for it in.' },
-      end_line: { type: 'integer', minimum: 1, description: 'PREFERRED MODE. 1-based last line to replace (inclusive; requires start_line). With old_string too, it is the last line to search in.' },
+      start_line: { type: 'integer', minimum: 1, description: 'PREFERRED MODE. 1-based first line to replace, INCLUSIVE — the range covers start_line and end_line and every line between them. Requires end_line and new_string. With old_string too, it is the first line to SEARCH for it in.' },
+      end_line: { type: 'integer', minimum: 1, description: 'PREFERRED MODE. 1-based last line to replace, INCLUSIVE (requires start_line). start_line=3, end_line=5 replaces lines 3, 4 AND 5 — three lines, so new_string must have three lines. With old_string too, it is the last line to search in.' },
     },
     // Three accepted shapes:
     //   line-range        start_line + end_line + new_string
@@ -190,50 +189,7 @@ export const spec = {
       // the caller diff the replaced region -> `new_string`.
       const replacedText = lines.slice(start - 1, end).join('\n');
 
-      // AUTO-DEDUPE THE SEAM — unless `allow_dup` says the duplicate is wanted.
-      //
-      // The recurring mistake: `new_string`'s last line is the same text as the line at `end_line + 1`.
-      // That line is OUTSIDE the replaced range, so it is never deleted — the copy inside `new_string`
-      // lands directly above it and the file holds the text twice. Every line number below then shifts.
-      //
-      // REFUSING was the first attempt and it was wrong twice over. It rejected legitimate edits — a
-      // one-line `new_string` against a six-line range matched the following line by coincidence and the
-      // edit was blocked — and it put the burden on the caller to work out whose line it was.
-      //
-      // DROPPING THE DUPLICATE is what the caller meant either way. If they restated a line they did not
-      // intend to replace, removing the restatement produces exactly the file they described; if they DID
-      // want it changed, the range was wrong — but silently producing a duplicate helps no one, so the
-      // reply says what was dropped and how to keep it.
-      //
-      // `allow_dup: true` keeps the duplicate, for the real case where two identical lines are the point.
-      // REMOVE ADJACENT DUPLICATES FROM THE RESULT — the file the caller will open.
-      //
-      // Nothing here tries to work out WHICH line the caller meant; that guessing is what made every
-      // previous version leak. The rule is the one a reader would apply: if the edit leaves two identical
-      // lines next to each other, one of them is redundant, so it goes.
-      //
-      // `new_string` is what gets adjusted, because the file's own lines were already there — editing
-      // them would delete content the caller never asked to touch.
-      //
-      // A blank or whitespace-only line between two identical lines counts as adjacent: the blank is
-      // almost always the tail of a pasted block, and leaving it strands a gap where the duplicate was.
-      //
-      // `allow_dup: true` skips all of this and writes exactly what was asked for.
-      let insertedFinal = inserted;
-      const drops = [];
-      if (args.allow_dup !== true) {
-        // One pass per candidate line: each removal can expose another pair, so the scan repeats until
-        // it finds nothing. Bounded by the block length, so it always terminates.
-        for (let guard = 0; guard <= insertedFinal.length; guard++) {
-          const hit = findAdjacentDuplicate(insertedFinal) || findSeamDuplicate(lines, insertedFinal, start, end);
-          if (!hit) break;
-          drops.push(hit);
-          insertedFinal = [...insertedFinal.slice(0, hit.index), ...insertedFinal.slice(hit.index + 1)];
-        }
-      }
-      const seamDrop = drops.length ? drops[0] : null;
-
-      const out = [...lines.slice(0, start - 1), ...insertedFinal, ...lines.slice(end)];
+      const out = [...lines.slice(0, start - 1), ...inserted, ...lines.slice(end)];
       const normUpdated = out.join('\n');
       const updated = eol === '\r\n' ? normUpdated.split('\n').join('\r\n') : normUpdated;
 
@@ -243,7 +199,7 @@ export const spec = {
         ensureDir(p);
         fs.writeFileSync(p, updated, 'utf8');
       } catch (e) { return `Error writing ${args.path}: ${e.message}`; }
-      refreshReadPool(p, normUpdated, { start, end: start + insertedFinal.length - 1 }, ctx);
+      refreshReadPool(p, normUpdated, { start, end: start + inserted.length - 1 }, ctx);
       const removed = end - start + 1;
       // Publish the diff for the UI. The Edit line is drawn from these, so a
       // line-range edit shows the same +/- rows and +N/-N counts as a substring
@@ -251,28 +207,17 @@ export const spec = {
       // the agent loop right after this tool returns.
       //
       // `lines` is the pre-edit content, which is what `start` indexes into.
-      // The diff's NEW text is `insertedFinal` — what the file now holds — not the
+      // The diff's NEW text is `inserted` — what the file now holds — not the
       // raw `new_string`: when the seam-drop removed a line, the raw text showed a
       // `+` row that is not in the file and shifted every after-context line
       // number by the dropped count.
-      if (ctx) ctx.lastEditDiff = buildEditDiff({ fileLines: lines, oldText: replacedText, newText: insertedFinal.join('\n'), startLine: start });
+      if (ctx) ctx.lastEditDiff = buildEditDiff({ fileLines: lines, oldText: replacedText, newText: inserted.join('\n'), startLine: start });
       // Say what the seam did, whichever way it went: a silent drop and a silent keep are both
       // indistinguishable from an edit that never had the ambiguity. The dropped line is named
       // with its ACTUAL pair (the two result lines that would have been identical) — it is not
       // always "the last line of new_string against end_line + 1": a block can carry the repeat
       // inside itself, with blank lines between the copies.
-      // THE NOTE HAS TO SAY WHICH COPY WENT, or it reads as "the tool is eating my code".
-      //
-      // It used to read `Dropped a duplicated line: "}" ... Pass allow_dup: true to keep it`, which a
-      // caller interpreted as the tool silently deleting a line it had written on purpose — so it stopped
-      // trusting the tool and never reached for the flag. What was actually removed is the copy inside
-      // new_string; every line already in the file is untouched.
-      const seamNote = seamDrop
-        ? ` One line from new_string was NOT inserted: "${seamDrop.text}" already sits at result line`
-          + ` ${seamDrop.a} (it would have been adjacent to the copy at line ${seamDrop.b}). The file's own`
-          + ' lines were not touched. If that repetition was intended, resend with allow_dup: true.'
-        : (args.allow_dup === true ? ' allow_dup: true — the repeated line was kept as asked.' : '');
-      return `Edited ${args.path}: replaced lines ${start}-${end} (${removed} line${removed === 1 ? '' : 's'}) with ${insertedFinal.length} line${insertedFinal.length === 1 ? '' : 's'}.${seamNote}`;
+      return `Edited ${args.path}: replaced lines ${start}-${end} (${removed} line${removed === 1 ? '' : 's'}) with ${inserted.length} line${inserted.length === 1 ? '' : 's'}.`;
     }
 
     // ---- SUBSTRING mode (old_string -> new_string) --------------------------
@@ -467,54 +412,7 @@ function leadingWs(s) {
   return m ? m[0] : '';
 }
 
-/**
- * The first repeated line in `inserted`, and where to remove one copy.
- *
- * ONE RULE: a line that repeats the one above it is one too many, so it goes. Nothing here looks at what
- * the line contains — a brace, a comment closer, a string of spaces are all just text, and asking which
- * of them "may legitimately repeat" is a question this tool has no business answering.
- *
- * A blank line between the two does not break the pair: a pasted block usually ends with one, and leaving
- * it behind strands a gap where the duplicate was.
- *
- * Only lines FROM `new_string` are ever removed. The file's own lines were already there, and deleting one
- * would remove content the caller never asked to touch — that is the whole reason to look at `inserted`
- * rather than at the result.
- */
-function findAdjacentDuplicate(inserted) {
-  let prev = null;
-  let prevAt = -1;
-  for (let i = 0; i < inserted.length; i++) {
-    const t = String(inserted[i] == null ? '' : inserted[i]).trim();
-    if (!t) continue;
-    if (prev !== null && t === prev) return { a: prevAt + 1, b: i + 1, text: t, index: i };
-    prev = t;
-    prevAt = i;
-  }
-  return null;
-}
 
-/**
- * The pair at the SEAM: the last line of `inserted` against the line at `end_line + 1`, which the edit
- * never replaced.
- *
- * Same rule, same answer — the inserted copy goes, the file's own line stays.
- */
-function findSeamDuplicate(lines, inserted, start, end) {
-  if (!inserted.length) return null;
-  const norm = (v) => String(v == null ? '' : v).trim();
-  // THE END: new_string's last line against the first line the edit did not replace.
-  const last = norm(inserted[inserted.length - 1]);
-  if (last && norm(lines[end]) === last) {
-    return { a: inserted.length, b: end + 1, text: last, index: inserted.length - 1 };
-  }
-  // THE START: new_string's first line against the line just above the range.
-  const first = norm(inserted[0]);
-  if (first && norm(lines[start - 2]) === first) {
-    return { a: start - 1, b: start, text: first, index: 0 };
-  }
-  return null;
-}
 /**
  * Build the diff payload, including the unchanged lines around the change.
  *
@@ -679,7 +577,7 @@ function checkStale(p, normContent, normOld, ctx) {
 function args_readHint(p, at, span) {
   const from = Math.max(1, at - 3);
   const n = Math.max(span + 6, 10);
-  return `Read { path: ${JSON.stringify(p)}, line_offset: ${from}, n_lines: ${n} }`;
+  return `Read { path: ${JSON.stringify(p)}, start_line: ${from}, end_line: ${from + n - 1} }`;
 }
 // ---- helpers for the line-range path ---------------------------------------
 

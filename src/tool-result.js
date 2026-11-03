@@ -107,7 +107,7 @@ export function spillNotice(spilled) {
     `Preview (first ${fmtBytes(PREVIEW_BYTES)}):`,
     spilled.preview,
     '',
-    `Read the file above to see the rest — use line_offset / n_lines to page through it.`,
+    `Read the file above to see the rest — use start_line / end_line to page through it.`,
   ].join('\n');
 }
 
@@ -262,7 +262,7 @@ export function applyTrim(messages, plan, sessionId) {
     m.content = spilled
       ? `[Output elided to save context — ${fmtBytes(original.length)} from ${tool}.\n`
         + `Full text saved to: ${spilled.file}\n`
-        + `Read that file (with line_offset/n_lines) if you need this output again.]`
+        + `Read that file (with start_line/end_line) if you need this output again.]`
       : `[Output elided to save context — ${fmtBytes(original.length)} from ${tool}; the full text could not be saved.]`;
     out.elided++;
     out.elidedBytes += original.length;

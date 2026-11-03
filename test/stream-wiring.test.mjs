@@ -45,7 +45,9 @@ test('every path that ends a turn drains the buffer first', () => {
     // The window is generous because the handler carries a long comment explaining WHY the drain is here.
     // A tight window made this assertion pass on the code being present and fail on it being documented.
     [/if \(e\.type === 'tool_start'\) \{[\s\S]{0,2000}?flushStream\(\)/, 'tool_start'],
-    [/if \(e\.type === 'aborted'\) \{[\s\S]{0,400}?flushStream\(\)/, 'aborted'],
+    // `aborted` (the LLM stream) and `stopped` (the agent loop, which is what Esc does while a tool runs)
+    // share one branch, so the pattern accepts either guard.
+    [/if \(e\.type === 'aborted'[^\n]*\{[\s\S]{0,600}?flushStream\(\)/, 'aborted/stopped'],
     // The turn teardown: `finishAnim`/`startAnim` are cleared, then the buffer drains,
     // then `running` flips false.
     [/state\.startAnim = null;[\s\S]{0,400}?flushStream\(\);[\s\S]{0,40}?state\.running = false;/, 'turn end'],

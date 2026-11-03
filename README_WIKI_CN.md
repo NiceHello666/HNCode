@@ -359,7 +359,7 @@ hncode -p "列出 TODO" --output-format stream-json
 
 | 工具 | 用途 |
 |------|------|
-| `Read` | 读取文本文件（默认全文；可用 `line_offset` / `n_lines` 指定范围）。 |
+| `Read` | 读取文本文件（默认全文；可用 `start_line` / `end_line` 指定范围）。 |
 | `Write` | 写入文件（新建或覆盖）。 |
 | `Edit` | 用 `new_string` 替换精确匹配的 `old_string`（除非 `replace_all`，否则必须唯一）。 |
 | `Bash` | 执行 shell 命令；支持后台任务。 |

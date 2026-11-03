@@ -92,23 +92,11 @@ export function planSwarm(args) {
 
 export const spec = {
   name: 'AgentSwarm',
-  description: `Launch multiple subagents from one prompt template, existing agent resumes, or both.
+  description: `Run the same task over many inputs, one subagent each, in parallel. Only exists while swarm mode is on (/swarm).
 
-Use AgentSwarm when many subagents should run the same kind of task over different inputs. The placeholder is exactly \`${PROMPT_TEMPLATE_PLACEHOLDER}\`. For example, with \`prompt_template\` set to \`Review ${PROMPT_TEMPLATE_PLACEHOLDER} for likely regressions.\` and \`items\` set to \`["src/a.ts", "src/b.ts"]\`, AgentSwarm launches two new subagents with those two concrete prompts. For a few differently-shaped tasks, make separate \`Agent\` calls in one message instead.
+Give \`prompt_template\` containing \`${PROMPT_TEMPLATE_PLACEHOLDER}\` and \`items\`; each item replaces the placeholder in one prompt. At least 2 items are required unless you pass \`resume_agent_ids\`, and the filled-in prompts must differ. Use \`resume_agent_ids\` (id → prompt, usually "continue") to revive subagents from earlier work; it can be combined with \`items\`. Up to ${MAX_AGENT_SWARM_SUBAGENTS}; launches queue themselves.
 
-Use \`resume_agent_ids\` to continue subagents that already exist from earlier work, such as ones that failed or timed out: map each agent id to the prompt for that resumed subagent (usually \`continue\` if no extra information is needed). You may combine \`resume_agent_ids\` with \`items\` in the same call. Do not duplicate resumed work in \`items\`.
-
-Each of these is enforced — a violation is rejected before any subagent starts: provide at least 2 \`items\` unless you pass \`resume_agent_ids\`; whenever \`items\` are present, \`prompt_template\` is required and must contain \`${PROMPT_TEMPLATE_PLACEHOLDER}\`; and the filled-in prompts must be distinct.
-
-Use enough subagents to keep the work focused and parallel. AgentSwarm supports up to ${MAX_AGENT_SWARM_SUBAGENTS} subagents, and launches are queued automatically, so it is safe to split large tasks into many clear, independent items.
-
-When NOT to use AgentSwarm:
-- It only exists while swarm mode is ON (\`/swarm\`). With the mode off the tool is not offered at all and calling it is refused. If a fan-out would genuinely help, say so and ask the user to turn the mode on.
-- Never call this on your own initiative. It requires the same explicit permission as \`Agent\`: the user, or the applicable AGENTS.md / project instructions, must have asked for sub-agents, delegation, or parallel agent work. Requests for depth, thoroughness, research, investigation, or detailed codebase analysis do NOT count as permission.
-- Do not use it for two or three differently-shaped tasks: use separate \`Agent\` calls instead. Note that several \`Agent\` calls in one message run ONE AT A TIME — only read-only tools batch — so a swarm is the only way to overlap subagents, and a 3-item swarm really does run 3 at once.
-- Do not use it to fan out work you could finish yourself in a few steps.
-
-If \`AgentSwarm\` is called, that call must be the only tool call in the response.`,
+For two or three differently-shaped tasks use separate \`Agent\` calls instead — though several Agent calls in one message run one at a time, so a swarm is the only way to overlap three subagents at once. Never start one on your own initiative: it needs the same explicit permission as \`Agent\`. If this is called, it must be the ONLY tool call in the response.`,
   parameters: {
     type: 'object',
     properties: {

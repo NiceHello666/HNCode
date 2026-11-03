@@ -58,6 +58,13 @@ import { resolveProvider, resolveModelArg, addProvider, removeProvider, addModel
 import { pluginCommands, renderWidgets, runHooks, runPatch, runPatchSync, runKeybindsSync, pluginKeybinds, setPluginLoggerTui } from './plugin.js';
 import { OTHER_LABEL, SUPPLEMENT_LABEL } from './tools/ask-user-question.js';
 import { render as renderTodos } from './tools/todo.js';
+import { renderLatex } from './latex.js';
+import { measureTex, encodeTexImage, TEX_MAX_ROWS } from './tex/index.js';
+import { isImageRow, imageBytes, parseImageRow, encodeImageRow as encodeImageRowHelper } from './image-row.js';
+import { createScreen, pools as screenPools } from './screen.js';
+import { paintRows, screenToRows } from './screen-paint.js';
+import { diffScreens, placementKey, placementRows, setImageRegenerator } from './screen-diff.js';
+import { render as renderMermaid, sourceBox as mermaidSourceBox, toAnsi as mermaidAnsi } from './mermaid/index.js';
 import { getTool, toolNames } from './tools/index.js';
 import { decideFromRules, describeRules, selfTestRules, describeSelfTest } from './permissions.js';
 import { isDestructiveCommand as shellIsDestructiveCommand, isReadOnlyCommand as shellIsReadOnlyCommand } from './shell-safety.js';
@@ -948,13 +955,27 @@ export function lightAt(phaseMs, index, count, edge = 'cosine', stepMs = STEP_MS
  * @param {string}   edge     shoulder shape: 'cosine' (default) or 'linear'
  * @returns {string}          ANSI, ready to splice into a row
  */
-function shimmerText(text, phaseMs, base, glint, edge = 'cosine', stepMs = STEP_MS) {
+function shimmerText(text, phaseMs, base, glint, edge = 'cosine', stepMs = STEP_MS, sweepWidth) {
+  // THE SWEEP PACE IS SET BY THE ROW, NOT BY THE WORD.
+  //
+  // A tool name is four characters (`Read`) in a row of eighty. Sweeping the four made the light cross in a
+  // few frames — each character changed colour inside one frame, which reads as a SNAP, and the harder you
+  // look the less it looks like motion. The fix is not to sweep the empty cells instead (they are never
+  // painted, so the light would be invisible for most of its travel and the word would sit dark); it is to
+  // run the SAME sweep geometry over a wider notional row and place the glyphs inside it, which slows the
+  // light down without moving where it appears.
+  //
+  // `lightAt` measures its geometry in cells, so the pace comes from `count`. Passing the row's width makes
+  // the crossing take proportionally longer; the glyphs stay at their own indices, and the light still visits
+  // every one of them, just over more frames.
   const s = String(text == null ? '' : text);
   const n = s.length;
   if (!n) return '';
+  // Glyphs keep their own positions; only the timing is stretched. `sweepWidth` is the row's usable width.
+  const pace = sweepWidth > n ? Math.round(sweepWidth) : n;
   const out = [];
   for (let i = 0; i < n; i++) {
-    const t = Math.max(0, Math.min(1, lightAt(phaseMs, i, n, edge, stepMs)));
+    const t = Math.max(0, Math.min(1, lightAt(phaseMs, i, pace, edge, stepMs)));
     const r = Math.round(base[0] + (glint[0] - base[0]) * t);
     const g = Math.round(base[1] + (glint[1] - base[1]) * t);
     const b = Math.round(base[2] + (glint[2] - base[2]) * t);
@@ -2125,7 +2146,7 @@ function keyArgument(name, args, workspace, expanded = false) {
   }
   return '';
 }
-export function formatToolLine(msg, workspace, spin, pulseStart, shimmerEdge, expanded = false, reducedMotion = false) {
+export function formatToolLine(msg, workspace, spin, pulseStart, shimmerEdge, expanded = false, reducedMotion = false, width = 0) {
   const name = msg.toolName || '';
   const arg = keyArgument(name, msg.toolArgs, workspace, expanded);
   const verb = msg.pending ? 'Using' : 'Used';
@@ -2182,8 +2203,12 @@ export function formatToolLine(msg, workspace, spin, pulseStart, shimmerEdge, ex
     // that whole life: one origin, and elapsed grows from there.
     const rowKey = msg && (msg.id || msg.toolId) ? `tool:${msg.id || msg.toolId}` : `tool:${name}`;
     const elapsedMs = Math.max(0, Date.now() - lightOrigin(rowKey, anchorSpin, spin));
-    // ONE shimmer for both rows — see `shimmerText`.
-    const phaseMs = elapsedMs % cycleMs(name.length, TOOL_STEP_MS);
+    // The sweep's geometry is measured over the ROW, so its cycle has to be measured over the row too.
+    // `crossMs(name.length)` describes a crossing of four cells; the phase would wrap long before a row-wide
+    // light had moved a fifth of the way, and the name would sit at one brightness forever.
+    const spentW = visualCol('● ') + visualCol(verb) + 1;
+    const sweepW = width > 0 ? Math.max(name.length, width - spentW) : name.length;
+    const phaseMs = elapsedMs % cycleMs(sweepW, TOOL_STEP_MS);
 
     // The same restraint as the Working row's glint: the light is the base colour with a small lift in
     // the SAME hue, not a jump to white. `[150, 255, 255]` against `[0, 215, 255]` read as "the name is
@@ -2195,7 +2220,7 @@ export function formatToolLine(msg, workspace, spin, pulseStart, shimmerEdge, ex
     if (reducedMotion) {
       nameDisplay = col(name, C.cyan);
     } else {
-      nameDisplay = shimmerText(name, phaseMs, BASE, GLINT, shimmerEdge || 'cosine', TOOL_STEP_MS);
+      nameDisplay = shimmerText(name, phaseMs, BASE, GLINT, shimmerEdge || 'cosine', TOOL_STEP_MS, sweepW);
     }
   } else {
     // Non-pending: show in plain cyan
@@ -2457,11 +2482,13 @@ function messageLines(msg, width, workspace, expanded, spin, pulseStart, rawMode
   // Tool calls render as a single "● Using/Used Name (arg)" line (kimi style).
   // The body already carries its own ANSI colours, so mark it pre-colored.
   if (msg.role === 'tool') {
-  const body = formatToolLine(msg, workspace, spin, pulseStart, shimmerEdge, expanded, reducedMotion);
+    // The bullet's width is known before the body is built, and the body needs it: a pending tool's name is
+    // swept across the row it has, not across its own four characters.
+    const bodyW = Math.max(1, width - visualCol('● '));
+    const body = formatToolLine(msg, workspace, spin, pulseStart, shimmerEdge, expanded, reducedMotion, bodyW);
     // Red bullet for a failed call (a Bash non-zero exit / [error: …]).
     const failed = msg.failed === true || (msg.role === 'tool' && msg.failed === true);
     const pre = col('● ', msg.pending ? C.orange : (failed ? C.red : C.green));
-    const bodyW = Math.max(1, width - visualCol('● '));
     // EXPANDED: break the body at the newlines the command actually has, so a multi-line script renders
     // as the lines it was written as. `wrapAnsiWords` alone flattens a newline into a space, turning
     // `set -e\nnpm ci\nnpm test` into one long reflowed line — and the reason to expand is to read the
@@ -3001,12 +3028,16 @@ function messageLines(msg, width, workspace, expanded, spin, pulseStart, rawMode
     const { headRows, tailRows, headCut } = renderMdIncremental(msg, String(msg.text || ''), bodyW, fg, codeFg);
     const c = msg._mdCache;
     let headWrapped = c && c.headWrapped;
-    if (!headWrapped || c.headWrappedCut !== headCut) {
+    if (!headWrapped || c.headWrappedCut !== headCut || c.headWrappedVersion !== MD_RENDER_VERSION) {
       // ONLY the first row of the whole message carries the `❯` marker; every later
       // row uses the continuation pad. Using `prefix` for every head row put a `❯`
       // on each line of the message.
       headWrapped = headRows.map((ml, i) => ({ text: ml, ind: i === 0 ? prefix : contPad, raw: true }));
-      if (c) { c.headWrapped = headWrapped; c.headWrappedCut = headCut; }
+      if (c) {
+        c.headWrapped = headWrapped;
+        c.headWrappedCut = headCut;
+        c.headWrappedVersion = MD_RENDER_VERSION;
+      }
     }
     for (const w of headWrapped) lines.push(w);
     const tailBase = lines.length;
@@ -3053,22 +3084,38 @@ function messageLines(msg, width, workspace, expanded, spin, pulseStart, rawMode
 // separately. That is NOT equivalent — a trailing blank line contributes a row on
 // its own but acts as a separator inside the whole document — so the two renders
 // disagreed by a row. Blocks avoid the problem entirely.)
+/**
+ * Version of the markdown renderer, part of the incremental cache key.
+ *
+ * That cache is validated on the INPUT — text, width, colours — which cannot see that the renderer
+ * itself now produces different rows for the same input. A session that cached a block before a fence
+ * type learned to draw kept showing the old output, so the change looked like it had not shipped.
+ * Bump this whenever what `renderMdText` produces for the same input changes.
+ */
+const MD_RENDER_VERSION = 7;   // 7: an image row carries the TeX that produced it
+
 export function renderMdIncremental(msg, text, width, fg, codeFg) {
   const src = text.replace(/\r\n/g, '\n');
   let c = msg._mdCache;
   // Layout identity: same width/colours and the same text. Comparing the text (not
   // just its length) is required — a same-length replacement must re-render.
-  if (c && c.width === width && c.fg === fg && c.codeFg === codeFg && c.text === src) {
+  if (c && c.v === MD_RENDER_VERSION && c.width === width && c.fg === fg && c.codeFg === codeFg && c.text === src) {
     return { headRows: c.headRows, tailRows: c.tailRows, headCut: c.headCut };
   }
-  if (!c || c.width !== width || c.fg !== fg || c.codeFg !== codeFg) {
-    c = msg._mdCache = { width, fg, codeFg };
+  if (!c || c.v !== MD_RENDER_VERSION || c.width !== width || c.fg !== fg || c.codeFg !== codeFg) {
+    c = msg._mdCache = { v: MD_RENDER_VERSION, width, fg, codeFg };
   }
 
   const parts = splitBlocks(src);
   // A block is final once a LATER block exists; the last one is still growing.
   const headCount = Math.max(0, parts.length - 1);
-  const canReuse = Array.isArray(c.blocks)
+  // THE CACHED BLOCKS BELONG TO A VERSION OF THE RENDERER. Without that check a request for the same text,
+  // width and colours reuses rows produced by an OLDER renderer: the fast path above rejects them on `c.v`,
+  // but it leaves `c` untouched (its width and colours still match), and this reuse test then finds the block
+  // texts identical and hands back the old rows. That is why an image row kept arriving without the TeX it
+  // was made from after the field was added.
+  const canReuse = c.v === MD_RENDER_VERSION
+    && Array.isArray(c.blocks)
     && Array.isArray(c.blockTexts)
     && c.blockTexts.length >= headCount
     && parts.length >= headCount
@@ -3081,6 +3128,7 @@ export function renderMdIncremental(msg, text, width, fg, codeFg) {
   const headCut = parts.length > 1 ? parts.slice(0, headCount).join('\n').length : 0;
 
   msg._mdCache = {
+    v: MD_RENDER_VERSION,
     text: src, width, fg, codeFg,
     blocks, blockTexts: parts.slice(0, headCount),
     headRows, tailRows, headCut,
@@ -3126,16 +3174,112 @@ export function renderMdText(text, width, fg, codeFg) {
   while (i < para.length) {
     let line = para[i];
     const t = line.replace(/\s+$/, '');
+    // DISPLAY MATH: `$$ ... $$` and `\[ ... \]`.
+    //
+    // A fence is what a model writes when it wants a code block, but a formula usually arrives as `$$`.
+    // It is laid out here as the formula it describes — stacked fractions, limits above a sum — and its
+    // source is what remains when the subset cannot express it, exactly as a math fence behaves.
+    // The opener has to start the line and the closer has to end one, so `cost is $$x$$ total` stays prose
+    // and is handled as inline math by the line renderer below.
+    const mathOpen = /^\s*(\$\$|\\\[)/.exec(t);
+    if (mathOpen) {
+      const open = mathOpen[1];
+      const close = open === '$$' ? '$$' : '\\]';
+      const after = t.slice(mathOpen.index + mathOpen[0].length);
+      let body = null;
+      let used = 0;
+      let closed = true;
+      // One-line form: `$$x = 1$$` with nothing but whitespace after the closer.
+      const oneLine = after.indexOf(close);
+      if (oneLine >= 0 && after.slice(oneLine + close.length).trim() === '') {
+        body = after.slice(0, oneLine);
+        used = 1;
+      } else if (after.trim() === '') {
+        // Multi-line form: everything up to the line that ends with the closer.
+        const collected = [];
+        let k = i + 1;
+        let found = false;
+        while (k < para.length) {
+          const cl = para[k].replace(/\s+$/, '');
+          if (cl.trimEnd().endsWith(close)) {
+            collected.push(cl.slice(0, cl.lastIndexOf(close)));
+            k++;
+            found = true;
+            break;
+          }
+          collected.push(para[k]);
+          k++;
+        }
+        body = collected.join('\n');
+        used = k - i;
+        // Still streaming: no closer yet, so the body is prose plus half a formula.
+        closed = found;
+      }
+      if (body !== null && closed) {
+        i += used;
+        // Same three fallbacks as a math fence: bitmap, Unicode layout, then the source.
+        const rows = mathBlockRows(body, width, true);
+        if (rows) {
+          out.push(...rows);
+        } else {
+          // Unsupported: show the TeX so the reader still gets the formula's meaning.
+          for (const l of body.split('\n')) out.push(col('  ' + l.slice(0, Math.max(1, width - 2)), C.white));
+        }
+        continue;
+      }
+    }
     // Fenced code block. Rendered with a rule ABOVE (labelled with the language)
     // and a matching full-width rule BELOW, so the block is visibly delimited.
-    const fm = /^\s*(```+|~~~+)\s*(\S*)/.exec(t);
+    const fm = /^\s*(`{3,}|~{3,})\s*(\S*)/.exec(t);
     if (fm) {
       const lang = fm[2] || '';
       i++;
       const buf = [];
-      while (i < para.length && !/^\s*(```+|~~~+)/.test(para[i])) { buf.push(para[i]); i++; }
-      i++; // closing fence
+      const fenceChar = fm[1][0];
+      const fenceLen = fm[1].length;
+      const isCloser = (s) => {
+        const m = /^\s*(`{3,}|~{3,})\s*$/.exec(s);
+        return !!m && m[1][0] === fenceChar && m[1].length >= fenceLen;
+      };
+      while (i < para.length && !isCloser(para[i])) { buf.push(para[i]); i++; }
+      // Whether the closing fence was actually reached: an open fence means the text is still streaming.
+      const fenceClosed = i < para.length;
+      i++; // closing fence (no-op when the fence is still open)
       const rule = (s) => col(s, C.gray);
+      // MATH FENCES ARE TYPESET. A `latex`/`tex`/`math` fence is TeX, not code: it is drawn as the formula
+      // it describes, and when the terminal speaks an image protocol it is drawn as a TYPESET BITMAP rather
+      // than as flattened Unicode — the same pipeline dsh-tui uses, with STIX Two Math.
+      //
+      // Three fallbacks, in order, and each one keeps the formula: the bitmap; the Unicode layout when the
+      // picture cannot be placed (no protocol, no cell size, too wide, too tall); the SOURCE when the subset
+      // cannot express the TeX at all.
+      if (/^(latex|tex|math)$/i.test(lang)) {
+        const tex = buf.join('\n').trim();
+        const rendered = mathBlockRows(tex, width, fenceClosed);
+        if (rendered) {
+          out.push(...rendered);
+          continue;
+        }
+        // Falls through to the plain code block: the source is all we have.
+      }
+      if (/^mermaid$/i.test(lang)) {
+        const src = buf.join('\n');
+        let art = null;
+        try { art = renderMermaid(src); } catch { art = null; }
+        // Wider than the panel: the frame is the honest answer, since truncating art
+        // would cut a box in half rather than say the diagram does not fit.
+        if (art && art.width <= width) {
+          // `styled` keeps the role of every span, so the frame stays dim and the
+          // connectors cyan instead of the whole diagram arriving as plain white text.
+          const coloured = mermaidAnsi(art);
+          for (const l of coloured) out.push(l);
+          continue;
+        }
+        try {
+          for (const l of mermaidSourceBox(src, width).plain) out.push(col(l, C.white));
+          continue;
+        } catch { /* fall through to the plain code block */ }
+      }
       // Opening rule: `─ <lang> ` then `─` padding out to the FULL width.
       // (The old version subtracted 4 and was 2 columns short of the panel.)
       if (lang) {
@@ -3147,13 +3291,12 @@ export function renderMdText(text, width, fg, codeFg) {
       // Fenced code block CONTENT is plain body text — render it in the
       // default terminal colour (white), not the theme's cyan. The cyan is
       // reserved for UI chrome and the language label; a large code block in
-      // cyan reads as "everything is the theme colour" (matches the "assistant
-      // text should be white" requirement).
+      // cyan reads as "everything is the theme colour".
       for (const cl of buf) out.push(col(cl.slice(0, width), C.white));
       // Closing rule, matching the opening one.
       out.push(rule('─'.repeat(Math.max(1, width))));
       continue;
-    }
+      }
     // Table: a header line followed by a separator line
     if (t.includes('|') && i + 1 < para.length && isTableSep(para[i + 1])) {
       const header = splitCells(t);
@@ -3270,14 +3413,159 @@ function markdownLineToRows(line, width, fg, codeFg, isContinuation) {
       return out;
     }
   }
-  // Inline styles: **bold**, *italic*, `code`, [text](url)
-  if (/[*`\[]/.test(t)) {
+  // Inline styles: **bold**, *italic*, `code`, [text](url), $math$
+  if (/[*`\[$]|\\\(/.test(t)) {
     for (const w of wrapWords(t, width)) out.push(col(inlineMarkdown(w, codeFg, fg), fg));
     return out;
   }
   // Plain - apply default foreground color
   for (const w of wrapWords(t, width)) out.push(col(w, fg));
   return out;
+}
+
+/**
+ * Whether the terminal can receive a formula as a picture.
+ *
+ * Both halves are required: a protocol the terminal reported (Sixel today) and a cell size it reported
+ * (XTWINOPS 16). Without the cell size the picture would be measured in guessed cells, which is what put a
+ * formula on the wrong rows before — so a missing cell size falls back to text rather than guess.
+ */
+function mathImageCapable() {
+  const caps = terminalCaps();
+  if (!caps) return null;
+  // KITTY FIRST. A terminal that speaks both (Kitty can be built with Sixel support) handles Kitty far
+  // better: the pixels are uploaded once and every later frame is a placement, while a Sixel has to be
+  // retransmitted and moves the cursor when it is drawn.
+  const protocol = caps.kittyGraphics
+    ? 'kitty'
+    : (Array.isArray(caps.extensions) && caps.extensions.includes('sixel') ? 'sixel' : null);
+  if (!protocol) return null;
+  const cell = caps.cell && caps.cell.w > 0 && caps.cell.h > 0 ? caps.cell : null;
+  return cell ? { protocol, cell } : null;
+}
+
+/** Ink colour for a typeset formula: the body text colour, so a picture sits in the text rather than beside it. */
+const MATH_INK = { r: 220, g: 220, b: 220 };
+
+/**
+ * The terminal's cell height in pixels, for cropping a picture that straddles the top of the window.
+ *
+ * A crop has to convert CELL ROWS to six-pixel BANDS; without the cell height the two units get confused and
+ * the image is drawn from the wrong point in its own payload. 20 is the conventional monospace cell height and
+ * matches the fallback `src/tex/` uses when the terminal never answers XTWINOPS 16.
+ *
+ * @returns {number}
+ */
+function mathCellHeight() {
+  const caps = terminalCaps();
+  const cell = caps && caps.cell;
+  return cell && cell.h > 0 ? cell.h : 20;
+}
+
+/**
+ * Rows for one display formula: a typeset bitmap when the terminal can show one, the Unicode layout when it
+ * cannot, and nothing when the TeX is outside the subset (the caller then shows the source).
+ *
+ * @param {string} tex TeX without delimiters.
+ * @param {number} width Columns available.
+ * @param {boolean} closed The closing delimiter arrived. A formula still streaming keeps to the text form: a
+ *   picture of half a formula is worse than the TeX of half a formula.
+ * @returns {string[]|null}
+ */
+function mathBlockRows(tex, width, closed) {
+  const src = stripMathDelimiters(tex);
+  if (!src) return null;
+  // A picture sits where the text form does: one column of indent, and no wider than the panel.
+  const room = Math.max(8, width - 2);
+  if (closed) {
+    const placed = placeTex(src, room);
+    if (placed) return placed;
+  }
+  const rendered = renderLatex(src, { display: true });
+  if (rendered === undefined) return null;
+  return rendered
+    .split('\n')
+    .map((l) => col(l.slice(0, width), C.white));
+}
+
+/**
+ * Remove the delimiters a formula may still be wrapped in.
+ *
+ * A `$$…$$` block and a ```latex fence both reach the typesetter, and the fence's content may carry the
+ * delimiters too — a model writes the fence around `$$…$$` often enough that it is the common case, not the
+ * odd one. Typesetting the delimiters along with the formula draws them as glyphs inside the picture, which
+ * is what a literal `$$` in the middle of an integral looks like.
+ *
+ * Only a delimiter that spans the WHOLE body is removed: a `$$` in the middle is TeX the author meant, and
+ * stripping it would change the formula. The loop runs because a doubled wrapper (`\n$$\n…\n$$\n` inside a
+ * fence) leaves one pair behind after the first pass.
+ *
+ * @param {string} tex
+ * @returns {string}
+ */
+function stripMathDelimiters(tex) {
+  let s = String(tex || '').trim();
+  for (;;) {
+    const before = s;
+    if (s.startsWith('$$') && s.endsWith('$$') && s.length > 4) {
+      s = s.slice(2, -2).trim();
+    } else if (s.startsWith('\\[') && s.endsWith('\\]') && s.length > 4) {
+      s = s.slice(2, -2).trim();
+    } else if (s.startsWith('\\(') && s.endsWith('\\)') && s.length > 4) {
+      s = s.slice(2, -2).trim();
+    }
+    if (s === before) return s;
+  }
+}
+
+
+/**
+ * Typeset a formula into a frame row, or null when it cannot be placed as a picture here.
+ *
+ * The picture is one row of TEXT plus a payload: the row is the sentinel `image-row.js` understands, the
+ * rows below it are blank, and the frame writer turns them into a cursor move and a Sixel sequence. Every
+ * reason to decline is a reason the caller already has a text fallback for, so this never throws.
+ *
+ * @param {string} tex
+ * @param {number} room Columns the picture may occupy.
+ */
+function placeTex(tex, room) {
+  const capable = mathImageCapable();
+  if (!capable) return null;
+  try {
+    // Measured first, because laying out is what rejects TeX outside the subset: a raster would be paid for
+    // and then thrown away.
+    const measured = measureTex(tex, { cell: capable.cell });
+    if (!measured || measured.columns > room || measured.rows > TEX_MAX_ROWS) return null;
+    const image = encodeTexImage(tex, { protocol: capable.protocol, cell: capable.cell, colour: MATH_INK });
+    if (!image) return null;
+    // THE SOURCE TRAVELS WITH THE ROW. A picture that straddles the top of the window has to be redrawn from
+    // its first VISIBLE row, and only the TeX can produce that raster: cropping the encoded payload can only
+    // land on a six-pixel band boundary, which leaves up to a quarter of a cell of the formula above the
+    // window and makes it slide as the view scrolls. `paintCellFrame` reads this back and re-renders with
+    // `skipTop` when a picture needs cropping.
+    const rows = [encodeImageRowHelper(image.sequence, image.rows, image.columns, tex)];
+    for (let r = 1; r < image.rows; r++) rows.push('');
+    return rows;
+  } catch {
+    // A bitmap that cannot be drawn is a reason to show text, never a reason to lose the frame.
+    return null;
+  }
+}
+
+/**
+ * Whether a `$...$` body is a formula rather than prose.
+ *
+ * Prices, shell variables and identifiers all use `$`: `costs $5 and $10`, `$HOME`, `${VAR}`. A body that
+ * starts or ends with a space, is a bare number or an all-caps word is prose, and so is one with no TeX
+ * command and no operator in it — `vitamin $C$` stays text while `$x^2$` becomes a formula.
+ */
+function looksLikeInlineMath(body) {
+  if (/^\s/.test(body) || /\s$/.test(body)) return false;
+  if (body.startsWith('{') || body.includes('`')) return false;
+  if (/^\d+([.,]\d+)?$/.test(body)) return false;
+  if (/^[A-Z][A-Z0-9_]*$/.test(body)) return false;
+  return /\\[A-Za-z]+|[=+\-*/<>^_]/.test(body) || (/^[A-Za-z]$/.test(body));
 }
 
 // Apply inline markdown to a single line: `code`, **bold**, *italic*, ~~strike~~,
@@ -3291,6 +3579,17 @@ function inlineMarkdown(s, codeFg, base) {
   let r = s;
   // Inline code first so it is not mangled by * [] ~.
   r = r.replace(/`([^`]+)`/g, (_, c) => col(c, codeFg) + fb);
+  // INLINE MATH. After the code spans, so a formula inside backticks stays code, and before emphasis, so
+  // `*` and `_` inside TeX cannot turn into italics. `\(...\)` is the other inline form models use.
+  r = r.replace(/\$([^$\n]+?)\$|\\\(([^\n]+?)\\\)/g, (m, dollar, paren) => {
+    const tex = dollar !== undefined ? dollar : paren;
+    // A price or a shell variable is not math: `$5 and $10`, `$HOME`, `${VAR}`.
+    if (dollar !== undefined && !looksLikeInlineMath(tex)) return m;
+    const out = renderLatex(tex, { display: false });
+    // Unsupported or multi-line: the source stands, because inline math sits inside wrapped prose.
+    if (out === undefined || out.includes('\n')) return m;
+    return out;
+  });
   // Bold
   r = r.replace(/\*\*([^*]+)\*\*/g, (_, c) => C.bold + c + C.reset + fb);
   // Strikethrough
@@ -3716,7 +4015,10 @@ export function renderChatLines(state, w, viewport) {
     // edit sites, which is what the shared-store path below relies on too.
     const countLen = typeof m.text === 'string' ? m.text.length : 0;
     // Only a NON-ANIMATING message can be answered from its row count. See the note below.
-    if (!valid && !cached && !animating && m._count && m._count.key === countKey && m._count.textLen === countLen) {
+    // A message that may hold a bitmap cannot be answered from a row count: the count says how many rows it
+    // occupies, not what is drawn in them.
+    const hasFence = /```+\s*(latex|tex|math)\b/i.test(typeof m.text === 'string' ? m.text : '');
+    if (!hasFence && !valid && !cached && !animating && m._count && m._count.key === countKey && m._count.textLen === countLen) {
       msgLen[mi] = m._count.len + rules;
       cursor += msgLen[mi];
       prevBordered = border;
@@ -3741,6 +4043,7 @@ export function renderChatLines(state, w, viewport) {
         && shared.liveRef === m.liveOutput && shared.diffRef === m.diff
         && shared.countsRef === m._diffCounts
         && shared.keyArgs === (m.toolArgs ? fpArgs(m.toolArgs) : '0')
+        && shared.v === MD_RENDER_VERSION
         && shared.pluginExpanded === (m.pluginLog ? !!m.expanded : null)) {
         m._cache = shared;
         msgLen[mi] = shared.rows.length + rules;
@@ -3762,6 +4065,7 @@ export function renderChatLines(state, w, viewport) {
           pluginExpanded: m.pluginLog ? !!m.expanded : null,
           raw: !!state.rawMode,
           rows: wrapped, spinRows: null,
+          v: MD_RENDER_VERSION,   // invalidates rows built by an older renderer
         };
         for (let i = 0; i < wrapped.length; i++)
           if (wrapped[i].indexOf(SPIN_PLACEHOLDER) >= 0) {
@@ -3887,27 +4191,30 @@ export function renderChatLines(state, w, viewport) {
         && rowStart[mi - 1] + msgLen[mi - 1] === cursor;
     }
     const len = msgLen[mi];
-    const visible = visibleTo < 0 || (cursor + len > visibleFrom && cursor < visibleTo);
+    // A message that may contain a bitmap is always built, visible or not: a row COUNT cannot represent a
+    // picture, and a stale payload is worse than no payload.
+    const mayHoldImage = /```+\s*(latex|tex|math)\b/i.test(typeof msg.text === 'string' ? msg.text : '');
+    const visible = mayHoldImage
+      || visibleTo < 0
+      || (cursor + len > visibleFrom && cursor < visibleTo);
     if (visible) {
       // Pass 1 may have skipped building the rows for a message far from the
       // viewport (it only needed the row COUNT, so it used `_count`). Now that the
       // message IS visible, build them here — otherwise an evicted message rendered
       // as blank rows, which is what made scrolled-back history look like it had
       // "not loaded". The row width must match what pass 1 counted with.
-      let ccc = msg._cache;
-      if (!ccc || !ccc.rows || ccc.rows.length !== len - (bordered ? (shared ? 1 : 2) : 0)) {
-        const bw = bordered ? boxText : innerW;
-        const src = messageLines(msg, bw, state.cwd, expanded, state.spin, state.pulseStart, state.rawMode,
-          state.shimmerEdge || (state.cfg && state.cfg.shimmerEdge));
-        const built = src.map(rowToLine);
-        ccc = { rows: built, spinRows: null };
-        for (let i = 0; i < built.length; i++) {
-          if (built[i].indexOf(SPIN_PLACEHOLDER) >= 0) {
-            if (!ccc.spinRows) ccc.spinRows = new Set();
-            ccc.spinRows.add(i);
-          }
+      // Rows are re-derived every frame. Everything expensive inside `messageLines` is cached under a
+      // COMPLETE key (the markdown block cache) or in the shared row LRU; what used to be cached HERE was the
+      // final string, validated on a row count that cannot see a clipped payload.
+      const bw = bordered ? boxText : innerW;
+      const src = messageLines(msg, bw, state.cwd, expanded, state.spin, state.pulseStart, state.rawMode,
+        state.shimmerEdge || (state.cfg && state.cfg.shimmerEdge));
+      const ccc = { rows: src.map(rowToLine), spinRows: null };
+      for (let i = 0; i < ccc.rows.length; i++) {
+        if (ccc.rows[i].indexOf(SPIN_PLACEHOLDER) >= 0) {
+          if (!ccc.spinRows) ccc.spinRows = new Set();
+          ccc.spinRows.add(i);
         }
-        msg._cache = ccc;
       }
       const spinRows = ccc.spinRows;
       const liveAt = (r, i) => (spinRows && spinRows.has(i) ? r.split(SPIN_PLACEHOLDER).join(spinFrame) : r);
@@ -3916,10 +4223,20 @@ export function renderChatLines(state, w, viewport) {
         const pad = ' '.repeat(boxPad);
         const wall = col('│', boxColor);
         for (let i = 0; i < ccc.rows.length; i++) {
-          out.push(PAD + wall + pad + fitAnsi(liveAt(ccc.rows[i], i), boxText) + pad + wall);
+          const rowText = liveAt(ccc.rows[i], i);
+          if (isImageRow(rowText)) {
+            // Emitted as-is: the frame writer turns it into a cursor move plus the bitmap.
+            out.push(rowText);
+            continue;
+          }
+          out.push(PAD + wall + pad + fitAnsi(rowText, boxText) + pad + wall);
         }
       } else {
-        for (let i = 0; i < ccc.rows.length; i++) out.push(PAD + liveAt(ccc.rows[i], i));
+        for (let i = 0; i < ccc.rows.length; i++) {
+          const rowText = liveAt(ccc.rows[i], i);
+          // An image row must arrive at the cursor with nothing in front of its introducer.
+          out.push(isImageRow(rowText) ? rowText : PAD + rowText);
+        }
       }
       if (bordered) out.push(rule(false, boxColor));
     } else {
@@ -4405,58 +4722,118 @@ export function questionBoxClampedHeight(state, insideW, h, chromeH) {
 // the thumb's travel is monotonic, uses every row, and lands exactly on both
 // ends; `thumbLenF` is kept unrounded purely so the grab offset inside the thumb
 // is not quantised to a whole row when the thumb is 10+ rows tall.
+/**
+ * Sub-cell resolution of the scrollbar, in eighths of a row.
+ *
+ * The block glyphs `▁▂▃▄▅▆▇█` ARE a vertical eighths scale, so the bar can sit at any of eight heights
+ * inside a cell. Using only two (`▀`/`▄`) gave the thumb a handful of reachable positions on a long
+ * transcript — measured, 35 positions for 482 rows of scrolled content, so it jumped ~14 rows at a time
+ * and the motion read as a series of hops.
+ */
+const SUB_CELLS = 8;
+
+/**
+ * The scrollbar thumb is this many cells tall, always.
+ *
+ * A constant height, because the bar reports POSITION rather than density. Proportional sizing is
+ * tempting and wrong here: it collapsed to a fraction of a cell on a long transcript, then grew a cell
+ * at a time as content arrived, so the control changed size while being used.
+ */
+const THUMB_CELLS = 2;
+
 export function scrollbarGeometry({ total, bodyH, scroll }) {
   const maxScroll = Math.max(0, total - bodyH);
   const pos = Math.min(maxScroll, Math.max(0, scroll || 0));
-  // OpenTUI works on a 2x virtual grid so the thumb has HALF-ROW resolution: each
-  // real row is two virtual units, and a thumb boundary landing inside a cell is
-  // drawn as `▀` (top half) or `▄` (bottom half). That is what makes a short
-  // scrollbar look smooth instead of jumping a whole row at a time. See OpenTUI
-  // Slider.ts: getVirtualThumbSize / getVirtualThumbStart / renderVertical.
-  const virtualTrack = bodyH * 2;
-  // Thumb size = viewport / (content + viewport) of the track, min one virtual unit.
-  const contentSize = maxScroll + bodyH;
-  const virtualThumbSize = bodyH >= total
-    ? virtualTrack
-    : Math.max(1, Math.min(
-      Math.floor(virtualTrack * (bodyH / Math.max(1, contentSize))),
-      virtualTrack,
-    ));
-  // 0 = bottom (pinned), maxScroll = top. Row 0 is the TOP of the body, so the
-  // virtual start counts from the top (OpenTUI's value grows downward; ours
-  // grows upward from the newest line, hence the inversion).
-  const fromTop = maxScroll === 0 ? 0 : (maxScroll - pos) / maxScroll;
-  const maxVirtualStart = Math.max(0, virtualTrack - virtualThumbSize);
-  const virtualThumbStart = Math.round(fromTop * maxVirtualStart);
 
-  // Row-range + fractional forms, kept for the drag maths and the hit-test, which
-  // reason in whole rows. Derived from the virtual values so paint and drag agree.
-  const thumbLenF = Math.max(1, virtualThumbSize / 2);
-  const thumbStart = Math.floor(virtualThumbStart / 2);
-  const thumb = Math.max(1, Math.ceil((virtualThumbStart + virtualThumbSize) / 2) - thumbStart);
-  const maxThumbStartF = Math.max(0, bodyH - thumbLenF);
+  if (total <= bodyH || bodyH <= 0) {
+    // Everything fits: no rail, and nothing is drawn for a control that would have nothing to say.
+    return {
+      thumbStart: 0,
+      thumbLen: bodyH,
+      thumbLenF: bodyH,
+      maxThumbStartF: 0,
+      virtualThumbStart: 0,
+      virtualThumbSize: bodyH * SUB_CELLS,
+      virtualTrack: bodyH * SUB_CELLS,
+      bodyH,
+      total,
+      maxScroll,
+    };
+  }
+
+  // PROPORTIONAL HEIGHT, WHOLE ROWS, at least one — Codewhale's rule:
+  //   thumb = ceil(rail * visible / totalRows), clamped to [1, rail]
+  //   travel = rail - thumb
+  //   top    = floor(travel * offset / maxOffset)
+  //
+  // It works in whole rows and so does this. Sub-cell positions were tried at length here: every scheme
+  // that put an edge inside a cell had to state the fraction with `▀` (four eighths) or leave it blank,
+  // so the same thumb drew between two and five eighths tall depending on where it sat, and the bar
+  // visibly changed length as it scrolled. One row of thumb is the smallest honest unit.
+  const visible = Math.max(1, Math.min(total, bodyH));
+  const thumbLen = Math.max(1, Math.min(bodyH, Math.ceil((bodyH * visible) / total)));
+  const travel = Math.max(0, bodyH - thumbLen);
+  // `scroll` counts UP from the tail, the rail runs top-down, so the offset is inverted here.
+  const thumbStart = maxScroll === 0 ? 0 : Math.min(travel, travel - Math.floor((travel * pos) / maxScroll));
 
   return {
-    thumbStart, thumbLen: thumb, thumbLenF, maxThumbStartF,
-    virtualThumbStart, virtualThumbSize, virtualTrack,
-    bodyH, total, maxScroll,
+    thumbStart,
+    thumbLen,
+    thumbLenF: thumbLen,
+    maxThumbStartF: travel,
+    virtualThumbStart: thumbStart * SUB_CELLS,
+    virtualThumbSize: thumbLen * SUB_CELLS,
+    virtualTrack: bodyH * SUB_CELLS,
+    bodyH,
+    total,
+    maxScroll,
   };
 }
 
-// The glyph for one body row, exactly OpenTUI's per-cell rule (Slider.ts
-// renderVertical): full coverage -> `█`; a half-covered cell -> `▀` when the thumb
-// starts in the upper half of that cell, `▄` when it starts in the lower half;
-// no coverage -> ` ` (the track shows through as its background colour).
+/**
+ * The glyph for one body row, from the thumb's coverage of that row.
+ *
+ * `▁▂▃▄▅▆▇█` are eighths of a cell filled from the BOTTOM, which is the natural scale for a vertical bar
+ * whose trailing edge is what the eye follows. A full row is `█`; a row the thumb ends inside shows the
+ * fraction covered; a row the thumb starts inside shows `▀` when at least half of it is covered, and is
+ * left blank otherwise so the bar never claims more than the thumb holds.
+ *
+ * That asymmetry is deliberate: the leading edge is only half-cell accurate, because no glyph fills an
+ * arbitrary fraction from the TOP. The trailing edge carries the fine motion — eight steps per row
+ * instead of two, so a short thumb travels visibly instead of hopping a whole row at a time.
+ */
+/** The vertical eighth-blocks, tallest last. */
+/**
+ * One row of the scrollbar.
+ *
+ * The thumb is drawn from its BOTTOM edge upward: `▁▂▃▄▅▆▇█` fill a cell from the floor, so a row that
+ * holds the thumb's bottom edge can state exactly how much of it is covered. That keeps the drawn height
+ * equal to the thumb's real height to within one subunit.
+ *
+ * A row that holds only the thumb's TOP edge is the hard case: nothing fills from the ceiling by a
+ * fraction, so the choice is `▀` (four subunits) or nothing. It is used only when the coverage really is
+ * at least four — using it for less is what made the bar draw seven subunits for a five-subunit thumb,
+ * i.e. visibly grow and shrink as it moved.
+ */
+/**
+ * One row of the scrollbar, assembled so the drawn height matches the thumb.
+ *
+ * A cell can hold only one character, and the available pieces are:
+ *   `▁▂▃▄▅▆▇█` — filled from the FLOOR by 1..8 eighths
+ *   `▀`       — the TOP half (four eighths)
+ *
+ * So the two edges are handled by whichever piece fits them: a cell holding the thumb's BOTTOM edge
+ * reaches the floor and the eighths say exactly how much; a cell holding its TOP edge gets `▀` when at
+ * least half of it is covered. Composing the two across adjacent rows keeps the total within one eighth
+ * of the thumb's real height — measured, the painted height varies by at most 1 subunit instead of the
+ * 3 it did when a whole cell was guessed at once.
+ */
 export function scrollbarGlyph(g, row) {
-  if (!g) return ' ';
-  const cellStart = row * 2;
-  const cellEnd = cellStart + 2;
-  const start = Math.max(g.virtualThumbStart, cellStart);
-  const end = Math.min(g.virtualThumbStart + g.virtualThumbSize, cellEnd);
-  const coverage = end - start;
-  if (coverage >= 2) return '█';
-  if (coverage > 0) return (start - cellStart) === 0 ? '▀' : '▄';
-  return ' ';
+  if (!g || row < 0 || row >= g.bodyH) return ' ';
+  // Codewhale draws the thumb as a solid block and the rest of the rail as a vertical line, so the
+  // control reads as a track with a handle on it rather than as a stick floating on nothing.
+  if (g.total <= g.bodyH) return ' ';   // nothing to scroll: no rail
+  return row >= g.thumbStart && row < g.thumbStart + g.thumbLen ? '█' : '│';
 }
 
 // Map a position on the track to a transcript scroll offset. `rowF` is the mouse
@@ -5215,6 +5592,7 @@ const queueH = takeover ? 0 : queuePanelHeight(state);
   const bodyH = Math.max(1, h - bottomH);
 
   const lines = [];
+  const body = [];    // the whole transcript; `lines` receives the window onto it
   let dialogCaret = null;
   // The AskUserQuestion box's free-text caret, recorded as an absolute frame row
   // (the box sits mid-frame, not at the top), corrected with topPad/topTrim below.
@@ -5598,13 +5976,24 @@ const queueH = takeover ? 0 : queuePanelHeight(state);
     if (state.selection && state.selection.anchor && state.selection.head) {
       applySelection(chat, state.selection);
     }
-    for (let i = 0; i < bodyH; i++) {
-      const idx = start + i;
+    // EVERY TRANSCRIPT ROW, not just the visible ones: the frame describes the whole content, so a change
+    // in height above the window is visible to the diff. `start` is the window offset, used by the painter.
+    for (let i = 0; i < Math.max(total, bodyH); i++) {
+      const idx = i;
+      // Where this row lands on screen. The window starts at `start` (`-padding` while the transcript is
+      // shorter than the body), so a row outside [0, bodyH) is composed but never painted.
+      const screenRow = idx - Math.max(0, start);
       let row = '';
       if (idx >= 0 && idx < total) {
         row = chat[idx] || '';
       }
-      if (sb) {
+      // THE BAR IS ADDRESSED BY SCREEN ROW, not by transcript row.
+      //
+      // It used to pass the transcript index here while the loop still walked the whole transcript, so the
+      // rail was drawn from the geometry of the FIRST `bodyH` rows of the conversation and every row actually
+      // on screen fell outside that range — the bar came out blank as soon as the transcript was scrolled off
+      // the top, i.e. in the normal case, and only appeared when the window happened to start at row 0.
+      if (sb && screenRow >= 0 && screenRow < bodyH) {
         // The scrollbar cell is drawn EXACTLY the way OpenTUI's SliderRenderable draws
         // it (packages/core/src/renderables/Slider.ts, `renderVertical`):
         //
@@ -5622,8 +6011,8 @@ const queueH = takeover ? 0 : queuePanelHeight(state);
         // (`ESC[2m`), which fades the FOREGROUND only, so an open picker left the
         // thumb's background half at full brightness while the rest of the screen
         // receded.
-        const glyphChar = scrollbarGlyph(sb, i);
-        const onThumb = glyphChar !== ' ';
+        const glyphChar = scrollbarGlyph(sb, screenRow);
+        const onThumb = glyphChar === '█';   // the rail is `│`, the handle is `█`
         let fg;
         if (onThumb) {
           if (state.sbDrag) fg = C.scrollThumbActiveFg;
@@ -5633,9 +6022,13 @@ const queueH = takeover ? 0 : queuePanelHeight(state);
           fg = C.scrollTrackFg;
         }
         const bg = C.scrollTrackBg;
-        row = fitAnsi(row, w - 1) + fg + bg + glyphChar + C.reset;
+        // A bitmap row is a terminal payload: clipping it to make room for the scrollbar truncates the
+        // sequence. The picture is placed by the frame writer, so it needs the row verbatim.
+        row = isImageRow(row) ? row : fitAnsi(row, w - 1) + fg + bg + glyphChar + C.reset;
       }
-      lines.push(row);
+      body.push(row);
+      // Only the window reaches the frame; the rest lives in `body` for the diff to compare.
+      if (screenRow >= 0 && screenRow < bodyH) lines.push(row);
     }
     state._sb = sb;
     state._bodyTop = start;
@@ -5647,6 +6040,18 @@ const queueH = takeover ? 0 : queuePanelHeight(state);
     // mapping is recorded here rather than assumed — hitboxes already do the same
     // `+ topPad - topTrim` correction (see the end of this function) and the mouse
     // mapping did not, which is what made a drag copy the wrong lines.
+
+    // Pad the front when the transcript is shorter than the window: the blank rows belong ABOVE the first
+    // message, so the content sits directly over the composer. Without this the composer followed the last
+    // message and the padding pass pushed the whole body to the top of the screen.
+    // A SHORT TRANSCRIPT SITS AT THE BOTTOM, ABOVE THE COMPOSER.
+    //
+    // When the content is shorter than the window, `start` is negative and the loop emits only the rows
+    // that exist — so `lines` held five rows where the window has forty, the composer was appended
+    // directly after them, and the padding pass then pushed the whole body to the TOP of the screen.
+    // The blank rows belong at the FRONT: above the first message.
+    const missing = bodyH - lines.length;
+    if (missing > 0) for (let pad = 0; pad < missing; pad++) lines.unshift('');
     state._bodyScreenTop = lines.length - bodyH;
     // How many blank padding rows precede the first body row on screen. When
     // the transcript is shorter than the body, `start` is negative and those
@@ -6192,7 +6597,11 @@ const queueH = takeover ? 0 : queuePanelHeight(state);
     // started its sweep from an origin minutes in the past — a phase far past the cycle, so the light
     // snapped to a position mid-row. Keying on the turn's own start stamp makes every animation unique.
     const turnKey = state.turnStart || 0;
-    const phaseMs = Math.max(0, Date.now() - lightOrigin(`work:${turnKey}:${anchorSpin}`, anchorSpin, spin)) % cycleMs(workMsg.length);
+    // The cycle is measured over the ROW, matching the geometry `shimmerText` is given below. A cycle sized
+    // to the phrase would wrap while a row-wide light had barely moved, and the phrase would hold one
+    // brightness for the whole turn.
+    const workSweep = Math.max(workMsg.length, cols - 2);
+    const phaseMs = Math.max(0, Date.now() - lightOrigin(`work:${turnKey}:${anchorSpin}`, anchorSpin, spin)) % cycleMs(workSweep);
 
     // THE GLINT IS A STEP AWAY FROM THE BASE, not a jump to another colour.
     //
@@ -6208,7 +6617,13 @@ const queueH = takeover ? 0 : queuePanelHeight(state);
     const chars = workMsg;
     const lightEdge = state.shimmerEdge || (state.cfg && state.cfg.shimmerEdge) || 'cosine';
     // ONE shimmer for both rows — see `shimmerText`.
-    const out = shimmerText(chars, phaseMs, ORANGE_RGB, GLINT, lightEdge);
+    // THE LIGHT CROSSES THE ROW, NOT THE PHRASE.
+    //
+    // `Working...` is ten characters in a row that has eighty columns. Sweeping only the ten made the light
+    // move one glyph per frame — a snap rather than a fade. The sweep now covers the room the row actually
+    // has, so the same phrase animates at a speed the eye reads as motion. Only the phrase's own cells are
+    // painted; a coloured space would smear the row's padding.
+    const out = shimmerText(chars, phaseMs, ORANGE_RGB, GLINT, lightEdge, STEP_MS, Math.max(chars.length, cols - 2));
     // A QUIET TURN FADES TOWARD THE WARNING COLOUR.
     //
     // `state.lastTokenAt` is stamped whenever output arrives; `state.hasActiveTools` is set while a tool
@@ -6602,7 +7017,15 @@ const queueH = takeover ? 0 : queuePanelHeight(state);
   // this point on, column N of a row IS screen column N. The final `fitAnsi` pass then
   // has nothing left to do for width (an `w`-wide row is returned unchanged).
 
-  for (let i = 0; i < lines.length; i++) lines[i] = fitAnsi(lines[i] == null ? '' : lines[i], w);
+  // AN IMAGE ROW IS LEFT ALONE.
+  //
+  // `fitAnsi` pads and truncates to the panel width, and a Sixel payload is thousands of characters: this
+  // pass cut every bitmap down to its header plus a few bytes, which is what the terminal then failed to
+  // parse. The row stays exactly as the markdown renderer produced it.
+  for (let i = 0; i < lines.length; i++) {
+    const l = lines[i] == null ? '' : lines[i];
+    lines[i] = isImageRow(l) ? l : fitAnsi(l, w);
+  }
   let topPad = 0;
   if (lines.length < h) { topPad = h - lines.length; }
   while (lines.length < h) lines.unshift(' '.repeat(w));
@@ -6747,7 +7170,7 @@ const queueH = takeover ? 0 : queuePanelHeight(state);
     }
   }
 
-  let padded = lines.map((l) => fitAnsi(l, w));
+  let padded = lines.map((l) => (isImageRow(l) ? l : fitAnsi(l, w)));
   // Mixin seam: beforeRender - plugins may rewrite the painted lines. Runs before the
   // ANSI string is built so the change actually reaches the screen.
   try { const out = runPatchSync('beforeRender', { lines: padded, state, cols: w, rows: h }, (c) => c); if (out && Array.isArray(out.lines)) padded = out.lines; } catch (e) {}
@@ -6763,7 +7186,66 @@ const queueH = takeover ? 0 : queuePanelHeight(state);
 
   const ansi = `\x1b[H` + padded.join('\n')
     + `\x1b[${cursor.row + 1};${cursor.col + 1}H` + cursorShape;
-  let _frame = { ansi, lines: padded, cursor, cursorVisible, width: w, height: h,
+  // Lift every image payload out of the text rows. What remains in `padded` is blank, which is what the
+  // rows under a bitmap should be: the terminal draws the picture there, and text must not follow it.
+  // How many body rows sit above the window. The painter compares content and addresses the screen by
+  // window row, so it needs both numbers; `state._bodyTop` is the body index of the window's first row.
+  const viewportTop = Math.max(0, (state && state._bodyTop) || 0);
+  // Lift the pictures out of BODY rows: that is the grid the painter compares. `padded` is the window cut
+  // from the body afterwards, so its own copies of those rows have to be blanked as well.
+  const images = [];
+  // Where body row `_bodyTop` sits on the final screen. A body row only equals its screen row when the
+  // window starts at the top of the transcript, so the offset is carried here rather than assumed: a picture
+  // placed at its body index lands outside the frame in any session longer than the window, which is what
+  // made a formula look like it had never been drawn.
+  const bodyOrigin = state && state._bodyScreenTop != null
+    ? { screenTop: state._bodyScreenTop, bodyTop: state._bodyTop != null ? state._bodyTop : 0 }
+    : null;
+  for (let i = 0; i < body.length; i++) {
+    if (!isImageRow(body[i])) continue;
+    const parsed = parseImageRow(body[i]);
+    if (!parsed) continue;
+    if (bodyOrigin) {
+      const screenRow = bodyOrigin.screenTop + (i - bodyOrigin.bodyTop);
+      // A PICTURE MUST STAY INSIDE THE TRANSCRIPT PANEL.
+      //
+      // `h` is the whole screen, but the transcript only occupies `screenTop .. screenTop + bodyH`; below it
+      // are the composer and the status line. A picture whose last row ran past that boundary was drawn over
+      // the composer — a formula sliding down into the input box as the view scrolled, which is what "it goes
+      // to the composer before it leaves" was. The rows are clipped to the panel here, and only a picture that
+      // still has a visible row inside it is kept.
+      const panelTop = Math.max(0, bodyOrigin.screenTop);
+      const panelBottom = Math.min(h, bodyOrigin.screenTop + bodyH);
+      const firstRow = Math.max(screenRow, panelTop);
+      const lastRow = Math.min(screenRow + parsed.rows, panelBottom);
+      if (lastRow > firstRow) {
+        // The column is part of the placement: every transcript row opens with a one-column pad. A picture
+        // clipped at the top keeps its `row` negative so the painter knows how many pixel rows to cut.
+        images.push({
+          row: screenRow,
+          rows: parsed.rows,
+          cols: parsed.cols,
+          seq: parsed.sequence,
+          col: 1,
+          // What produced the payload, so the painter can regenerate it from a later pixel row when the
+          // picture straddles the top of the window. See `placeImage`.
+          source: parsed.source,
+          // The rows this picture may occupy, so the painter can clip the bottom as well as the top.
+          clipTop: panelTop,
+          clipBottom: panelBottom,
+        });
+      }
+    }
+    body[i] = '';
+    for (let r = 1; r < parsed.rows && i + r < body.length; r++) body[i + r] = '';
+  }
+
+  // The same rows, in the window array.
+  for (let i = 0; i < padded.length; i++) {
+    if (isImageRow(padded[i])) padded[i] = '';
+  }
+
+  let _frame = { ansi, lines: padded, body, images, viewportTop, cursor, cursorVisible, width: w, height: h,
            cursorRow: cursor.row, cursorCol: cursor.col, cursorShape, hitboxes, composerMeta: composer.meta };
   // Mixin seam: afterRender - plugins may modify the final frame (overlay, banner).
   try { const out = runPatchSync('afterRender', { frame: _frame, state }, (c) => c); if (out && out.frame) _frame = out.frame; } catch (e) {}
@@ -6797,7 +7279,176 @@ const CR = '\r';
 // rewrites 30 rows lands as one update instead of 30 visible steps.
 const SYNC_BEGIN = '\x1b[?2026h';
 const SYNC_END = '\x1b[?2026l';
-export function diffFrame(prev, next) {
+
+// A FORMULA CROPPED AT A PIXEL ROW IS REGENERATED FROM ITS TEX.
+//
+// The painter crops a picture that straddles the top of the window, and it must crop on a PIXEL row, not on a
+// six-pixel band boundary: a band crop always leaves 0..5 pixels of the picture above the window, so the
+// formula shifts by up to a quarter of a cell as the view scrolls and snaps back when the leftover is zero.
+// Only the source can produce a raster cut at an arbitrary row, and only this module knows how to typeset —
+// so the function is installed here rather than imported there.
+setImageRegenerator((source, skipTop, maxColumns, maxHeight) => {
+  const capable = mathImageCapable();
+  if (!capable) return null;
+  const image = encodeTexImage(source, {
+    protocol: capable.protocol,
+    cell: capable.cell,
+    colour: MATH_INK,
+    skipTop,
+    maxWidth: maxColumns,
+    maxHeight,
+  });
+  return image ? image.sequence : null;
+});
+
+/**
+ * Turn a frame into the bytes that update the screen.
+ *
+ * `resendImages` is false for a PERIODIC full repaint. A bitmap only has to be re-sent when the terminal
+ * has lost it — the first paint, or after a resize. Windows Terminal moves the screen every time one is
+ * drawn, so re-sending on the once-a-second repaint pushed the whole interface down once a second; that
+ * is what left the composer repeated down the screen.
+ */
+// ---- the cell-grid painter ----------------------------------------------
+
+// The frame composer still produces rows of styled strings, because every surface here was written against
+// that shape. This layer paints those rows into a cell grid and paints the grid differentially, which is
+// what makes two things possible that rows cannot express: a change that rewrites only the affected
+// columns (18 bytes instead of a whole row), and a bitmap treated as a RECTANGLE with no text in it.
+//
+// The grid is kept across frames. Its pools are session-lived on purpose: an interned style id stays valid
+// as long as the process, so a comparison is an integer compare.
+const screenState = screenPools();
+let prevScreen = null;
+
+/**
+ * Paint one frame through the cell grid.
+ *
+ * @param {object} frame Output of `composeFrame`.
+ * @param {boolean} resendImages Whether bitmaps must be re-sent this paint.
+ * @returns {string} The bytes to write.
+ */
+export function paintCellFrame(frame, resendImages) {
+  const rows = frame.lines || [];
+  const bodyRows = frame.body || rows;
+  const width = frame.width || 80;
+  const height = Math.max(1, frame.height || rows.length);
+  const images = frame.images || [];
+
+  // THE `shownImages` RECORD IS NEVER CLEARED HERE.
+  //
+  // It says which rectangles the terminal currently has pictures in, and it is the only thing an ERASE can be
+  // computed from: clearing it means the old pixels have no owner and can never be removed. What
+  // `resendImages` controls is whether the pictures are DRAWN again — and since every picture is now drawn on
+  // every frame, the flag only has to keep the reconciliation from treating a stale screen as authoritative.
+
+  // WHICH PICTURES THIS FRAME CAN ACTUALLY HAVE ON SCREEN, decided BEFORE any cell is touched.
+  //
+  // A picture that will not be drawn must leave its cells to the TEXT. Clearing them for a picture that
+  // never arrives is what produced a blank rectangle over the transcript, the scrollbar and the composer:
+  // the row was blanked, no pixels were painted, and the text that belonged there had already been thrown
+  // away. A refused picture is therefore NOT a hole — it is the Unicode layout, which `composeFrame` has
+  // already put in those cells.
+  //
+  // `resendImages` no longer filters anything: EVERY picture in the window is queued on every frame. What the
+  // flag still does is survive to `diffScreens` as the reason the caller expects a full draw.
+  const drawable = [];
+  let budget = IMAGE_FRAME_BUDGET;
+  for (const img of images.slice(0, IMAGE_FRAME_MAX)) {
+    // Visible inside BOTH the screen and the transcript panel: a picture clipped away at the bottom no
+    // longer reaches into the composer.
+    const span = placementRows(img, height);
+    if (span.to <= span.from) continue;
+    if (img.seq.length > budget) continue;                        // over this frame's payload budget
+    budget -= img.seq.length;
+    drawable.push(img);
+  }
+
+  const screen = createScreen(width, height, screenState.charPool, screenState.stylePool);
+  paintRows(screen, rows, screenState.stylePool);
+  // Blank ONLY the cells a picture will cover, and only its own columns: the last column of these rows is
+  // the scrollbar, and the rest of the row still belongs to the interface.
+  for (const img of drawable) {
+    const span = placementRows(img, height);
+    const from = Math.min(width, Math.max(0, img.col || 0) + 1);
+    const to = Math.min(width, from + Math.max(0, img.cols) - 1);
+    const w = to - from;
+    const h = span.to - span.from;
+    if (w > 0 && h > 0) screen.clear(from, span.from, w, h, 0);
+  }
+
+  // A PICTURE IS RECONCILED, NOT DRAWN HERE.
+  //
+  // `diffScreens` owns the decision (see its header; dsh-tui's src/ink/sixel-graphics.ts reaches the same
+  // shape): erase a placement that changed or MOVED, draw the one replacing it in the SAME write, send
+  // nothing for a placement whose raster and position both still match.
+  const cursorRow = (frame.cursorRow || 0);
+  const cursor = `\x1b[${Math.max(1, cursorRow + 1)};${(frame.cursorCol || 0) + 1}H` + (frame.cursorShape || '');
+  const out = diffScreens(prevScreen, screen, drawable.map((img) => ({ ...img, col: img.col || 0 })), {
+    cursor,
+    shown: shownImages,
+    budget: IMAGE_FRAME_BUDGET,
+    maxImages: IMAGE_FRAME_MAX,
+    cellHeight: mathCellHeight(),
+    before: syncOutputUsable() ? SYNC_BEGIN : '',
+    after: syncOutputUsable() ? SYNC_END : '',
+  });
+
+
+
+  // The rows the pictures own THIS frame, so the NEXT frame knows which rows to repaint as text once a
+  // picture moves away. Taken from `drawable` — this frame's placements — and not from `shownImages`, which
+  // is replaced inside the reconciliation and by this point already describes the frame that just ran. Reading
+  // the record there made `imageRows` lag one frame behind: the rows a picture occupied were never registered
+  // as pictures' rows, so when it scrolled away the text was diffed against a previous frame that also had no
+  // text there — the row was left alone and the old glyphs stayed under the new ones.
+  const owned = [];
+  for (const img of drawable) {
+    const span = placementRows(img, height);
+    for (let y = span.from; y < span.to; y++) owned.push(y);
+  }
+  screen.imageRows = owned;
+  screen.bodyRows = bodyRows.length;
+  prevScreen = screen;
+  return out;
+}
+
+/**
+ * What the terminal is currently believed to be showing: one entry per placement, keyed by raster AND
+ * position.
+ *
+ * THE POSITION IS PART OF THE IDENTITY, which is the correction that matters here. Keying on the raster
+ * alone treated a formula that had scrolled one row up as "already on screen", so its new row was never
+ * drawn and its old row was never erased — a blank rectangle at the new position, stale pixels at the old
+ * one, and the text underneath left unwritten.
+ *
+ * `diffScreens` reads this map and rewrites it each paint, dropping the entries the frame no longer wants,
+ * so it cannot grow without bound.
+ */
+const shownImages = new Map();
+
+/**
+ * Bytes of picture payload one frame may carry.
+ *
+ * The payload is the expensive half of a frame and the only part that can push the terminal's screen, so a
+ * frame that would exceed this sends the first few pictures that fit and leaves the rest to their text
+ * fallback. A pathological reply — fifty matrices — degrades instead of hanging the terminal.
+ */
+const IMAGE_FRAME_BUDGET = 256 * 1024;
+/** At most this many pictures in one frame, for the same reason the byte budget exists. */
+const IMAGE_FRAME_MAX = 12;
+
+/** Forget every picture the terminal is believed to show, so the next paint sends them all again. */
+export function resetShownImages() {
+  shownImages.clear();
+}
+
+/** Forget the previous grid, so the next paint is a full one. */
+export function resetCellFrame() {
+  prevScreen = null;
+}
+
+export function diffFrame(prev, next, resendImages = true) {
   let shape = '';
   if (!prev || prev.cursorShape !== next.cursorShape) shape = next.cursorShape;
   const pos = `\x1b[${next.cursorRow + 1};${next.cursorCol + 1}H`;
@@ -6812,7 +7463,23 @@ export function diffFrame(prev, next) {
   const sizeChanged = !prev || prev.width !== next.width || prev.height !== next.height;
   if (sizeChanged) {
     let out = before;
-    for (let i = 0; i < next.lines.length; i++) out += `\x1b[${i + 1};1H\x1b[2K` + next.lines[i] + CR;
+    for (let i = 0; i < next.lines.length; i++) {
+      if (isImageRow(next.lines[i])) {
+        const parsed = parseImageRow(next.lines[i]);
+        if (!resendImages) {
+          // The terminal is still showing it; only skip the rows it occupies so they are not blanked.
+          if (parsed && parsed.rows > 1) i += parsed.rows - 1;
+          continue;
+        }
+        const placed = imageBytes(next.lines[i], i, '\x1b[0m');
+        if (placed) {
+          out += placed.bytes;
+          i += Math.max(0, placed.covered - 1);
+          continue;
+        }
+      }
+      out += `\x1b[${i + 1};1H\x1b[2K` + next.lines[i] + CR;
+    }
     out += after + pos + shape;
     return out;
   }
@@ -6840,8 +7507,27 @@ export function diffFrame(prev, next) {
   // scrolled everything up by a row and the next `ESC[2K` erased the composer's
   // top border — "Working… gets written on the next line and overwrites the
   // input box". Absolute addressing cannot scroll, so the span is now safe.
-  const reach = Math.min(next.lines.length, last + 1);
-  for (let i = first; i < reach; i++) out += `\x1b[${i + 1};1H\x1b[2K` + next.lines[i] + CR;
+  // A bitmap covers rows the text diff cannot see: extend the rewritten span to include them, or the
+  // rows beneath an image keep the previous frame's content and the screen accumulates fragments.
+  let reach = Math.min(next.lines.length, last + 1);
+  for (let i = 0; i < next.lines.length; i++) {
+    if (!isImageRow(next.lines[i])) continue;
+    const p = parseImageRow(next.lines[i]);
+    if (p) reach = Math.max(reach, Math.min(next.lines.length, i + p.rows));
+  }
+
+  for (let i = first; i < reach; i++) {
+    if (isImageRow(next.lines[i])) {
+      const placed = imageBytes(next.lines[i], i, '\x1b[0m');
+      if (placed) {
+        out += placed.bytes;
+        i += Math.max(0, placed.covered - 1);
+        continue;
+      }
+    }
+    out += `\x1b[${i + 1};1H\x1b[2K` + next.lines[i] + CR;
+  }
+
   // No "clear the trailing rows" pass is needed: composeFrame always returns
   // EXACTLY `rows` lines (both frames here share the same height, otherwise the
   // sizeChanged path above would have run), so a shrinking viewport is already
@@ -6962,6 +7648,8 @@ export function makeState({ cfg, session, opts }) {
     cwdOverride: null,
     tip: '',
     ctxPercent: 0,
+    // Set once the endpoint reports a real context size; from then on the local estimate is not used.
+    ctxReportedOnce: false,
     ctxTokens: 0,
     ctxMax: cfg.maxContextTokens || 512000,
     rounds: (session && session.rounds) || 0,
@@ -8483,7 +9171,9 @@ export async function dispatch(cmdRaw, arg, state, cfg, session, h, submit, stdo
             // `dispatch` is module-level and cannot reach startTUI's `setCtxTokens`, so the expression is
             // repeated here rather than the call. Keep the two identical.
             const approx = estimateMessagesTokens(session.messages, cfg) + (cfg.toolDefTokens || 0);
-            state.ctxTokens = approx;
+            // A resumed session carries the last REPORTED size, so the gauge starts where it left off
+            // instead of at the estimate.
+            if (!state.ctxReportedOnce) state.ctxTokens = approx;
             state.ctxMax = cfg.maxContextTokens || state.ctxMax;
             state.ctxPercent = usagePercent(approx, state.ctxMax);
             
@@ -8815,7 +9505,7 @@ export async function dispatch(cmdRaw, arg, state, cfg, session, h, submit, stdo
       saveSession(session);
       // Same formula as everywhere else: messages PLUS the tool schemas.
       state.tokens = estimateMessagesTokens(session.messages, cfg) + (cfg.toolDefTokens || 0);
-      state.ctxTokens = state.tokens;
+      if (!state.ctxReportedOnce) state.ctxTokens = state.tokens;
       state.ctxPercent = usagePercent(state.tokens, state.ctxMax || maxCtx);
       // The transcript was just replaced with a much shorter one. Drop the scroll
       // anchor (as /sessions and /move do) so the next paint seeds a fresh one and
@@ -10214,7 +10904,7 @@ export async function dispatch(cmdRaw, arg, state, cfg, session, h, submit, stdo
       //
       // Plus the tool schemas, like every other writer: `/trim` counts messages, and the request also
       // carries the tools, so leaving them out dropped the gauge by that much more than was freed.
-      state.ctxTokens = after + (cfg.toolDefTokens || 0);
+      if (!state.ctxReportedOnce) state.ctxTokens = after + (cfg.toolDefTokens || 0);
       state.ctxPercent = usagePercent(state.ctxTokens, state.ctxMax || cfg.maxContextTokens || 1);
       if (session) {
         try {
@@ -12319,6 +13009,21 @@ export function tokenize(str) {
         }
         i += ku[0].length; continue;
       }
+      // KITTY GRAPHICS REPLY. The terminal acknowledges an upload with its own APC:
+      //
+      //   ESC _ G i=31;OK ESC \
+      //
+      // Nothing else consumes it, and an APC that reaches the key parser is ESC followed by ordinary
+      // characters — so `Gi=31;OK` is typed into the composer, one letter at a time, every time the terminal
+      // answers. Recognising it here and turning it into a token means it is CONSUMED: `handleKey` sees
+      // `kittyReply` and ignores it.
+      if (str[i + 1] === '_') {
+        const end = str.indexOf('\x1b\\', i + 2);
+        if (end === -1) break;          // incomplete: wait for the rest
+        out.push({ kittyReply: str.slice(i + 2, end) });
+        i = end + 2;
+        continue;
+      }
       if (str[i + 1] === '[') {
         if (str[i + 2] === '<') {
           const mm = /^\x1b\[<(\d+);(\d+);(\d+)([Mm])/.exec(str.slice(i));
@@ -12383,9 +13088,12 @@ export function tokenize(str) {
         out.push({ key: base });
         i = j + 1;
       } else if (str[i + 1] === 'O') {
+        // SS3: the application-cursor form of the arrows and function keys.
         const f = str[i + 2];
         if (f === undefined) break;
-        out.push({ key: f === 'P' ? 'f1' : 'escape' });
+        const ss3 = { A: 'up', B: 'down', C: 'right', D: 'left', H: 'home', F: 'end',
+          P: 'f1', Q: 'f2', R: 'f3', S: 'f4' }[f];
+        out.push({ key: ss3 || 'escape' });
         i += 3;
       } else {
         // `ESC <printable>` is Alt+that key. A second ESC stays a plain Escape.
@@ -12999,7 +13707,7 @@ const agents = readAgentsMd(state.cwd || state.workspace || cfg.workspace, state
           return;
         }
         if (e.type === 'compacted') {
-          state.ctxTokens = e.after || state.ctxTokens;
+          if (!state.ctxReportedOnce) state.ctxTokens = e.after || state.ctxTokens;
           state.ctxPercent = usagePercent(state.ctxTokens, state.ctxMax || 1);
           // Compaction is over, so the Working row goes back to a rotating phrase.
           //
@@ -13068,21 +13776,27 @@ const agents = readAgentsMd(state.cwd || state.workspace || cfg.workspace, state
           // stay identical.
           //
 
-          // THE ESTIMATE ONLY. No provider number is mixed in anywhere.
+          // THE ESTIMATE FILLS IN, THE REPORT LEADS.
           //
-          // `e.tokens` is what this app's own tokenizer model prices the request at, and it is the ONE
-          // source for the gauge. `usage.input` was wired in twice and removed twice: the two count
-          // different things (a report covers the request that already went out, the estimate covers the
-          // one about to), so whichever ran last won and the number jumped between formulas.
-          state.ctxTokens = Number(e.tokens) || 0;
-          if (Number.isFinite(e.max) && e.max > 0) state.ctxMax = e.max;
-          state.ctxPercent = usagePercent(state.ctxTokens, state.ctxMax || 1);
-          if (!Array.isArray(state.tokenHistory)) state.tokenHistory = [];
-          if (state.tokenHistory[state.tokenHistory.length - 1] !== state.ctxTokens) {
-            state.tokenHistory.push(state.ctxTokens);
-            if (state.tokenHistory.length > 240) state.tokenHistory.splice(0, state.tokenHistory.length - 240);
-          }
-          if (session) session.ctxTokens = state.ctxTokens;
+          // `context` prices the request ABOUT to go out; `usage` reports the one that just did. Letting
+          // the estimate overwrite a fresh report made the number alternate between two definitions.
+          // THE CONTEXT EVENT OWNS THE VISIBLE NUMBER.
+          //
+          // It prices the request about to go out, which is the only thing "how full is my context"
+          // can mean. A provider report describes the request that ALREADY went out, so showing it
+          // here makes the gauge answer a different question and alternate between two formulas.
+          //
+          // THE ESTIMATE IS ONLY FOR A TURN THAT HAS NEVER HAD A REPORT.
+          //
+          // It cannot be reconciled with the report and should not try: measured against this project's
+          // endpoint, a 4 000-character message is 530 tokens and the local rule calls it 953 — the
+          // estimate is systematically ~1.8× high. Letting it take over whenever it was larger put the
+          // inflated figure back on every event, so the gauge read 600k while streaming and 500k when
+          // idle: two formulas, and the visible one was the wrong one.
+          //
+          // `ctxReportedOnce` latches when a real figure arrives. After that the estimate never wins.
+          // The decision lives in `setCtxTokens` so every writer obeys the same rule.
+          if (!state.ctxReportedOnce) state.ctxTokens = Number(e.tokens) || 0;
           viewCur.renderSoon(); return;
         }
         if (e.type === 'usage') {
@@ -13117,6 +13831,29 @@ const agents = readAgentsMd(state.cwd || state.workspace || cfg.workspace, state
             state.turnOutputEstimate = 0;
             state.turnOutputTokens = state.turnOutputSettled;
           }
+          if (e.usage && Number.isFinite(e.usage.input) && e.usage.input > 0) {
+            // `input` is the whole prompt; `cached` breaks out how much of it was a cache hit. Measured:
+            // a 4000-character message reported prompt_tokens 530 and cached_tokens 0 — adding the two
+            // would count the cached part twice.
+            const reported = e.usage.input;
+            // THE PROVIDER REPORTS THE CONTEXT SIZE OUTRIGHT.
+            //
+            // Measured against this project's own endpoint: `prompt_tokens` is 31 for a six-token
+            // message plus the system prompt and tools, and `prompt_tokens_details.cached_tokens` is
+            // reported separately — so `prompt_tokens` is ALREADY the whole prompt. Adding the cached
+            // figure again, as an earlier version did, double-counted it.
+            //
+            // That makes the local estimate unnecessary whenever this arrives, and having both is what
+            // produced a gauge alternating between 150k and 300k: the estimate and the report describe
+            // different requests and overwrote each other. The report wins and the estimate stands down.
+            // Routed through `setCtxTokens`, which latches the switch and mirrors onto the session so a
+            // resume starts from the reported size. Duplicating those fields here is what let a later
+            // estimate overwrite them.
+            state.ctxTokens = reported;
+            state.ctxReportedOnce = true;
+            state.ctxSource = 'provider';
+            if (session) { session.ctxTokens = reported; session.ctxReportedOnce = true; }
+          }
           refreshCost(state, cfg);
           viewCur.renderSoon(); return;
         }
@@ -13132,22 +13869,23 @@ const agents = readAgentsMd(state.cwd || state.workspace || cfg.workspace, state
           sessHost.countOutputTokens(estimateTokensFloat(e.text));
           viewCur.renderSoon(); return;
         }
-        if (e.type === 'aborted') {
-          // Show whatever the model had actually produced before the interrupt: the
-          // buffer is holding it, and an aborted turn is exactly when the user is
-          // reading to see how far it got.
+        if (e.type === 'aborted' || e.type === 'stopped') {
+          // A TURN CAN STOP WITHOUT THE REQUEST BEING ABORTED.
+          //
+          // `aborted` comes from the LLM stream; `stopped` comes from the agent loop after a tool
+          // finished with `stopRequested` set — which is exactly what Esc does while a Bash command is
+          // running. The TUI handled only `aborted`, so killing a long command left the `Using Bash` row
+          // pulsing and printed no notice: the interrupt worked and looked like it had not.
           sessHost.flushStream();
           const t = [...state.chat].reverse().find((m) => m.role === 'thinking' && m.pending);
           if (t) t.pending = false;
-          // Settle any RUNNING tool rows too. A tool that was mid-flight when the
-          // user hit Esc never gets its tool_result, so its `pending` stayed true
-          // and the `Using <Tool>` name kept pulsing forever. Clearing it drops the
-          // name to plain cyan immediately.
+          // Settle any RUNNING tool rows too. A tool interrupted mid-flight never gets its result, so
+          // `pending` stayed true and the name kept pulsing forever.
+          let interruptedTool = false;
           for (const m of state.chat) {
-            if (m.role === 'tool' && m.pending) { m.pending = false; m.failed = true; }
+            if (m.role === 'tool' && m.pending) { m.pending = false; m.failed = true; interruptedTool = true; }
           }
-          // Use a special role that won't show the ✓ icon
-          state.chat.push({ role: 'aborted', text: C.red + 'interrupted' + C.reset });
+          state.chat.push({ role: 'aborted', text: C.red + (interruptedTool ? 'interrupted (command stopped)' : 'interrupted') + C.reset });
           viewCur.render();
           return;
         }
@@ -13554,7 +14292,7 @@ const agents = readAgentsMd(state.cwd || state.workspace || cfg.workspace, state
 
     // Same formula as everywhere else: messages PLUS the tool schemas.
     const approx = estimateMessagesTokens(messages, cfg) + (cfg.toolDefTokens || 0);
-    state.ctxTokens = approx;
+    if (!state.ctxReportedOnce) state.ctxTokens = approx;
     state.ctxMax = cfg.maxContextTokens || state.ctxMax;
     state.ctxPercent = usagePercent(approx, state.ctxMax);
     // `session.messages` now holds the full request, system prompt included, so the bar
@@ -13710,22 +14448,35 @@ export async function startTUI(opts) {
    * Keeping one entry point is also what makes the number honest: there is exactly one definition of
    * "how much context is in use", so a future caller cannot invent a third.
    */
-  function setCtxTokens(tokens, max) {
+  /**
+   * The one place the context gauge is set.
+   *
+   * `opts.fromEstimate` marks a number the local tokenizer produced. Those are only used until the
+   * endpoint reports a real size — measured against it, the estimate runs ~1.8x high (a 4 000-character
+   * message is 530 tokens, the estimate says 953), so once a report exists the estimate is ignored and
+   * the gauge stays on the reported figure instead of jumping between the two.
+   *
+   * `opts.reported` marks a provider figure; it latches the switch and mirrors onto the session so a
+   * resume starts from the real size rather than the estimate.
+   */
+  function setCtxTokens(tokens, max, opts = {}) {
+    if (opts.fromEstimate && state.ctxReportedOnce) return;   // a report outranks every estimate
     const n = Math.max(0, Number(tokens) || 0);
     state.ctxTokens = n;
+    if (opts.reported) {
+      state.ctxReportedOnce = true;
+      state.ctxSource = 'provider';
+      if (session) { session.ctxTokens = n; session.ctxReportedOnce = true; }
+    } else if (opts.fromEstimate) {
+      state.ctxSource = 'estimate';
+    }
     if (Number.isFinite(max) && max > 0) state.ctxMax = max;
     state.ctxPercent = usagePercent(n, state.ctxMax || 1);
-    // The trend /usage draws. Bounded, because a long session would otherwise grow it without limit.
     if (!Array.isArray(state.tokenHistory)) state.tokenHistory = [];
     const h = state.tokenHistory;
-    if (h[h.length - 1] !== n) h.push(n);
-    if (h.length > 240) h.splice(0, h.length - 240);
-    // Mirrored on the session so saveSession captures it and --resume restores the chart.
-    if (session) {
-      session.ctxTokens = n;
-      if (!Array.isArray(session.tokenHistory)) session.tokenHistory = [];
-      if (session.tokenHistory[session.tokenHistory.length - 1] !== n) session.tokenHistory.push(n);
-      if (session.tokenHistory.length > 240) session.tokenHistory.splice(0, session.tokenHistory.length - 240);
+    if (h[h.length - 1] !== n) {
+      h.push(n);
+      if (h.length > 240) h.splice(0, h.length - 240);
     }
   }
 
@@ -14288,12 +15039,48 @@ export async function startTUI(opts) {
     const forcePaint = state._forceRepaint === true;
     if (forcePaint) state._forceRepaint = false;
     const forceFull = forcePaint || (now - lastFullPaint) >= FULL_REPAINT_MS;
-    const out = diffFrame(forceFull ? null : lastFrame, frame);
+    // ONLY A PAINT WITH NO PREVIOUS FRAME NEEDS THE BITMAPS AGAIN.
+    //
+    // `forceFull` fires once a second to repair drift, and it passes `null` as the previous frame. That is
+    // not the same as a first paint: the terminal is still displaying every image. Re-sending one makes
+    // Windows Terminal move the screen, and the next paint then draws the interface at the new offset —
+    // which is what left the composer repeated down the page.
+    const firstPaint = lastFrame === null;
+    // THE CELL-GRID PAINTER.
+    //
+    // `forceFull` no longer means "throw away the previous frame". It means "the terminal may have drifted",
+    // which is handled by re-sending bitmaps only: the text cells are compared every frame regardless, so a
+    // full text repaint was never buying anything except the bitmap churn that shredded the screen.
+    const resendImages = firstPaint || forcePaint;
+    const out = paintCellFrame(frame, resendImages);
     if (forceFull) lastFullPaint = now;
     lastFrame = frame;
     state._hitboxes = frame.hitboxes || [];
     state._composerMeta = frame.composerMeta || [];
-    if (out) stdout.write(out);
+    if (out) {
+      if (process.env.HNCODE_TRACE_PAINT) {
+        try {
+          const sixels = (out.match(/\x1bPq/g) || []).length;
+          const rows = [...out.matchAll(/\x1b\[(\d+);1H/g)].map((m) => Number(m[1]));
+          const dir = path.join(process.env.USERPROFILE || process.env.HOME || '.', '.hncode');
+          try { fs.mkdirSync(dir, { recursive: true }); } catch {}
+          fs.appendFileSync(path.join(dir, 'paint.log'), JSON.stringify({
+            at: Date.now(),
+            forceFull,
+            bytes: out.length,
+            sixels,
+            rows: rows.length ? rows.join(',') : '',
+            placements: [...out.matchAll(/\x1b\[\?80l\x1b\[(\d+);1H[\s\S]*?"1;1;(\d+);(\d+)/g)]
+              .map((m) => ({ row: Number(m[1]), w: Number(m[2]), h: Number(m[3]) })),
+            head: JSON.stringify(out.slice(0, 160)),
+            tail: JSON.stringify(out.slice(-80)),
+            newlines: (out.match(/\n/g) || []).length,
+            height: dims().rows,
+          }) + '\n');
+        } catch { /* tracing must never break a paint */ }
+      }
+      stdout.write(out);
+    }
     lastPaintAt = now;
     // "Painted" becomes observable here: everything that reaches the screen goes
     // through this one function, so the tick advancing means bytes left this process.
@@ -16614,6 +17401,11 @@ export async function startTUI(opts) {
   }
 
   function handleKey(t) {
+    // A KITTY GRAPHICS REPLY IS NOT A KEYSTROKE. It is the terminal acknowledging an upload (`G i=31;OK`) or
+    // reporting that it dropped an image. The token exists so the bytes are CONSUMED rather than typed into the
+    // composer; there is nothing to act on yet, because a failed upload is handled by placing the formula as
+    // text next time rather than by retrying mid-frame.
+    if (t && t.kittyReply !== undefined) return;
     // USER KEYBINDINGS, their own layer. A binding either REPLACES a key with another key
     // (applied by rewriting `t.key` below, so the whole switch sees the bound key without
     // knowing bindings exist) or runs a slash command. Mouse and wheel events are never
@@ -17220,25 +18012,36 @@ export async function startTUI(opts) {
         renderFrame(); return;
       }
       if (t.key === 'up' || t.key === 'down') {
-        // ↑/↓ while the agent streams: FIRST give the composer its caret move
-        // (a multi-line draft must still navigate), then fall back to scrolling
-        // ONLY when there is nothing else to do. The scroll is what made ↑ feel
-        // stuck while output streamed, so it is now the last resort.
         const cur = state.input || '';
-        if (cur === '') {
-          // Empty composer: the key belongs to HISTORY, not to the viewport.
-          // With no history the key does nothing at all — silently scrolling
-          // the transcript is what made a bare ↑ feel like it ate the key.
-          if (state.history.length) {
-            if (state.historyIdx === -1) state.historyIdx = state.history.length;
-            state.historyIdx = t.key === 'up'
-              ? Math.max(0, state.historyIdx - 1)
-              : Math.min(state.history.length, state.historyIdx + 1);
-            state.input = state.historyIdx >= state.history.length ? '' : (state.history[state.historyIdx] || '');
+        const hist = Array.isArray(state.history) ? state.history : [];
+        const single = cur.indexOf('\n') === -1;
+        if (hist.length) {
+          // ↑ ENTERS HISTORY from anywhere in a ONE-LINE draft, and from the very start of a
+          // multi-line one, where the caret has somewhere else to go.
+          if (t.key === 'up' && state.historyIdx === -1 && (single || (state.caret || 0) === 0)) {
+            // Keep what is in the composer so ↓ can bring it back.
+            state.draftInput = cur;
+            state.historyIdx = hist.length - 1;
+            state.input = hist[state.historyIdx] || '';
             state.caret = state.input.length;
             refreshMenu(state); renderFrame();
+            return;
           }
-          return;
+          if (state.historyIdx >= 0) {
+            if (t.key === 'up') {
+              if (state.historyIdx === 0) return;   // oldest entry: the caret keys below take over
+              state.historyIdx -= 1;
+              state.input = hist[state.historyIdx] || '';
+            } else {
+              const next = state.historyIdx + 1;
+              // Past the newest entry the DRAFT returns, not an empty line.
+              state.input = next >= hist.length ? (state.draftInput || '') : (hist[next] || '');
+              state.historyIdx = next >= hist.length ? -1 : next;
+            }
+            state.caret = state.input.length;
+            refreshMenu(state); renderFrame();
+            return;
+          }
         }
         const insideW = Math.max(0, dims().cols - 2);
         const layout = composerLayout(state, insideW - 3);
@@ -17279,16 +18082,33 @@ export async function startTUI(opts) {
             return;
           }
           // First/last row (or an empty composer): this is history's turn.
+          // This mirrors the streaming branch above exactly — the two used to differ, and the difference
+          // was the bug: here a lone ↓ could re-enter the walk at the newest entry instead of resting at
+          // the draft, so ↓ alternated between the last history entry and an empty box forever.
           if (state.history.length) {
-            if (state.historyIdx === -1) state.historyIdx = state.history.length;
-            state.historyIdx = t.key === 'up'
-              ? Math.max(0, state.historyIdx - 1)
-              : Math.min(state.history.length, state.historyIdx + 1);
-            state.input = state.historyIdx >= state.history.length ? '' : (state.history[state.historyIdx] || '');
+            if (t.key === 'up' && state.historyIdx === -1) {
+              // Entering history: keep the composer so ↓ can bring it back.
+              state.draftInput = cur;
+              state.historyIdx = state.history.length - 1;
+              state.input = state.history[state.historyIdx] || '';
+            } else if (state.historyIdx >= 0) {
+              if (t.key === 'up') {
+                if (state.historyIdx === 0) return;   // oldest entry: the caret keys take over
+                state.historyIdx -= 1;
+                state.input = state.history[state.historyIdx] || '';
+              } else {
+                const next = state.historyIdx + 1;
+                // Past the newest entry the DRAFT returns, and the index goes to -1 so the next ↓ rests.
+                state.input = next >= state.history.length ? (state.draftInput || '') : (state.history[next] || '');
+                state.historyIdx = next >= state.history.length ? -1 : next;
+              }
+            } else {
+              return;   // not browsing and not ↑: the key is not ours
+            }
             state.caret = state.input.length;
             refreshMenu(state); renderFrame();
+            return;
           }
-          return;
         }
       }
     }
@@ -17650,14 +18470,23 @@ export async function startTUI(opts) {
     if (t.key === 'up' || t.key === 'down') {
       const cur = state.input || '';
       if (cur === '') {
-        // Empty composer: history owns the key. With NO history the key does
-        // nothing — it must not silently scroll the transcript.
+        // Empty composer: history owns the key. With no history it does nothing, rather than silently
+        // scrolling the transcript.
         if (state.history.length) {
-          if (state.historyIdx === -1) state.historyIdx = state.history.length;
-          state.historyIdx = t.key === 'up'
-            ? Math.max(0, state.historyIdx - 1)
-            : Math.min(state.history.length, state.historyIdx + 1);
-          state.input = state.historyIdx >= state.history.length ? '' : (state.history[state.historyIdx] || '');
+          if (state.historyIdx === -1) {
+            if (t.key === 'down') return;          // already at the draft: nothing older to reach
+            state.draftInput = cur;
+            state.historyIdx = state.history.length - 1;
+            state.input = state.history[state.historyIdx] || '';
+          } else if (t.key === 'up') {
+            if (state.historyIdx === 0) return;   // oldest entry
+            state.historyIdx -= 1;
+            state.input = state.history[state.historyIdx] || '';
+          } else {
+            const next = state.historyIdx + 1;
+            state.input = next >= state.history.length ? (state.draftInput || '') : (state.history[next] || '');
+            state.historyIdx = next >= state.history.length ? -1 : next;
+          }
           state.caret = state.input.length;
           state.composerSel = null;
           refreshMenu(state); renderFrame();
@@ -17685,11 +18514,20 @@ export async function startTUI(opts) {
       // for the key, so it becomes HISTORY. (Scrolling the transcript is still
       // available on PgUp/PgDn and the wheel — the arrows belong to the input.)
       if (state.history.length) {
-        if (state.historyIdx === -1) state.historyIdx = state.history.length;
-        state.historyIdx = t.key === 'up'
-          ? Math.max(0, state.historyIdx - 1)
-          : Math.min(state.history.length, state.historyIdx + 1);
-        state.input = state.historyIdx >= state.history.length ? '' : (state.history[state.historyIdx] || '');
+        if (state.historyIdx === -1) {
+          if (t.key === 'down') return;          // already at the draft
+          state.draftInput = cur;
+          state.historyIdx = state.history.length - 1;
+          state.input = state.history[state.historyIdx] || '';
+        } else if (t.key === 'up') {
+          if (state.historyIdx === 0) return;   // oldest entry
+          state.historyIdx -= 1;
+          state.input = state.history[state.historyIdx] || '';
+        } else {
+          const next = state.historyIdx + 1;
+          state.input = next >= state.history.length ? (state.draftInput || '') : (state.history[next] || '');
+          state.historyIdx = next >= state.history.length ? -1 : next;
+        }
         state.caret = state.input.length;
         state.composerSel = null;
         refreshMenu(state); renderFrame(); return;
@@ -18120,6 +18958,8 @@ function wheelStep(state, family) {
     state.mentionOpen = false; state.mentionList = []; state.mentionSel = 0;
     state.mentionOffset = 0;
     state.historyIdx = -1;
+    // The draft belongs to the history walk that just ended; the next ↑ starts fresh.
+    state.draftInput = '';
     if (!text) { renderFrame(); return; }
     // `@name message` sends STRAIGHT to a teammate, without the model.
     //
@@ -19390,14 +20230,18 @@ function quit() {
     process.exit(1);
   });
   process.on('unhandledRejection', (reason) => {
+    // REPORT AND CARRY ON. A rejected background task (a failed update check, a refused model refresh,
+    // a clipboard read) must not end the session: those callers are fire-and-forget by design, and the
+    // turn loop reports its own failures as events. Exiting here turned any one of them into a lost
+    // conversation.
     try { sess.saveSession(session); } catch {}
-    // The STACK is the whole point: the message alone ("...of undefined") does not
-    // say which line. console.error() writes into the alternate screen, which the
-    // exit handler then wipes, so the user never sees it — the log is the only
-    // place the trace survives.
-    noteExit(`unhandledRejection: ${(reason && reason.message) || reason}\n${(reason && reason.stack) || ''}`);
-    console.error('\nhncode unhandled rejection:', reason);
-    process.exit(1);
+    const msg = (reason && reason.message) || String(reason);
+    const stack = (reason && reason.stack) || '';
+    // The log is the only place the trace survives: stderr writes into the alternate screen, which the
+    // exit handler wipes.
+    noteExit(`unhandledRejection: ${msg}\n${stack}`);
+    // Visible in the transcript rather than on a screen that is about to be cleared.
+    try { notice(`background task failed: ${msg}`, 'error'); } catch {}
   });
 
   // REMOTE CONTROL (--control): expose a local socket so a script can queue a
