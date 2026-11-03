@@ -35,17 +35,21 @@ export function forgetReadPool(ctx) {
 }
 export const spec = {
   name: 'Read',
-  description: 'Read a text file. Returns the whole file by default; use line_offset / n_lines for a range.',
+  description: 'Read a text file. With no line arguments it returns the whole file; pass start_line and '
+    + 'end_line for a range. BOTH BOUNDS ARE INCLUSIVE: start_line=3, end_line=5 returns THREE lines — 3, 4 '
+    + 'and 5. A negative start_line counts from the end (-100 = the last 100 lines). Every returned line is '
+    + 'prefixed with its 1-based number.',
   parameters: {
     type: 'object',
     properties: {
       path: { type: 'string', description: 'Path to the text file.' },
-      line_offset: {
+      start_line: {
         type: 'integer',
-        description: '1-based start line. Negative counts from the end (e.g. -100 = last 100 lines).',
-        default: 1,
+        description: '1-based FIRST line to return, INCLUSIVE — it is a line that is returned, not the line '
+          + 'before the first one. Omit to start at the first line, or pass a negative value to count from the '
+          + 'end (-100 = last 100 lines).',
       },
-      n_lines: { type: 'integer', minimum: 1, description: 'Lines to read (default: the rest of the file).' },
+      end_line: { type: 'integer', minimum: 1, description: '1-based LAST line to return, INCLUSIVE — it is a line that is returned, not the line after the last one. start_line=3, end_line=5 returns lines 3, 4 and 5. Omit to read to the end of the file.' },
     },
     required: ['path'],
   },
@@ -84,18 +88,18 @@ export const spec = {
     const lines = normalizeText(text).split("\n");
     if (lines.length > 1 && lines[lines.length - 1] === "") lines.pop();
     const total = lines.length;
-    // Default: every line. An explicit n_lines still narrows the window.
-    const nLines = args.n_lines ? args.n_lines : total;
-    let start = args.line_offset !== undefined ? args.line_offset : 1;
+    // Default: every line. `start_line` / `end_line` narrow the window, and either may be omitted.
+    let start = args.start_line !== undefined ? Number(args.start_line) : 1;
     if (start < 0) start = Math.max(1, total + 1 + start);
     start = Math.max(1, Math.min(start, total));
-    const end = Math.min(start + nLines - 1, total);
+    const end = args.end_line !== undefined
+      ? Math.min(Math.max(start, Number(args.end_line)), total)
+      : total;
     let out = '';
     out += `${args.path} (lines ${start}-${end} of ${total})\n`;
     for (let i = start; i <= end; i++) out += `${i}\t${lines[i - 1]}\n`;
-    // No trailing "truncated" banner: without an explicit n_lines every line is
-    // returned, so the only way to stop early is a deliberate range request — the
-    // header already states which lines those were.
+    // No trailing "truncated" banner: without an explicit end_line every line is returned, so the only way
+    // to stop early is a deliberate range request — the header already states which lines those were.
 
     // --- Record a hash fingerprint so a later Edit can verify the AI is
     // editing against the same content it read (snippet-staleness guard). ---

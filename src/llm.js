@@ -256,7 +256,12 @@ function buildBody(cfg, messages, streaming = true, opts = {}) {
     const { system, messages: am } = toAnthropic(messages);
     const body = {
       model: cfg.innerModel, system, messages: am,
-      tools: opts.noTools ? undefined : anthropicToolDefs(opts.tools || llmToolsList),
+      // `tool_choice: none` is the protocol-level refusal. Omitting the tool definitions entirely, which
+      // is what `noTools` used to do, leaves the model free to EMIT the syntax from memory — a summariser
+      // that answers with `<|tool_call|>{…}` instead of a summary. Declaring the tools and forbidding their
+      // use is the only form both providers accept.
+      tools: opts.toolChoice === 'none' ? anthropicToolDefs(opts.tools || llmToolsList) : (opts.noTools ? undefined : anthropicToolDefs(opts.tools || llmToolsList)),
+      tool_choice: opts.toolChoice === 'none' ? { type: 'none' } : undefined,
       ...common, ...wire,
     };
     if (!body.tools || !body.tools.length) delete body.tools;
@@ -296,9 +301,19 @@ function buildBody(cfg, messages, streaming = true, opts = {}) {
     model: cfg.innerModel, messages: toOpenAi(messages),
     ...common, ...wire,
   };
-  // Only attach a NON-EMPTY tools array: `tools: []` is rejected by some strict
-  // gateways, and an instance that registered no list means "no tools here".
-  if (!opts.noTools && defs.length) body.tools = defs;
+  // `tool_choice: 'none'` NEEDS THE TOOLS DECLARED alongside it. OpenAI rejects the field without them, so
+  // the list is sent and the choice forbids use — the same shape as the Anthropic branch, and the only form
+  // that actually stops a model answering with a tool call instead of a summary.
+  if (opts.toolChoice === 'none') {
+    if (defs.length) {
+      body.tools = defs;
+      body.tool_choice = 'none';
+    }
+  } else if (!opts.noTools && defs.length) {
+    // Only attach a NON-EMPTY tools array: `tools: []` is rejected by some strict
+    // gateways, and an instance that registered no list means "no tools here".
+    body.tools = defs;
+  }
   return JSON.stringify(applyPromptCache('openai', body, {
     enabled: cfg.promptCache !== false,
     sessionKey: cfg.sessionId,

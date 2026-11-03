@@ -347,15 +347,21 @@ export function parseProbeReplies(buf) {
   // are needed to place an image in cells rather than guessing — and a guess here is wrong
   // on every display whose font is not square, which is most of them.
   takeMatches(XT_CELL_RE, buf, spans, (m) => {
-    const w = Number(m[1]);
-    const h = Number(m[2]);
+    // THE REPLY PUTS HEIGHT FIRST: `CSI 6 ; height ; width t`.
+    //
+    // Reading it as width-then-height swapped the two on every terminal, which put the cell size at 20x10
+    // instead of 9x20 for a normal font. An image's row count is derived from the CELL height, so the bitmap
+    // claimed twice the rows it needed and pushed the interface down by exactly that much.
+    const h = Number(m[1]);
+    const w = Number(m[2]);
     // A terminal that answers 0x0 has nothing to say — treat it as unknown rather than
     // as a cell of zero width, which would divide by zero downstream.
     if (w > 0 && h > 0) found.cell = { w, h };
   });
   takeMatches(XT_AREA_RE, buf, spans, (m) => {
-    const w = Number(m[1]);
-    const h = Number(m[2]);
+    // The text area reply is `CSI 4 ; height ; width t` — same order.
+    const h = Number(m[1]);
+    const w = Number(m[2]);
     if (w > 0 && h > 0) found.textArea = { w, h };
   });
   let complete = false;

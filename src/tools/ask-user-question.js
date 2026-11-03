@@ -46,28 +46,17 @@ export function questionUniquenessError(questions) {
   return null;
 }
 
-const DESCRIPTION = `Use this tool when you need to ask the user questions with structured options during execution. This allows you to:
-1. Collect user preferences or requirements before proceeding
-2. Resolve ambiguous or underspecified instructions
-3. Let the user decide between implementation approaches as you work
-4. Present concrete options when multiple valid directions exist
+const DESCRIPTION = `Ask the user a question with structured options, during execution. Use it when the answer
+genuinely changes what you do next: a preference, an ambiguous instruction, a choice between approaches.
 
-When NOT to use:
-- When you can infer the answer from context — be decisive and proceed
-- Trivial decisions that don't materially affect the outcome
+Do NOT use it for what you can infer from context, or for trivial decisions — overusing it interrupts the user's flow.
 
-Overusing this tool interrupts the user's flow. Only use it when the user's input genuinely changes your next action.
-
-Usage notes:
-- Users always have an "Other" option for custom input — don't create one yourself
-- Use multi_select to allow multiple answers to be selected for a question
-- Keep option labels concise (1-5 words), use descriptions for trade-offs and details
-- Each question should have 2-4 meaningful, distinct options
-- Question texts must be unique across the call, and option labels must be unique within each question
-- You can ask 1-4 questions at a time; group related questions to minimize interruptions
-- If you recommend a specific option, list it first and append "(Recommended)" to its label
-- The result is JSON with an \`answers\` object keyed by question text; each value is the chosen option's label (comma-separated labels for multi_select, or the user's own words if they picked "Other"); if \`answers\` is empty and a \`note\` says the user dismissed it, they chose not to answer — do not treat this as selecting the recommended option; decide based on context and do not re-ask the same question
-- The user may also leave a free-form \`additional\` note covering the whole request; the field appears only when they wrote one. Treat it as extra context, not as the answer to a specific question`;
+Usage:
+- Users always get an "Other" option; do not create one.
+- 2-4 distinct options per question, labels 1-5 words, descriptions carry the trade-offs. Labels unique within a question, question texts unique across the call.
+- 1-4 questions at a time, related ones grouped. multi_select allows several answers.
+- Put a recommended option first and append "(Recommended)" to its label.
+- The result is JSON: an \`answers\` object keyed by question text, each value the chosen label (comma-separated for multi_select, or the user's own words for "Other"). An empty \`answers\` with a \`note\` means they dismissed it — that is NOT a vote for the recommended option; decide from context and do not re-ask. A free-form \`additional\` note, when present, is extra context for the whole request.`;
 
 export const spec = {
   name: 'AskUserQuestion',

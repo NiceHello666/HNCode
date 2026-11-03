@@ -361,7 +361,7 @@ The model can call these built-in tools. Each returns a string; failures are sho
 
 | Tool | Purpose |
 |------|---------|
-| `Read` | Read a text file (whole file by default; `line_offset` / `n_lines` for a range). |
+| `Read` | Read a text file (whole file by default; `start_line` / `end_line` for a range). |
 | `Write` | Write a file (create or overwrite). |
 | `Edit` | Replace an exact `old_string` with `new_string` (must be unique unless `replace_all`). |
 | `Bash` | Run a shell command; supports background jobs. |

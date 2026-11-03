@@ -180,25 +180,15 @@ async function runSubagent({ cfg, type, prompt, history, signal, onEvent, onProg
 
 export const spec = {
   name: 'Agent',
-  description: `Launch a subagent to handle a task. The subagent runs with its own context, so delegating keeps the bulk of intermediate file contents out of your own context — you get a conclusion back instead of a pile of dumps.
+  description: `Launch a subagent. It runs with its own context, so you get a conclusion back instead of the file contents it read on the way.
 
-Writing the prompt:
-- The subagent starts with zero context — it has not seen this conversation. Brief it like a colleague who just walked into the room: state the goal, list what you already know, hand over the specifics.
-- Lookups (read this file, run that test): put the exact path or command in the prompt.
-- Investigations (figure out X, find why Y): give the question, not prescribed steps.
-- Do not delegate understanding. If the task hinges on a file path or line number, find it yourself first and write it into the prompt.
+Spawn one only when the user (or AGENTS.md) explicitly asked for delegation, sub-agents, or parallel agent work. A request for depth, thoroughness, research or a detailed analysis is NOT permission — do the work yourself by default.
 
-Usage notes:
-- When the task continues earlier work a subagent already did, prefer resuming that agent (pass its \`resume\` id) over spawning a fresh instance.
-- A subagent's result is only visible to you, not to the user. Summarize the relevant parts yourself in your own reply.
+Write the prompt for a colleague who has not seen this conversation: state the goal, hand over the exact path or command for a lookup, and give the QUESTION rather than prescribed steps for an investigation. Find the path or line number yourself first; do not delegate understanding.
 
-When NOT to use Agent:
-- Skip delegation for trivial work you can already do directly — reading a file whose path you know, or any task that takes a step or two.
-- Do NOT spawn a subagent unless the user, or the applicable AGENTS.md / project instructions, explicitly asks for sub-agents, delegation, or parallel agent work. Requests for depth, thoroughness, research, investigation, or detailed codebase analysis do NOT count as permission to spawn. Doing the work yourself is the default.
-- Do not delegate the step you are about to be blocked on: if your very next action depends on the result, do it yourself and keep the critical path moving.
-- Do not delegate work you are already doing — redelegating an unresumed task duplicates effort instead of saving context.
+Continuing earlier subagent work: pass its \`resume\` id instead of starting fresh. Its result is visible only to you — summarize the relevant parts in your own reply.
 
-Available agent types:
+Types:
 ${availableTypes()}`,
   parameters: {
     type: 'object',

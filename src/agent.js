@@ -4,6 +4,7 @@
 
 import { LLM, setToolsList } from './llm.js';
 import { tools, combinedTools, getTool, llmTools } from './tools/index.js';
+import { validateToolArgs } from './tools/validate-args.js';
 import { DELEGATION_TOOLS } from './subagent-types.js';
 import { estimateMessagesTokens, estimateRequestOverhead, estimateTokens, measureToolDefTokens, messageTokens, TokenLedger, forgetMessageTokens } from './term.js';
 import { runHooks, runPatch, runPatchSync } from './plugin.js';
@@ -72,10 +73,46 @@ const COMPACTION_INSTRUCTION = [
   '',
   'Be concise and proportional: a long multi-step task warrants detail, a nearly finished exchange needs only a sentence or two.',
   '',
-  'Respond with text only. Do not call any tools.',
+  'Respond with text only. Do not call any tools. Any tool-call syntax in your answer is discarded and scores the handoff as failed.'
 ].join('\n');
 
 // Trailing note: the model should RESUME, not answer the summary.
+// A summariser can answer with tool-call syntax even when no tools were offered — the format is in its
+// training data, and a model interrupted mid-workflow reaches for it. Nothing was called, so the text is
+// noise, and left in a handoff summary the next turn reads it as a step that happened.
+//
+// The shapes covered are the ones these models actually emit: a special-token block (`<|tool_call|>`), a
+// fenced ```tool_call block, and a bare JSON object that claims a `name` and `arguments`. Only a block that
+// occupies whole lines is removed, so prose that merely mentions calling a tool survives.
+function stripToolCallText(text) {
+  if (typeof text !== 'string' || !text) return text || '';
+
+  // NOTHING WAS CALLED, SO THE BLOCK IS NOISE — but removing it outright can leave nothing at all.
+  //
+  // A summariser that answers ONLY with a tool call produced no summary: stripping to '' makes the caller
+  // treat the compaction as failed, and the fallback there is to drop the history. So the stripped text is
+  // measured: if it lost its substance, the original is kept VERBATIM with a note saying what it is. A
+  // confusing summary is recoverable; a discarded one is not.
+  let out = text;
+  // A special-token block: closed form, or an unterminated one running to the end of its line.
+  out = out.replace(/<\|tool_call\|>[^\n]*(?:<\|\/tool_call\|>)?/g, '');
+  // Fenced block form.
+  out = out.replace(/```tool_call[\s\S]*?```/g, '');
+  // A bare JSON object on its own lines that declares a tool invocation.
+  out = out.replace(/^\s*\{[^\n]*"name"\s*:\s*"[^"]+"[^\n]*"arguments"[^\n]*\}\s*$/gm, '');
+  out = out.replace(/\n{3,}/g, '\n\n').trim();
+
+  if (out.length > 0) return out;
+
+  // Every remaining character was a tool call: keep the original, marked for what it is.
+  return [
+    '(The summariser answered with a tool call instead of a summary. No tool was actually run — the text is',
+    'reproduced below unchanged so nothing is lost. Treat it as a summary that was never written.)',
+    '',
+    text.trim(),
+  ].join('\n');
+}
+
 const COMPACTION_CONTINUATION_TEXT = 'Context compaction is complete — continue the work that was in progress when it began.';
 
 // Clip to a TOKEN budget, counting non-ASCII as one token per character (the same
@@ -842,7 +879,20 @@ const filtered = (Array.isArray(cfg.toolFilter) && cfg.toolFilter.length
           // reasoning model they can consume the whole output budget — which
           // returns an EMPTY summary, and an empty summary is what turns a
           // compaction into a silent loss of history.
-          try { summary = await llm.requestText(summaryPrompt, { noReasoning: true, noTools: true }); } catch { summary = ''; }
+          try {
+            // A DECLARATION IS NEEDED FOR THE REFUSAL.
+            //
+            // `tool_choice: 'none'` is rejected by both providers unless a tool list accompanies it, and the
+            // summariser is a fresh instance with none. One inert definition is declared so the refusal can be
+            // expressed: the model then cannot produce a tool call, rather than being asked not to.
+            llm._tools = [{
+              name: 'noop',
+              description: 'Takes no action. Present only so the request can refuse tool use.',
+              parameters: { type: 'object', properties: {}, additionalProperties: false },
+            }];
+            const raw = await llm.requestText(summaryPrompt, { noReasoning: true, toolChoice: 'none' });
+            summary = stripToolCallText(raw);
+          } catch { summary = ''; }
           this._summaryLlm = null;
         }
         // Interrupted mid-summary: do NOT trim. Aborting yields an empty summary, and
@@ -1122,6 +1172,21 @@ const filtered = (Array.isArray(cfg.toolFilter) && cfg.toolFilter.length
           result = `Error: unknown tool "${tc.name}".`;
           return { ok: false, result, editDiff: null, media: false };
         }
+
+        // THE ARGUMENTS MUST MATCH THE TOOL'S OWN SCHEMA.
+        //
+        // An unknown parameter used to be accepted in silence, and the model had no way to learn that the
+        // argument it took trouble to compute was thrown away: it sends `line_offset` to a tool that takes
+        // `start_line`, gets a plausible answer computed from defaults, and concludes the tool is broken.
+        // Refusing the call names the key and lists the accepted ones, which is the only thing that stops the
+        // same mistake being retried with a different spelling.
+        const argError = validateToolArgs(tc.args, tool.parameters);
+        if (argError) {
+          result = `Error: ${tc.name}: ${argError}`;
+          this.onEvent({ type: 'tool_use', id: tc.id, name: tc.name, args: tc.args });
+          return { ok: false, result, editDiff: null, media: false };
+        }
+
 
         // SHELL HOOK: PreToolUse. A non-zero exit blocks the tool, and its
         // message goes back to the model in place of the tool result — that is

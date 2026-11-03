@@ -215,7 +215,17 @@ export const spec = {
       const cause = e && e.cause ? (e.cause.code || e.cause.message) : '';
       const base = e && e.name === 'AbortError' ? 'interrupted' : (e.message || String(e));
       const msg = cause && !String(base).includes(cause) ? `${base} (${cause})` : base;
-      return `Error fetching ${args.url}: ${msg}`;
+      // SAY WHAT TO DO ABOUT A BROKEN CHAIN. `UNABLE_TO_GET_ISSUER_CERT_LOCALLY` means the machine cannot
+      // reach the issuer — a corporate proxy, a missing intermediate, a self-signed host — and the page
+      // is otherwise fine. The caller cannot act on the code alone, so the switch that does work is named.
+      // Any code mentioning a certificate is a chain problem the caller can work around.
+      const chain = /CERT|SELF_SIGNED|ISSUER|VERIFY_LEAF|UNABLE_TO_GET/i.test(String(cause) + ' ' + String(base));
+      const hint = chain
+        ? ' — the certificate chain could not be verified (a missing intermediate, a proxy, or a self-signed'
+          + ' host). Retry with insecure: true if the content is still wanted; the connection will not be'
+          + ' authenticated.'
+        : '';
+      return `Error fetching ${args.url}: ${msg}${hint}`;
     }
   },
 };

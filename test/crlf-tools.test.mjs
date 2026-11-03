@@ -219,7 +219,7 @@ test('a string-replace edit works on a CRLF file', async () => {
 
 test('read normalises CRLF, and line numbers match the raw file', async () => {
   const dir = twinDir('read');
-  const out = String(await read.execute({ path: 'crlf.js', line_offset: 1, n_lines: 3 }, ctx(dir)));
+  const out = String(await read.execute({ path: 'crlf.js', start_line: 1, end_line: 3 }, ctx(dir)));
   assert.ok(!out.includes('\r'), 'the read output has no carriage returns');
   // The format is `N\tcontent` with a REAL tab — that is what the model is shown.
   assert.match(out, /1\tconst alpha = 1;/);

@@ -37,7 +37,7 @@ test('the thumb is at the bottom when pinned there and at the top when scrolled 
   const bottom = scrollbarGeometry({ total: 100, bodyH, scroll: 0 });
   assert.equal(bottom.thumbStart + bottom.thumbLen, bodyH, 'pinned-to-tail thumb must touch the last row');
   const top = scrollbarGeometry({ total: 100, bodyH, scroll: 90 });   // maxScroll
-  assert.equal(top.thumbStart, 0, 'fully scrolled thumb must touch the first row');
+  assert.equal(top.thumbStart, 0, 'fully scrolled thumb touches the first row');
 });
 
 test('content that fits fills the whole track', () => {
@@ -53,8 +53,8 @@ test('the virtual grid is exactly twice the row count (half-row resolution)', ()
   // glyph rule stops matching the geometry.
   for (const bodyH of [1, 7, 20]) {
     const g = scrollbarGeometry({ total: 500, bodyH, scroll: 0 });
-    assert.equal(g.virtualTrack, bodyH * 2);
-    assert.ok(g.virtualThumbSize >= 1);
+  assert.equal(g.virtualTrack, bodyH * 8);
+  assert.ok(g.virtualThumbSize >= 8, 'at least one full row tall');
     assert.ok(g.virtualThumbStart + g.virtualThumbSize <= g.virtualTrack);
   }
 });
@@ -64,10 +64,14 @@ test('scroll is clamped, not trusted', () => {
   // out-of-range thumb. `scroll` counts rows UP from the tail, so a negative value
   // clamps to 0, which is the BOTTOM (thumbLast), not the top.
   const bodyH = 10;
-  assert.equal(scrollbarGeometry({ total: 100, bodyH, scroll: -50 }).thumbStart, bodyH - 1);
-  assert.equal(scrollbarGeometry({ total: 100, bodyH, scroll: 0 }).thumbStart, bodyH - 1);
-  // A wild positive value clamps to maxScroll, the fully-scrolled (top) position.
-  assert.equal(scrollbarGeometry({ total: 100, bodyH, scroll: 1e9 }).thumbStart, 0);
+  // The thumb is flush with the last row, whatever its height.
+  const atBottom = scrollbarGeometry({ total: 100, bodyH, scroll: 0 });
+  assert.equal(atBottom.thumbStart + atBottom.thumbLen, bodyH, 'pinned to the bottom');
+  assert.equal(scrollbarGeometry({ total: 100, bodyH, scroll: -50 }).thumbStart, atBottom.thumbStart,
+    'a negative offset is clamped to the bottom');
+  assert.equal(scrollbarGeometry({ total: 100, bodyH, scroll: 1e9 }).thumbStart, 0, 'clamped to the top');
+  const atTop = scrollbarGeometry({ total: 100, bodyH, scroll: 1e9 });
+  assert.equal(atTop.thumbStart + atTop.thumbLen <= bodyH, true, 'the thumb stays inside the rail');
   assert.equal(scrollbarGeometry({ total: 100, bodyH, scroll: NaN }).maxScroll, 90);
 });
 
@@ -75,37 +79,37 @@ test('scroll is clamped, not trusted', () => {
 // scrollbarGlyph
 // ---------------------------------------------------------------------------
 
-test('glyph coverage: full cell is a block, half cell is a half block, none is blank', () => {
+test('a proportional thumb of constant height, on a track', () => {
   assert.equal(scrollbarGlyph(null, 0), ' ');
-  // The track row of a 1-row thumb at the bottom is blank; the thumb row is full.
-  const g = scrollbarGeometry({ total: 100, bodyH: 10, scroll: 0 });
-  assert.equal(scrollbarGlyph(g, 0), ' ');
-  assert.equal(scrollbarGlyph(g, 9), '█');
-  // A thumb one virtual unit wide (half a cell) draws a half block, which is what
-  // makes a short scrollbar able to sit between rows.
-  const half = scrollbarGeometry({ total: 1000, bodyH: 20, scroll: 500 });
-  const col = Array.from({ length: 20 }, (_, i) => scrollbarGlyph(half, i)).join('');
-  assert.ok(col.includes('▄') || col.includes('▀'), 'a half-row thumb must use a half block');
+
+  // Height is fixed per transcript: it must not change as the view scrolls, or the control appears to
+  // grow and shrink while being used.
+  for (const total of [30, 100, 500, 2000]) {
+    const bodyH = 18;
+    const heights = new Set();
+    for (let s = 0; s <= total - bodyH; s++) {
+      heights.add(scrollbarGeometry({ total, bodyH, scroll: s }).thumbLen);
+    }
+    assert.equal(heights.size, 1, `constant thumb height (total=${total})`);
+  }
+
+  // The thumb is solid, the rest of the rail is the track line.
+  const g2 = scrollbarGeometry({ total: 100, bodyH: 10, scroll: 0 });
+  assert.equal(scrollbarGlyph(g2, 9), '█', 'pinned to the tail, the thumb is at the bottom');
+  assert.equal(scrollbarGlyph(g2, 0), '│', 'the rest of the rail is the track');
 });
 
-test('the half block follows where the coverage starts inside the cell', () => {
-  // Rule (from scrollbarGlyph): coverage that begins at the cell's first virtual
-  // unit is the TOP half -> `▀`; coverage that begins at the second unit is the
-  // BOTTOM half -> `▄`. Getting these swapped makes the thumb look like it jumps.
-  const base = { virtualTrack: 20, bodyH: 10, total: 100, maxScroll: 90 };
-  // Starts at virtual 0 of row 0 -> upper half.
-  assert.equal(scrollbarGlyph({ ...base, virtualThumbStart: 0, virtualThumbSize: 1 }, 0), '▀');
-  // Starts at virtual 1 of row 0 (the cell's second unit) -> lower half.
-  assert.equal(scrollbarGlyph({ ...base, virtualThumbStart: 1, virtualThumbSize: 1 }, 0), '▄');
-  // A two-unit coverage is a full block regardless of where it starts.
-  assert.equal(scrollbarGlyph({ ...base, virtualThumbStart: 0, virtualThumbSize: 2 }, 0), '█');
-  assert.equal(scrollbarGlyph({ ...base, virtualThumbStart: 4, virtualThumbSize: 2 }, 2), '█');
-});
-
-test('a full-cell thumb yields no half blocks anywhere', () => {
-  const g = scrollbarGeometry({ total: 100, bodyH: 10, scroll: 0 });
-  const col = Array.from({ length: 10 }, (_, i) => scrollbarGlyph(g, i)).join('');
-  assert.ok(!col.includes('▀') && !col.includes('▄'), 'a whole-row thumb must use only full/blank cells');
+test('every rail row is reachable, top to bottom', () => {
+  const total = 100;
+  const bodyH = 18;
+  const g0 = scrollbarGeometry({ total, bodyH, scroll: 0 });
+  const travel = bodyH - g0.thumbLen;
+  const seen = new Set();
+  for (let s = 0; s <= total - bodyH; s++) {
+    seen.add(scrollbarGeometry({ total, bodyH, scroll: s }).thumbStart);
+  }
+  assert.equal(seen.size, travel + 1, 'the thumb visits every row of its travel');
+  assert.ok(seen.has(0) && seen.has(travel), 'including both ends');
 });
 
 // ---------------------------------------------------------------------------
@@ -123,40 +127,16 @@ test('a full-cell thumb yields no half blocks anywhere', () => {
 //     the FOREGROUND only — so with the thumb colour in the background, opening a picker
 //     left the thumb's background half at full brightness while the whole screen receded.
 
-test('a half-covered thumb row exposes the TRACK, not more thumb', () => {
-  // A `▀`/`▄` fills only HALF its cell: the other half shows the cell's BACKGROUND. So
-  // the background must be the track colour, or the exposed half keeps the thumb colour
-  // and the row reads as two squares instead of one and a half. The assertion is on the
-  // RENDERED cell rather than on the palette, because the bug was in how the cell was
-  // painted — the palette always had both colours.
-  const cfg = {
-    model: 'p/m', provider: 'p', innerModel: 'm', baseUrl: 'x', endpoint: 'x', protocol: 'openai',
-    maxContextTokens: 100000, maxOutputTokens: 8192, reasoning: false, workspace: '/w',
-    raw: { providers: {}, models: { 'p/m': {} } },
-  };
-  const thumbBgs = [C.scrollThumbBg, C.scrollThumbHoverBg, C.scrollThumbActiveBg];
-  const halves = [];
-  for (const total of [60, 120, 300, 900]) {
-    const st = makeState({ cfg, session: { messages: [] }, opts: {} });
-    st.tip = '';
-    st.chat = Array.from({ length: total }, (_, i) => ({ role: i % 2 ? 'assistant' : 'user', text: `line ${i}` }));
-    const frame = composeFrame(st, 80, 24);
-    frame.lines.forEach((line, r) => {
-      const last = parseCells(line)[79];
-      // The scrollbar is the LAST column of every body row, and its glyph is one of the
-      // three block forms. Identify the half rows by glyph, not by their colours — the
-      // colours are exactly what is under test.
-      if (last && (last.ch === '▀' || last.ch === '▄')) halves.push({ total, r, ch: last.ch, style: last.style });
-    });
-  }
-  assert.ok(halves.length > 0, 'the sweep drew at least one half-covered thumb row');
-  for (const h of halves) {
-    for (const bg of thumbBgs) {
-      assert.ok(!h.style.includes(bg),
-        `total=${h.total} row ${h.r}: a ${JSON.stringify(h.ch)} row paints the thumb as its BACKGROUND, ` +
-        'so the exposed half is thumb-coloured and the row looks like two squares');
-    }
-  }
+test('the painted rows are contiguous and the rest is track', () => {
+  const bodyH = 18;
+  const g = scrollbarGeometry({ total: 500, bodyH, scroll: 200 });
+  const painted = Array.from({ length: bodyH }, (_, r) => (scrollbarGlyph(g, r) === '█' ? 1 : 0));
+  const first = painted.indexOf(1);
+  const last = painted.lastIndexOf(1);
+  assert.ok(first >= 0, 'something is painted');
+  assert.ok(painted.slice(first, last + 1).every((v) => v === 1), 'the painted rows are contiguous');
+  assert.ok(painted.slice(0, first).every((v) => v === 0), 'nothing above it');
+  assert.ok(painted.slice(last + 1).every((v) => v === 0), 'nothing below it');
 });
 
 test('an open overlay dims a filled row, not just its glyphs', () => {
@@ -238,4 +218,48 @@ test('an open overlay dims a filled row, not just its glyphs', () => {
   const openText = openBar.replace(/\x1b\[[0-9;]*m/g, '');
   assert.equal(openText.length, plainText.length, 'the row is still exactly as wide');
   assert.ok(openText.trim(), 'and still shows something');
+});
+// ---------------------------------------------------------------------------
+// the scrollbar as it reaches the FRAME
+// ---------------------------------------------------------------------------
+// The geometry above is only half of it: the rail is painted a row at a time while the body is composed, and
+// it used to be addressed by TRANSCRIPT row. On any session longer than the window that put every visible row
+// outside the rail's range and the bar vanished — which is the bug this pins.
+
+test('the rail is drawn in the visible window, wherever the window is', () => {
+  const cfg = {
+    model: 'p/m', provider: 'p', innerModel: 'm', baseUrl: 'x', endpoint: 'x', protocol: 'openai',
+    maxContextTokens: 100000, maxOutputTokens: 8192, reasoning: false, workspace: '/w',
+    raw: { providers: {}, models: { 'p/m': {} } },
+  };
+  const messages = [];
+  for (let i = 0; i < 40; i++) {
+    messages.push({ role: 'user', content: `question ${i}` });
+    messages.push({ role: 'assistant', content: `answer number ${i}` });
+  }
+  const session = { id: 's', workspace: '/w', model: 'p/m', messages };
+  // A rail cell carries its own foreground and background, so the painted glyph is readable as-is. The colour
+  // may be 256-colour (`38;5;n`) or truecolor (`38;2;r;g;b`) depending on the theme, so the pattern takes
+  // either form — pinning it to 256 colours made this test fail on every truecolor theme.
+  const FG = '\\u001b\\[38;(?:5;\\d+|2;\\d+;\\d+;\\d+)m';
+  const BG = '\\u001b\\[48;(?:5;\\d+|2;\\d+;\\d+;\\d+)m';
+  const barChars = (frame, bodyH) => frame.lines.slice(0, bodyH).map((line) => {
+    const m = new RegExp(FG + BG + '(.)').exec(String(line));
+    return m ? m[1] : '';
+  }).join('');
+
+  for (const requested of [0, 68, 136]) {
+    const st = makeState({ cfg, session, opts: {} });
+    st.chat = session.messages.map((m) => ({ ...m, text: m.content }));
+    st.scroll = requested;
+    st._anchorPin = null;
+    const frame = composeFrame(st, 80, 30);
+    const sb = st._sb;
+    assert.ok(sb, 'the transcript is longer than the window, so there is a rail');
+    const expected = Array.from({ length: st._bodyH }, (_, r) => scrollbarGlyph(sb, r)).join('');
+    const painted = barChars(frame, st._bodyH);
+    assert.equal(painted, expected,
+      `rail painted at scroll ${requested} (window starts at body row ${st._bodyTop})`);
+    assert.equal(painted.indexOf('█'), sb.thumbStart, 'the thumb starts at its computed row');
+  }
 });

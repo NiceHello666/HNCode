@@ -34,10 +34,8 @@ export const DELEGATION_TOOLS = ['Agent', 'AgentSwarm'];
 export const SUBAGENT_TYPES = {
   coder: {
     label: 'Coder',
-    description: 'General software engineering agent — the only subagent type with file-editing tools; use it for any delegated task that must modify code.',
-    whenToUse:
-      'Use this agent for non-trivial software engineering work that may require reading files, editing code, '
-      + 'running commands, and returning a compact but technically complete summary to the parent agent.',
+    description: 'The only type that may edit files. For delegated work that changes code.',
+    whenToUse: 'Use for non-trivial engineering work: read, edit, run commands, report a compact but complete summary.',
     // An explicit allowlist (not `null` = everything) so Agent/AgentSwarm are
     // excluded. Mirrors kimi's CODER_TOOLS.
     tools: [
@@ -55,15 +53,10 @@ export const SUBAGENT_TYPES = {
   },
   explore: {
     label: 'Explore',
-    description: 'Fast codebase exploration with prompt-enforced read-only behavior.',
-    whenToUse:
-      'Fast agent specialized for exploring codebases. Use this when you need to quickly find files by patterns '
-      + '(e.g. "src/**/*.yaml"), search code for keywords (e.g. "database connection"), or answer questions about '
-      + 'the codebase (e.g. "how does the auth module work?"). When calling this agent, specify the desired '
-      + 'thoroughness level: "quick" for basic searches, "medium" for moderate exploration, or "thorough" for '
-      + 'comprehensive analysis across multiple locations and naming conventions. Use this agent for any read-only '
-      + 'exploration that will clearly require more than 3 search queries. Prefer launching multiple explore agents '
-      + 'concurrently when investigating independent questions.',
+    description: 'Read-only codebase exploration.',
+    whenToUse: 'Use for read-only search that needs more than about three queries: find files, grep for a symbol, '
+      + 'answer how a module works. Say "quick", "medium" or "thorough". Launch several in parallel when the '
+      + 'questions are independent.',
     // Bash is allowed for READ-ONLY commands (git log, ls, find) — the prompt
     // forbids using it to create or modify anything, exactly as kimi does.
     tools: ['Read', 'ReadMediaFile', 'Glob', 'Grep', 'Bash', 'WebSearch', 'FetchURL'],
@@ -91,10 +84,8 @@ export const SUBAGENT_TYPES = {
   },
   plan: {
     label: 'Plan',
-    description: 'Read-only implementation planning and architecture design.',
-    whenToUse:
-      'Use this agent when the parent agent needs a step-by-step implementation plan, key file identification, '
-      + 'and architectural trade-off analysis before code changes are made.',
+    description: 'Read-only implementation planning.',
+    whenToUse: 'Use when you need a step-by-step plan, the files involved, and the trade-offs, before editing.',
     // No Bash at all — a planning agent has no shell.
     tools: ['Read', 'ReadMediaFile', 'Glob', 'Grep', 'WebSearch', 'FetchURL'],
     prompt:
@@ -113,9 +104,7 @@ export const SUBAGENT_TYPES = {
   researcher: {
     label: 'Researcher',
     description: 'Read-only investigation; reports findings, changes nothing.',
-    whenToUse:
-      'Use this agent for read-only investigation on the web or in the repository when you want findings '
-      + 'reported back without any chance of local modification.',
+    whenToUse: 'Use for read-only investigation on the web or in the repo when nothing local may be modified.',
     tools: ['Read', 'ReadMediaFile', 'Grep', 'Glob', 'WebSearch', 'FetchURL'],
     prompt:
       `${TASK_AGENT_ROLE_PREFIX}\n\n`

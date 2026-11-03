@@ -145,7 +145,7 @@ test('the per-turn cfg carries swarm mode from the UI state', () => {
 
 test('the tool description says the mode is required', async () => {
   const { spec } = await import('../src/tools/agent-swarm.js');
-  assert.match(spec.description, /swarm mode is ON/,
+  assert.match(spec.description, /swarm mode is on/i,
     'the model is told the tool needs the mode');
 });
 

@@ -197,17 +197,53 @@ const command = args.command;
     // Line-by-line is also what keeps an escape sequence from being cut in half:
     // a sequence never contains a newline, so a complete line is always safe to
     // sanitize, and the trailing partial line waits for more input.
+    // THE LIVE STREAM MUST DECODE EXACTLY THE WAY THE FINAL RESULT DOES.
+    //
+    // The finished output goes through `decodeBuffer`, which tries strict UTF-8 and FALLS BACK TO GBK. The
+    // live sink used a plain non-fatal UTF-8 decoder, so a command whose output is not UTF-8 — PowerShell on a
+    // Chinese Windows writes GBK for native tools — streamed as replacement characters while it ran and then
+    // turned correct the moment it finished. That is the "garbled while running, fine afterwards" report.
+    //
+    // The live path cannot buffer the whole run, so it decides from the first chunk that proves itself: valid
+    // UTF-8 keeps the UTF-8 decoder, anything else pins GBK for the rest of the stream. A chunk boundary
+    // through the middle of a multi-byte character looks invalid too, so a failed probe is retried once with
+    // the remaining bytes before the encoding is pinned.
     const sink = typeof ctx.onOutput === 'function' ? ctx.onOutput : null;
-    const liveDecoder = sink ? new TextDecoder('utf-8') : null;
+    let liveDecoder = sink ? new TextDecoder('utf-8') : null;
     let livePending = '';
-const push = (d) => {
+    let liveUndecided = !!sink;      // the probe has not committed yet
+    const push = (d) => {
       chunks.push(d);
       const dropped = trimChunkRing(chunks, LIVE_RING_BYTES);
       if (dropped) chunksDropped += dropped;
 
       if (!sink || settled) return;
       try {
-        livePending += liveDecoder.decode(d, { stream: true });
+        const buf = Buffer.isBuffer(d) ? d : Buffer.from(String(d));
+        if (liveUndecided) {
+          // A trailing partial character makes a valid UTF-8 chunk look invalid. Only a chunk that still
+          // fails after its own tail is set aside is evidence.
+          let valid = false;
+          try {
+            new TextDecoder('utf-8', { fatal: true }).decode(buf);
+            valid = true;
+          } catch {
+            // Trim up to three trailing bytes and try once more: that is the longest an incomplete UTF-8
+            // sequence can be.
+            for (let cut = 1; cut <= 3 && cut < buf.length; cut++) {
+              try {
+                new TextDecoder('utf-8', { fatal: true }).decode(buf.subarray(0, buf.length - cut));
+                valid = true;
+                break;
+              } catch { /* keep trimming */ }
+            }
+          }
+          if (!valid) liveDecoder = new TextDecoder('gbk');
+          liveUndecided = false;
+        }
+        // One decoder for the whole stream, in streaming mode: a GBK character is two bytes and will be split
+        // across chunks just as often as a UTF-8 one.
+        livePending += liveDecoder.decode(buf, { stream: true });
         const nl = livePending.lastIndexOf('\n');
         if (nl < 0) return;
         const complete = livePending.slice(0, nl + 1);

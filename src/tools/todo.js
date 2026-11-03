@@ -3,21 +3,16 @@
 
 export const spec = {
   name: 'TodoList',
-  description: `Track multi-step work. Pass the COMPLETE list; it replaces the current one. Items: title + status (pending | in_progress | done).
+  description: `Track multi-step work. Pass the COMPLETE list; it replaces the current one.
 
-When to use it:
-- Non-trivial work with several ordered steps, or a request that asks for more than one thing.
-- NOT for a straightforward task you can finish in a step or two, and never as a single-item list.
+Use it for non-trivial work with several ordered steps, or a request asking for more than one thing. Not for a task you can finish in a step or two, and never for a single item.
 
-Maintaining the list:
-- Keep exactly ONE item in_progress at a time until everything is done.
-- Never move an item straight from pending to done: set it to in_progress first, so the list reflects
-  what is actually happening. Do not tick off several items in one update after the fact.
-- Step titles are short (5-7 words), one line each.
-- Update the list as you go, before starting the next step, not in a batch at the end.
-- If your understanding changes, replace the whole list with the corrected one and say why.
-- Finish with every item done, or explicitly say which you abandoned and why. Do not leave the list stale.
-- Do not repeat the list back to the user after updating it — the UI already shows it.`,
+- Exactly ONE item in_progress at a time.
+- Never pending → done: set in_progress first. Do not tick several off in one update after the fact.
+- Titles 5-7 words, one line. Update before starting the next step, not in a batch at the end.
+- If your understanding changes, replace the whole list and say why.
+- Finish with every item done, or say which you abandoned and why — never leave it stale.
+- Do not repeat the list back to the user; the UI already shows it.`,
   parameters: {
     type: 'object',
     properties: {
