@@ -22,6 +22,7 @@ import { TEAM_TOOL_SPECS } from './team.js';
 import { spec as notebookSpec } from './notebook.js';
 import { spec as diagnosticsSpec } from './diagnostics.js';
 import * as memoryMod from './memory.js';
+import * as goalMod from './goal.js';
 import { pluginTools, pluginToolGeneration } from '../plugin.js';
 
 
@@ -55,6 +56,7 @@ const builtinTools = [
   notebookSpec,
   diagnosticsSpec,
   memoryMod.spec,
+  goalMod.spec,
   ...TEAM_TOOL_SPECS,
 ];
 

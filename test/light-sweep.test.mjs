@@ -25,7 +25,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import {
   lightAt, lightWidth, cycleMs, sweepPulse, crossMs,
-  LIGHT_FRACTION, REST_MS, FRAME_MS, TAIL_CHARS, STEP_MS, STEP_CHARS,
+  LIGHT_FRACTION, REST_MS, FRAME_MS, TAIL_CHARS, STEP_MS, STEP_CHARS, SWEEP_TICKS,
 } from '../src/tui.js';
 
 /** A threshold high enough to mean "a person would see this is lit". */
@@ -214,8 +214,12 @@ test('the crossing takes longer on a longer row', () => {
   }
   // The invariant: the crossing is a whole number of STEP_MS steps, and it matches Claude Code's
   // `messageWidth + 20` — ten cells of margin either side, unless the light is wider than that.
+  //
+  // `SWEEP_TICKS` scales the whole crossing, which changes how MANY FRAMES each cell gets but not how many
+  // CELLS the light crosses. The ratio below removes that scale, so the cell count stays the thing asserted:
+  // doubling the ticks must not change the shape of the sweep, only its resolution.
   for (const n of [4, 10, 30, 60]) {
-    const steps = crossMsResting(n) / STEP_MS;
+    const steps = crossMsResting(n) / STEP_MS / (SWEEP_TICKS / 10);
     assert.ok(Number.isInteger(steps) && steps > 0,
       `a ${n}-character row crosses in ${steps} whole steps`);
     // The margin is `min(10, max(halfWidth, n/4))`: a long row gets the full ten cells (so its travel is
@@ -227,9 +231,11 @@ test('the crossing takes longer on a longer row', () => {
       `a ${n}-character row travels ${n + 2 * margin} cells`);
   }
   // A long row reaches the full ten-cell margin, so it matches Claude Code exactly.
-  assert.equal(crossMsResting(40), 40 * STEP_MS + 2 * 10 * STEP_MS, 'a 40-character row uses the full margin');
+  assert.equal(crossMsResting(40) / (SWEEP_TICKS / 10), (40 + 2 * 10) * STEP_MS,
+    'a 40-character row uses the full margin');
   // A short row caps the margin, so the light is visible almost immediately.
-  assert.ok(crossMsResting(4) < 4 * STEP_MS + 8 * STEP_MS, 'a 4-character row caps its margin');
+  assert.ok(crossMsResting(4) < (4 * STEP_MS + 8 * STEP_MS) * (SWEEP_TICKS / 10),
+    'a 4-character row caps its margin');
 });
 
 test('the crossing is a whole number of steps', () => {
@@ -245,20 +251,21 @@ test('the step is long enough to see', () => {
   // A cell lit for less than a frame is invisible: the render path paints at FRAME_MS, so a step shorter
   // than that would be dropped between frames. Measured against the resting rate, which is the slow one.
   assert.ok(STEP_MS >= FRAME_MS, `a ${STEP_MS}ms step is at least one ${FRAME_MS}ms frame`);
-  // And the pace matches Claude Code: `messageWidth + 20` steps, so a 10-character row takes 1500ms —
-  // long enough to read as a deliberate sweep rather than a twitch, short enough that the next round
-  // arrives while the row is still on screen.
-  // A LONG row reaches the full ten-cell margin, so its travel matches Claude Code's `width + 20`.
-  assert.equal(crossMsResting(40), 40 * STEP_MS + 2 * 10 * STEP_MS, 'a 40-character row uses the full margin');
+  // A LONG row reaches the full ten-cell margin, so its travel matches Claude Code's `width + 20`. The tick
+  // scale divides out: it multiplies how many frames each cell gets, not how many cells are crossed.
+  assert.equal(crossMsResting(40) / (SWEEP_TICKS / 10), (40 + 2 * 10) * STEP_MS,
+    'a 40-character row uses the full margin');
   // A SHORT row caps the margin, so it finishes sooner — the light must reach the text quickly.
-  assert.ok(crossMsResting(4) < 1000, 'a 4-character row crosses inside 800ms');
+  assert.ok(crossMsResting(4) / (SWEEP_TICKS / 10) < 1000, 'a 4-character row crosses inside 800ms');
 });
 
 test('the cycle is short enough to repeat while a row is on screen', () => {
   // The rest is half a second, so even a long line repeats well inside the time a turn stays on screen.
-  // A cycle of many seconds stops reading as a working indicator and starts reading as decoration.
+  // A cycle of many seconds stops reading as a working indicator and starts reading as decoration. The tick
+  // scale is part of the budget: raising it buys fade resolution at the cost of a longer round.
   for (const n of [4, 10, 13, 30]) {
-    assert.ok(cycleMs(n) <= 60 * STEP_MS, `a ${n}-character row cycles in ${cycleMs(n)}ms`);
+    assert.ok(cycleMs(n) <= 60 * STEP_MS * (SWEEP_TICKS / 10),
+      `a ${n}-character row cycles in ${cycleMs(n)}ms`);
   }
 });
 

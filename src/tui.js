@@ -20,7 +20,7 @@ import cp from 'node:child_process';
 import {
   C, TRUECOLOR, blockCursor, showCursor, hideCursor, alternateScreen, clearScreen, clearAndSetBg, setTheme, setLightBackground, currentTheme, THEME_NAMES, THEME_LABELS, isLightTheme, hasTheme, lerpColor, bgRgb,
 } from './colors.js';
-import { copyText, readText, warmClipboard, readClipboardContentAsync, cleanupPastedImages, stopClipboardHelper } from './clipboard.js';
+import { copyText, readText, warmClipboard, readClipboardContentAsync, readClipboardTextOnly, imageUrlFromClipboardText, cleanupPastedImages, stopClipboardHelper } from './clipboard.js';
 import { visualWidth, estimateTokens, estimateTokensFloat, estimateMessagesTokens, estimateMessageTokens, messageTokens, expandTabs } from './term.js';
 // The picker is composited onto the frame as a cell layer rather than assigned over
 // The picker is composited onto the frame as a cell layer rather than assigned over
@@ -66,6 +66,7 @@ import { paintRows, screenToRows } from './screen-paint.js';
 import { diffScreens, placementKey, placementRows, setImageRegenerator } from './screen-diff.js';
 import { render as renderMermaid, sourceBox as mermaidSourceBox, toAnsi as mermaidAnsi } from './mermaid/index.js';
 import { getTool, toolNames } from './tools/index.js';
+import { installGoalStore, getGoal } from './tools/goal.js';
 import { decideFromRules, describeRules, selfTestRules, describeSelfTest } from './permissions.js';
 import { isDestructiveCommand as shellIsDestructiveCommand, isReadOnlyCommand as shellIsReadOnlyCommand } from './shell-safety.js';
 import { usdRate, syncRate, convert, normalizeCurrency, SUPPORTED_CURRENCIES } from './fx.js';
@@ -792,12 +793,19 @@ function lightMargin(n) {
 /**
  * The crossing time for a row of `count` characters — ONE FULL ROUND, entry and exit included.
  *
- * `(count + 2 * lightMargin(count)) * stepMs`. The light is over the visible text for only `count * stepMs`
- * of it; the rest is the entry and exit runs, which is what keeps the sweep from snapping on and off.
+ * `(count + 2 * lightMargin(count)) * stepMs * SWEEP_TICKS / 10`. The light is over the visible text for only
+ * `count * stepMs` of it; the rest is the entry and exit runs, which is what keeps the sweep from snapping on
+ * and off.
+ *
+ * `SWEEP_TICKS` IS THE RESOLUTION KNOB. At the old value of 10 a ten-character row crossed in 1235ms — about
+ * 19 frames at 65ms — and the light traversed its own five-character band in a third of that, so each glyph
+ * took only five distinct brightness values and the fade read as a five-step ramp. Every doubling of the tick
+ * count doubles the frames each glyph is under the light, which is the only way to make the fade finer without
+ * changing its shape or its speed across the row.
  */
 export function crossMs(count, stepMs = STEP_MS) {
   const cells = Math.max(1, count) + 2 * lightMargin(count);
-  return cells * stepMs;
+  return cells * stepMs * (SWEEP_TICKS / 10);
 }
 
 /**
@@ -927,8 +935,15 @@ export function lightAt(phaseMs, index, count, edge = 'cosine', stepMs = STEP_MS
   // written to fix, and which a flat ten reintroduces on a wide band.
   const margin = lightMargin(n);
   const travel = n + 2 * margin;
-  const steps = Math.floor((phaseMs / crossMs(n, stepMs)) * travel);
-  const head = Math.floor((-margin + steps) / STEP_CHARS) * STEP_CHARS;
+  // THE HEAD IS CONTINUOUS, NOT QUANTISED TO WHOLE STEPS.
+  //
+  // `Math.floor` here rounded the head to the last whole tick, so on a 65ms frame a ten-character row offered
+  // the light about twenty distinct positions and each glyph saw five brightness values — a five-step ramp
+  // where the eye can see twenty. The position is a FLOAT now: the pulse is already continuous in `dist`, so
+  // every frame lands the light somewhere between two cells and the fade is as fine as the frame rate allows.
+  // `STEP_CHARS` still scales how far one step moves, which is a shape decision, not a resolution one.
+  const progress = Math.max(0, Math.min(1, phaseMs / crossMs(n, stepMs)));
+  const head = (-margin + progress * travel) * STEP_CHARS;
   // `edge` shapes the shoulder: a raised cosine leaves its outer end gentle, a linear one is sharpest
   // where it meets the core. It arrives as a PARAMETER rather than being read from config, because this
   // is a module-level function and the TUI state lives inside startTUI's closure — the trap that once
@@ -955,27 +970,13 @@ export function lightAt(phaseMs, index, count, edge = 'cosine', stepMs = STEP_MS
  * @param {string}   edge     shoulder shape: 'cosine' (default) or 'linear'
  * @returns {string}          ANSI, ready to splice into a row
  */
-function shimmerText(text, phaseMs, base, glint, edge = 'cosine', stepMs = STEP_MS, sweepWidth) {
-  // THE SWEEP PACE IS SET BY THE ROW, NOT BY THE WORD.
-  //
-  // A tool name is four characters (`Read`) in a row of eighty. Sweeping the four made the light cross in a
-  // few frames — each character changed colour inside one frame, which reads as a SNAP, and the harder you
-  // look the less it looks like motion. The fix is not to sweep the empty cells instead (they are never
-  // painted, so the light would be invisible for most of its travel and the word would sit dark); it is to
-  // run the SAME sweep geometry over a wider notional row and place the glyphs inside it, which slows the
-  // light down without moving where it appears.
-  //
-  // `lightAt` measures its geometry in cells, so the pace comes from `count`. Passing the row's width makes
-  // the crossing take proportionally longer; the glyphs stay at their own indices, and the light still visits
-  // every one of them, just over more frames.
+function shimmerText(text, phaseMs, base, glint, edge = 'cosine', stepMs = STEP_MS) {
   const s = String(text == null ? '' : text);
   const n = s.length;
   if (!n) return '';
-  // Glyphs keep their own positions; only the timing is stretched. `sweepWidth` is the row's usable width.
-  const pace = sweepWidth > n ? Math.round(sweepWidth) : n;
   const out = [];
   for (let i = 0; i < n; i++) {
-    const t = Math.max(0, Math.min(1, lightAt(phaseMs, i, pace, edge, stepMs)));
+    const t = Math.max(0, Math.min(1, lightAt(phaseMs, i, n, edge, stepMs)));
     const r = Math.round(base[0] + (glint[0] - base[0]) * t);
     const g = Math.round(base[1] + (glint[1] - base[1]) * t);
     const b = Math.round(base[2] + (glint[2] - base[2]) * t);
@@ -1009,7 +1010,12 @@ export const STEP_CHARS = 1;
 // edge of the band to the settle point, i.e. `travel = 1 + BAND`, not `1 + 2*BAND`.
 // Correcting that buys ~25% more frames for free, because the extra was spent sweeping
 // through empty space before and after the row.
-export const SWEEP_TICKS = 10;          // ticks per half-sweep (0.8s, so a 3.2s cycle)
+// FRAMES PER CHARACTER IS THE SMOOTHNESS. With `STEP_MS = 65` and a band of `n/2`, the light spends
+// `BAND * ticks / (1 + BAND)` frames on each character; at 10 ticks that is 3.3, so a glyph took only three
+// or four distinct brightness values and the fade read as a step. Doubling the tick count doubles that to
+// 6.7 — the light still crosses in the same ORDER, it just takes twice as long to do it, which is the only
+// way to buy resolution without changing the shape.
+export const SWEEP_TICKS = 20;          // ticks per half-sweep (1.3s at 65ms, so a 2.6s cycle)
 const SWEEP_TRAVEL_PAD = 1;             // head runs from -BAND to 1
 
 /**
@@ -2203,12 +2209,8 @@ export function formatToolLine(msg, workspace, spin, pulseStart, shimmerEdge, ex
     // that whole life: one origin, and elapsed grows from there.
     const rowKey = msg && (msg.id || msg.toolId) ? `tool:${msg.id || msg.toolId}` : `tool:${name}`;
     const elapsedMs = Math.max(0, Date.now() - lightOrigin(rowKey, anchorSpin, spin));
-    // The sweep's geometry is measured over the ROW, so its cycle has to be measured over the row too.
-    // `crossMs(name.length)` describes a crossing of four cells; the phase would wrap long before a row-wide
-    // light had moved a fifth of the way, and the name would sit at one brightness forever.
-    const spentW = visualCol('● ') + visualCol(verb) + 1;
-    const sweepW = width > 0 ? Math.max(name.length, width - spentW) : name.length;
-    const phaseMs = elapsedMs % cycleMs(sweepW, TOOL_STEP_MS);
+    // ONE shimmer for both rows — see `shimmerText`.
+    const phaseMs = elapsedMs % cycleMs(name.length, TOOL_STEP_MS);
 
     // The same restraint as the Working row's glint: the light is the base colour with a small lift in
     // the SAME hue, not a jump to white. `[150, 255, 255]` against `[0, 215, 255]` read as "the name is
@@ -2220,7 +2222,7 @@ export function formatToolLine(msg, workspace, spin, pulseStart, shimmerEdge, ex
     if (reducedMotion) {
       nameDisplay = col(name, C.cyan);
     } else {
-      nameDisplay = shimmerText(name, phaseMs, BASE, GLINT, shimmerEdge || 'cosine', TOOL_STEP_MS, sweepW);
+      nameDisplay = shimmerText(name, phaseMs, BASE, GLINT, shimmerEdge || 'cosine', TOOL_STEP_MS);
     }
   } else {
     // Non-pending: show in plain cyan
@@ -4475,6 +4477,9 @@ function sparkChart(values, width, height) {
 // shows at least 1%, clamped to [0, 100]. A non-positive or non-finite `max`
 // reports 0.
 function usagePercent(used, max) {
+  // `used` can be undefined on a session resumed before any usage was recorded. Without this guard the
+  // division produced NaN and the row printed `NaN%` where it should have printed `0%`.
+  if (!Number.isFinite(used)) return 0;
   if (!Number.isFinite(max) || max <= 0) return 0;
   return Math.min(100, Math.max(0, Math.ceil((used / max) * 100)));
 }
@@ -6022,9 +6027,18 @@ const queueH = takeover ? 0 : queuePanelHeight(state);
           fg = C.scrollTrackFg;
         }
         const bg = C.scrollTrackBg;
-        // A bitmap row is a terminal payload: clipping it to make room for the scrollbar truncates the
-        // sequence. The picture is placed by the frame writer, so it needs the row verbatim.
-        row = isImageRow(row) ? row : fitAnsi(row, w - 1) + fg + bg + glyphChar + C.reset;
+        // A bitmap row is a terminal payload, so it cannot be clipped — but the SCROLLBAR STILL BELONGS ON IT.
+        //
+        // Skipping the append for an image row left its last column empty, and a formula is only as wide as
+        // its own picture (eight cells of an eighty-column row): the rail vanished for every row a formula
+        // covered. The payload is padded to the column before the rail instead of being cut, so the sequence
+        // survives intact and the rail is drawn where it always is.
+        if (isImageRow(row)) {
+          const rail = fg + bg + glyphChar + C.reset;
+          row = row + rail;
+        } else {
+          row = fitAnsi(row, w - 1) + fg + bg + glyphChar + C.reset;
+        }
       }
       body.push(row);
       // Only the window reaches the frame; the rest lives in `body` for the diff to compare.
@@ -6329,6 +6343,9 @@ const queueH = takeover ? 0 : queuePanelHeight(state);
     // `qs.index` selects a question; `qs.index === qs.items.length` selects the
     // Other tab. The current tab is highlighted (background).
     const onOtherTab = qs.index >= qs.items.length;
+    // Where each tab lands inside the box, so a CLICK can select it. The tab bar is the only way to reach an
+    // earlier question with the mouse; without these the labels were plain text and a click did nothing.
+    const tabHits = [];
     {
       let tabs = '';
       const tabName = (i) => {
@@ -6338,7 +6355,10 @@ const queueH = takeover ? 0 : queuePanelHeight(state);
       for (let i = 0; i <= qs.items.length; i++) {
         const name = i === qs.items.length ? OTHER_LABEL : tabName(i);
         const on = i === qs.index;
-        tabs += on ? col(' ' + name + ' ', C.selBg + C.cyan + C.bold) : col(' ' + name + ' ', C.gray);
+        const colStart = visualCol(tabs);
+        const label = ' ' + name + ' ';
+        tabs += on ? col(label, C.selBg + C.cyan + C.bold) : col(label, C.gray);
+        tabHits.push({ index: i, colStart, colEnd: colStart + visualCol(label) - 1 });
         tabs += ' ';
       }
       box.push(boxRow(fitAnsi(tabs, innerW - 2)));
@@ -6410,7 +6430,15 @@ const queueH = takeover ? 0 : queuePanelHeight(state);
     const boxTop = lines.length;
     for (const b of box) lines.push(b);
     lines.push(bar('╰' + '─'.repeat(promptW) + '╯'));
-    itemRows.forEach((r) => addHit(boxTop + r.boxIdx, 0, w - 1, { kind: 'questionItem', index: r.index }));
+    // THE TAB LABELS ARE CLICKABLE. The tab bar is the box's first row, so each label's column span becomes a
+    // hit that switches to that question — the mouse equivalent of Tab. Without it the labels were plain text
+    // and clicking an earlier question did nothing.
+    tabHits.forEach((t) => addHit(boxTop, t.colStart + 2, t.colEnd + 2, { kind: 'questionTab', index: t.index }));
+    // THE OPTION'S OWN COLUMNS, NOT THE WHOLE ROW.
+    //
+    // `addHit(row, 0, w - 1)` made the hover tint cover the box's left and right borders too, so pointing at
+    // an option lit the frame around it. The hit starts inside the border and stops before the closing one.
+    itemRows.forEach((r) => addHit(boxTop + r.boxIdx, 2, Math.max(2, w - 3), { kind: 'questionItem', index: r.index }));
     if (caretInBox >= 0) {
       // The box is mid-frame (chat above, composer below), NOT pinned to the top,
       // so its caret is recorded as an absolute frame row and corrected with the
@@ -6597,11 +6625,7 @@ const queueH = takeover ? 0 : queuePanelHeight(state);
     // started its sweep from an origin minutes in the past — a phase far past the cycle, so the light
     // snapped to a position mid-row. Keying on the turn's own start stamp makes every animation unique.
     const turnKey = state.turnStart || 0;
-    // The cycle is measured over the ROW, matching the geometry `shimmerText` is given below. A cycle sized
-    // to the phrase would wrap while a row-wide light had barely moved, and the phrase would hold one
-    // brightness for the whole turn.
-    const workSweep = Math.max(workMsg.length, cols - 2);
-    const phaseMs = Math.max(0, Date.now() - lightOrigin(`work:${turnKey}:${anchorSpin}`, anchorSpin, spin)) % cycleMs(workSweep);
+    const phaseMs = Math.max(0, Date.now() - lightOrigin(`work:${turnKey}:${anchorSpin}`, anchorSpin, spin)) % cycleMs(workMsg.length);
 
     // THE GLINT IS A STEP AWAY FROM THE BASE, not a jump to another colour.
     //
@@ -6617,13 +6641,7 @@ const queueH = takeover ? 0 : queuePanelHeight(state);
     const chars = workMsg;
     const lightEdge = state.shimmerEdge || (state.cfg && state.cfg.shimmerEdge) || 'cosine';
     // ONE shimmer for both rows — see `shimmerText`.
-    // THE LIGHT CROSSES THE ROW, NOT THE PHRASE.
-    //
-    // `Working...` is ten characters in a row that has eighty columns. Sweeping only the ten made the light
-    // move one glyph per frame — a snap rather than a fade. The sweep now covers the room the row actually
-    // has, so the same phrase animates at a speed the eye reads as motion. Only the phrase's own cells are
-    // painted; a coloured space would smear the row's padding.
-    const out = shimmerText(chars, phaseMs, ORANGE_RGB, GLINT, lightEdge, STEP_MS, Math.max(chars.length, cols - 2));
+    const out = shimmerText(chars, phaseMs, ORANGE_RGB, GLINT, lightEdge);
     // A QUIET TURN FADES TOWARD THE WARNING COLOUR.
     //
     // `state.lastTokenAt` is stamped whenever output arrives; `state.hasActiveTools` is set while a tool
@@ -6644,23 +6662,33 @@ const queueH = takeover ? 0 : queuePanelHeight(state);
   }
 
   if (!takeover && state.todos && state.todos.length) {
-    // The panel's top rule is a DRAG HANDLE. Record its screen row as a hitbox so
-    // the mouse handler can hover/press it; the row offset is corrected to final
-    // screen coordinates by composeFrame's hitbox pass (like every other hit).
+    // ONLY THE HEADER IS THE DRAG HANDLE, not the whole panel.
+    //
+    // This registered `addHit(todoTopRow, 0, w - 1)` — the entire width of the panel's first row — and the
+    // queue below did the same. The hit list is searched LAST-FIRST, so the queue's full-width row shadowed
+    // every control that happened to land on it: a slash-menu item, a picker row, a status segment. "It clicks
+    // into the queue instead" is exactly that. The handle is the rule and its title line.
     const todoTopRow = lines.length;
-    addHit(todoTopRow, 0, w - 1, { kind: 'todoResize' });
-    for (const l of renderTodoPanel(state, w, state.todoResizeHover, state.todoResizeDrag)) lines.push(l);
+    const todoPanel = renderTodoPanel(state, w, state.todoResizeHover, state.todoResizeDrag);
+    // The rule and the `  Todo` line are the grab area; the item rows below are not.
+    for (let r = 0; r < Math.min(2, todoPanel.length); r++) {
+      addHit(todoTopRow + r, 0, w - 1, { kind: 'todoResize' });
+    }
+    for (const l of todoPanel) lines.push(l);
   }
 
   // Queued (not yet sent) messages, directly above the composer: these are what
   // Ctrl-S steers into the running turn. See renderQueuePanel.
   if (!takeover && state.queued && state.queued.length) {
-    // The panel's top rule is a DRAG HANDLE. Record its screen row as a hitbox so
-    // the mouse handler can hover/press it.
+    // Same rule as the todo panel: the header is the handle, not every row.
     const queueTopRow = lines.length;
-    addHit(queueTopRow, 0, w - 1, { kind: 'queueResize' });
-    for (const l of renderQueuePanel(state, w, state.queueResizeHover, state.queueResizeDrag)) lines.push(l);
+    const queuePanel = renderQueuePanel(state, w, state.queueResizeHover, state.queueResizeDrag);
+    for (let r = 0; r < Math.min(2, queuePanel.length); r++) {
+      addHit(queueTopRow + r, 0, w - 1, { kind: 'queueResize' });
+    }
+    for (const l of queuePanel) lines.push(l);
   }
+
 
   // Side-thread box (/btw), docked directly above the composer — the placement kimi
   // uses (its panelContainer sits over the editor with `connectedAbove = true`), so
@@ -7647,11 +7675,25 @@ export function makeState({ cfg, session, opts }) {
     cwd,
     cwdOverride: null,
     tip: '',
-    ctxPercent: 0,
+    // THE GAUGE STARTS FROM THE SESSION, NOT FROM ZERO.
+    //
+    // These were hard-coded to `false`/`0`, and the only code that ever read the saved figures was the
+    // `/sessions` resume branch — which a plain `hncode --continue` never runs. So every restart showed the
+    // local estimate until a provider answered, even though the reported size had been saved with the
+    // session all along. Reading it here covers every entry point: `--continue`, `--session <id>`, and the
+    // picker.
+    ctxPercent: (session && session.ctxReportedOnce && Number.isFinite(session.ctxTokens)
+      && Number.isFinite(session.ctxMax) && session.ctxMax > 0)
+      ? usagePercent(session.ctxTokens, session.ctxMax)
+      : 0,
     // Set once the endpoint reports a real context size; from then on the local estimate is not used.
-    ctxReportedOnce: false,
-    ctxTokens: 0,
-    ctxMax: cfg.maxContextTokens || 512000,
+    ctxReportedOnce: !!(session && session.ctxReportedOnce && Number.isFinite(session.ctxTokens)),
+    ctxTokens: (session && session.ctxReportedOnce && Number.isFinite(session.ctxTokens))
+      ? session.ctxTokens
+      : 0,
+    ctxMax: (session && Number.isFinite(session.ctxMax) && session.ctxMax > 0)
+      ? session.ctxMax
+      : (cfg.maxContextTokens || 512000),
     rounds: (session && session.rounds) || 0,
     turnStart: 0,
     steps: (session && session.steps) || 0,
@@ -9164,18 +9206,23 @@ export async function dispatch(cmdRaw, arg, state, cfg, session, h, submit, stdo
 
             // Update context gauge based on restored session messages.
             //
-            // THE SAME FORMULA AS A LIVE STEP: messages PLUS the tool schemas. This used to count the
-            // messages alone, so the gauge stepped by a fixed amount whenever a restore and a live step
-            // alternated — a visible jump that was two formulas disagreeing, not noise.
+            // THE REPORTED SIZE COMES BACK WITH THE SESSION. `session.ctxTokens` / `ctxReportedOnce` are
+            // written whenever a provider reports a real figure, and they were never read back on resume — so
+            // a restarted session showed the ESTIMATE until the next turn sent a request, even though the
+            // exact number was sitting in the saved session the whole time.
             //
-            // `dispatch` is module-level and cannot reach startTUI's `setCtxTokens`, so the expression is
-            // repeated here rather than the call. Keep the two identical.
-            const approx = estimateMessagesTokens(session.messages, cfg) + (cfg.toolDefTokens || 0);
-            // A resumed session carries the last REPORTED size, so the gauge starts where it left off
-            // instead of at the estimate.
-            if (!state.ctxReportedOnce) state.ctxTokens = approx;
+            // Only a session that never got a report falls through to the estimate, and then to the same
+            // formula a live step uses: messages PLUS the tool schemas.
+            if (session.ctxReportedOnce && Number.isFinite(session.ctxTokens)) {
+              state.ctxTokens = session.ctxTokens;
+              state.ctxReportedOnce = true;
+            } else {
+              state.ctxTokens = estimateMessagesTokens(session.messages, cfg) + (cfg.toolDefTokens || 0);
+              state.ctxReportedOnce = false;
+            }
             state.ctxMax = cfg.maxContextTokens || state.ctxMax;
-            state.ctxPercent = usagePercent(approx, state.ctxMax);
+            // THE PERCENTAGE MUST BE COMPUTED FROM THE SAME NUMBER IT IS SHOWN WITH.
+            state.ctxPercent = usagePercent(state.ctxTokens, state.ctxMax);
             
             const dur = session.lastTurnMs ? ` · last turn ${fmtDuration(session.lastTurnMs)}` : '';
             app(`Resumed ${meta.id} (${meta.title || 'untitled'}) · ${(session.messages || []).length} messages.${dur}`);
@@ -9496,8 +9543,23 @@ export async function dispatch(cmdRaw, arg, state, cfg, session, h, submit, stdo
       // _conv: true}` instead of rows: a message with a role of `undefined`, which
       // renders as blank. That is what made the transcript go empty after a manual
       // /compact. Flat-map so every produced row is a row.
+      // THE WHOLE TRANSCRIPT IS REBUILT, NOT APPENDED TO.
+      //
+      // The old form kept `state.chat.filter((m) => !m._conv)` at the head and appended the compacted history
+      // after it — which assumed every pre-existing row carried `_conv`. Rows that came from a RESUME
+      // (`reconstructChat`) do not, so a session that had been restarted kept its whole old transcript above
+      // the summary while the compacted messages were added below: the old thinking blocks reappeared at the
+      // top, as if the compaction had not happened.
+      //
+      // What is kept is the PROMPT that asked for the compaction — the last user row — so the command that
+      // caused this stays visible above the summary it produced. Everything else comes from `kept`.
+      const promptRows = [];
+      for (let i = state.chat.length - 1; i >= 0; i--) {
+        const m = state.chat[i];
+        if (m && m.role === 'user' && !m._conv) { promptRows.push(m); break; }
+      }
       state.chat = [
-        ...state.chat.filter((m) => !m._conv),
+        ...promptRows,
         { role: 'user', text: compactedSummary, _conv: true },
         ...kept.flatMap((m) => convRowFor(m).map((r) => ({ ...r, _conv: true }))),
       ];
@@ -9506,7 +9568,9 @@ export async function dispatch(cmdRaw, arg, state, cfg, session, h, submit, stdo
       // Same formula as everywhere else: messages PLUS the tool schemas.
       state.tokens = estimateMessagesTokens(session.messages, cfg) + (cfg.toolDefTokens || 0);
       if (!state.ctxReportedOnce) state.ctxTokens = state.tokens;
-      state.ctxPercent = usagePercent(state.tokens, state.ctxMax || maxCtx);
+      // Same rule as everywhere else: the percentage comes from the number the row prints, not from the
+      // estimate. Using `state.tokens` here made a compacted session show `696k/1M` beside 57%.
+      state.ctxPercent = usagePercent(state.ctxTokens, state.ctxMax || maxCtx);
       // The transcript was just replaced with a much shorter one. Drop the scroll
       // anchor (as /sessions and /move do) so the next paint seeds a fresh one and
       // the view lands on the newest rows instead of compensating for a row delta
@@ -9962,21 +10026,30 @@ export async function dispatch(cmdRaw, arg, state, cfg, session, h, submit, stdo
 
     case 'goal': {
       const a = raw.toLowerCase();
+      // EVERY WRITE GOES THROUGH THE STORE the Goal tool reads, so /goal and the tool can never disagree
+      // about the objective. `persistState` keeps it across a restart; the tool's own set() does the same.
+      const applyGoal = (value, paused) => {
+        state.objective = String(value || '');
+        state.goalPaused = !!paused;
+        sessHost.persistState();
+        renderFrame();
+      };
       if (!raw || a === 'status') {
         if (state.objective) sayPanel(`Goal: ${state.objective}\nStatus: ${state.goalPaused ? 'paused' : 'active'}`);
         else say('No goal set. Start one with /goal <objective>.');
         return;
       }
-      if (a === 'pause') { state.goalPaused = true; app('Goal paused. Use /goal resume to continue.'); return; }
+      if (a === 'pause') { applyGoal(state.objective, true); app('Goal paused. Use /goal resume to continue.'); return; }
       if (a === 'resume') {
         if (!state.objective) { app('No goal to resume.'); return; }
-        state.goalPaused = false; app('Goal resumed.');
+        applyGoal(state.objective, false);
+        app('Goal resumed.');
         sendPrompt('Resume the active goal.');
         return;
       }
-      if (a === 'cancel') { state.objective = ''; state.goalPaused = false; app('Goal cancelled.'); return; }
-      if (a.startsWith('replace ')) { state.objective = raw.slice(8).trim(); app('Goal replaced.'); return; }
-      state.objective = raw; state.goalPaused = false;
+      if (a === 'cancel') { applyGoal('', false); app('Goal cancelled.'); return; }
+      if (a.startsWith('replace ')) { applyGoal(raw.slice(8).trim(), false); app('Goal replaced.'); return; }
+      applyGoal(raw, false);
       app(`Goal set: ${raw}`);
       sendPrompt(raw);
       return;
@@ -13680,6 +13753,17 @@ const agents = readAgentsMd(state.cwd || state.workspace || cfg.workspace, state
           state._turnSteps = (state._turnSteps || 0) + 1;
           state.steps = (state._stepsBase || 0) + state._turnSteps;
           if (session) session.steps = state.steps;
+          // THE GAUGE MOVES WITH EVERY STEP, not only when the provider answers.
+          //
+          // A provider reports usage with its REPLY, so between two replies the row kept the previous
+          // figure while the conversation underneath it grew by a whole step — tool results in particular can
+          // be huge. The estimate takes over for the in-between frames (it never overwrites a reported figure
+          // once one has arrived), so the bar tracks the request actually being built instead of lagging one
+          // step behind it.
+          if (!state.ctxReportedOnce) {
+            state.ctxTokens = estimateMessagesTokens(messages, cfg) + (cfg.toolDefTokens || 0);
+            state.ctxPercent = usagePercent(state.ctxTokens, state.ctxMax || cfg.maxContextTokens || 1);
+          }
           // Persist at every step boundary, not only at turn end. `messages` is the
           // SAME array this Agent appends to, so copying it here captures every
           // completed step: a crash mid-turn then loses at most the step in flight
@@ -14294,7 +14378,9 @@ const agents = readAgentsMd(state.cwd || state.workspace || cfg.workspace, state
     const approx = estimateMessagesTokens(messages, cfg) + (cfg.toolDefTokens || 0);
     if (!state.ctxReportedOnce) state.ctxTokens = approx;
     state.ctxMax = cfg.maxContextTokens || state.ctxMax;
-    state.ctxPercent = usagePercent(approx, state.ctxMax);
+    // Same rule as the resume path: once a provider has reported a size, the percentage comes from that
+    // number, not from the estimate. Computing it from `approx` here made the row show `874k/1M` beside 73%.
+    state.ctxPercent = usagePercent(state.ctxTokens, state.ctxMax);
     // `session.messages` now holds the full request, system prompt included, so the bar
     // reads the real text from here on and the turn-scoped copy must not be counted too.
     state.turnSystemPrompt = null;
@@ -14387,6 +14473,37 @@ const agents = readAgentsMd(state.cwd || state.workspace || cfg.workspace, state
       if (next) { void sessHost.submit(next); }
       // Queue shrank: push the updated list to the web queue pane immediately.
       try { viewCur.pubStatusField('queued', [...state.queued]); } catch { /* best-effort */ } 
+    }
+    // THE GOAL RESTARTS THE TURN.
+    //
+    // An agent with an objective that spans several turns stops when it runs out of things to say in THIS
+    // turn, which looks exactly like finishing. The objective is what tells the two apart: while one is set and
+    // not paused, the agent is sent back in with the goal quoted, so it continues rather than waiting to be
+    // poked. `Goal clear` is the only thing that stops the loop, which is why the tool says never to clear a
+    // goal that has not been met.
+    //
+    // Skipped in every case where the turn did not end normally: a dismissal means the user wants it to stop,
+    // and a queued message is already the next turn (restarting here would run both).
+    const goalNow = String(state.objective || '').trim();
+    const goalApplies = goalNow && !state.goalPaused && !approvedPlan && !state.queued.length
+      && !state._goalTurns;                 // set below, so one restart per goal per turn
+    if (goalApplies) {
+      state._goalTurns = (state._goalTurns || 0) + 1;
+      viewCur.addChat({
+        role: 'system',
+        text: `[goal] continuing (${state._goalTurns}) — ${goalNow}`,
+      });
+      viewCur.render();
+      // The prompt names the goal the agent itself wrote, and says what to do when it is done. Without the
+      // second half the loop restarts forever: a model with no instruction to clear has no reason to.
+      const continueText = [
+        'You have an active goal and the turn ended before it was reached.',
+        `Goal: ${goalNow}`,
+        '',
+        'Continue working on it. When the goal is fully met, call the Goal tool with action "clear" so the loop',
+        'stops; if it is still not met, keep going.',
+      ].join('\n');
+      void sessHost.submit(continueText);
     }
     // Approved plan: Plan mode OFF (write tools come back), then re-enter the agent
     // with the plan as a SYSTEM message. Deliberately NOT via submit(): that path
@@ -15526,6 +15643,18 @@ export async function startTUI(opts) {
   // because `generateTitle` is a hoisted declaration in this same scope: it is defined far
   // below, but the binding exists as soon as this statement runs.
   sessHost.makeTitle = generateTitle;
+  // The Goal tool writes the SAME objective field /goal does, so the status panel and the turn loop cannot
+  // disagree about what the agent is working towards. `runTurn` reaches both through `sessHost`, which is why
+  // the store is installed here rather than inside the tool.
+  installGoalStore({
+    get: () => state.objective || '',
+    set: (goal) => {
+      state.objective = String(goal || '');
+      state.goalPaused = false;
+      try { sessHost.persistState(); } catch { /* a failed save must not lose the goal for this turn */ }
+      renderFrame();
+    },
+  });
   // The same indirection, for the same reason: `runTurn` drains the queue by re-entering
   // `submit`, which is a nested function of THIS scope. Referencing it by name from `runTurn`
   // threw `submit is not defined` and killed the process on the next turn — the identical
@@ -16555,10 +16684,21 @@ export async function startTUI(opts) {
   // advance identically — duplicated logic here would drift.
   function advanceQuestion(qs) {
     const total = qs.items.length;
+    // REMEMBER WHAT WAS CHOSEN ON THIS QUESTION BEFORE LEAVING IT.
+    //
+    // `sel` and `picked` were global to the dialog, so moving on reset both to "first row, nothing picked" —
+    // and coming back to re-read or change an earlier answer showed the first option as the current one, with
+    // no sign of what had actually been chosen. A per-question record keeps the row and the selection where
+    // the user left them.
+    if (qs.index < total) {
+      if (!qs.remember) qs.remember = new Map();
+      qs.remember.set(qs.index, { sel: qs.sel, picked: new Set(qs.picked) });
+    }
     if (qs.index < total - 1) {
       qs.index++;
-      qs.sel = 0;
-      qs.picked = new Set();
+      const back = qs.remember && qs.remember.get(qs.index);
+      qs.sel = back ? back.sel : 0;
+      qs.picked = back ? new Set(back.picked) : new Set();
       return;
     }
     qs.index = total;   // the Other tab
@@ -16809,6 +16949,32 @@ export async function startTUI(opts) {
         // A click inside the info panel (h.openPanel): consume it so the mousedown
         // does not reach the "click outside an overlay closes it" path. The panel
         // itself has no per-row action, so absorbing is the whole behaviour.
+        return true;
+      }
+      case 'questionTab': {
+        // Clicking a tab label switches to that question. `hb.index` is the tab's position; the trailing one is
+        // the Other tab, whose field opens on arrival, exactly as `switchTab` does it. Without this case the
+        // labels were plain text and the only way back to an earlier question was the keyboard.
+        if (!state.question) return false;
+        const qs = state.question;
+        if (qs.editing === 'other') qs.otherText = qs.editingText || '';
+        else if (qs.editing === 'supplement') qs.supplement = qs.editingText || '';
+        qs.editing = null;
+        const totalTabs = qs.items.length;
+        if (qs.index < totalTabs) {
+          if (!qs.remember) qs.remember = new Map();
+          qs.remember.set(qs.index, { sel: qs.sel, picked: new Set(qs.picked) });
+        }
+        qs.index = Math.max(0, Math.min(totalTabs, hb.index));
+        const backTab = qs.index < totalTabs && qs.remember ? qs.remember.get(qs.index) : null;
+        qs.sel = backTab ? backTab.sel : 0;
+        qs.picked = backTab ? new Set(backTab.picked) : new Set();
+        if (qs.index === totalTabs) {
+          qs.editing = 'supplement';
+          qs.editingText = qs.supplement || '';
+          qs.editingCaret = qs.editingText.length;
+        }
+        renderFrame();
         return true;
       }
       case 'questionItem': {
@@ -17241,7 +17407,19 @@ export async function startTUI(opts) {
     // now 7-12ms warm, so the notice did nothing except paint a frame, get replaced a moment later, and
     // make the paste feel like it was waiting for something. The text appears, or an error is reported —
     // both are visible without an intermediate state.
-    const { text, via } = await readClipboardContentAsync();
+    const read = await readClipboardContentAsync();
+    let { text, via } = read;
+    // A COPIED IMAGE WITH AN ADDRESS DOES NOT NEED A FILE.
+    //
+    // Chromium puts the pixels, an HTML fragment (`<img src=…>`) and — for a plain image — the image's own
+    // URL on the clipboard at once. The reader answers with the file list or the saved PNG first, so a copied
+    // web image was written to disk for content the model can simply fetch. The TEXT formats are the only ones
+    // that carry an address, so they are consulted before the PNG is accepted.
+    if (via === 'image') {
+      const direct = await readClipboardTextOnly();
+      const url = direct ? imageUrlFromClipboardText(direct) : null;
+      if (url) { text = url; via = 'text'; }
+    }
     if (text) {
       // An image collapses to a `[paste #N image]` chip, the same way a multi-line
       // paste becomes `[paste #N +L lines]`, so the prompt does not fill up with a
@@ -17276,8 +17454,14 @@ export async function startTUI(opts) {
       renderFrame();
       return;
     }
+    // QUEUED ITEMS ARE ALREADY EXPANDED; THE DRAFT IS NOT.
+    //
+    // `submit` expands paste placeholders before it queues a message, so `state.queued` holds real text. The
+    // draft still holds `[Pasted text #1 …]` markers — those are what the composer shows — and steering it
+    // verbatim sent the marker to the model and printed it in the transcript. Same expansion the composer does.
     const items = (state.queued || []).slice();
-    const draft = String(state.input || '').trim();
+    const rawDraft = String(state.input || '');
+    const draft = rawDraft.trim() ? expandPastes(rawDraft, state.pastes).trim() : '';
     if (draft) items.push(draft);
     if (!items.length) {
       notice('Nothing queued to steer', 'error');
@@ -17400,12 +17584,58 @@ export async function startTUI(opts) {
     return keybindings;
   }
 
+  // WHICH KEYS ACCELERATE WHEN HELD. Anything that MOVES — the caret, the selection, the cursor — and
+  // anything that DELETES one unit at a time. Enter, Escape, Tab and ordinary characters are deliberately
+  // absent: firing those twice is a bug, not a convenience.
+  const REPEATABLE_KEYS = new Set([
+    'backspace', 'delete', 'left', 'right', 'up', 'down',
+    'home', 'end', 'pageup', 'pagedown', 'c-left', 'c-right', 'c-up', 'c-down',
+  ]);
+  /** A gap longer than this starts a fresh run, so two separate presses are never merged. */
+  const REPEAT_WINDOW_MS = 140;   // the same deliberate/burst boundary `wheelStep` uses
+  /** The most one event may stand for. */
+  const REPEAT_MAX = 8;           // same ceiling as `wheelStep`
+  const repeatState = { key: null, at: 0, run: 0 };
+
   function handleKey(t) {
     // A KITTY GRAPHICS REPLY IS NOT A KEYSTROKE. It is the terminal acknowledging an upload (`G i=31;OK`) or
     // reporting that it dropped an image. The token exists so the bytes are CONSUMED rather than typed into the
     // composer; there is nothing to act on yet, because a failed upload is handled by placing the formula as
     // text next time rather than by retrying mid-frame.
     if (t && t.kittyReply !== undefined) return;
+    // HOLDING A KEY REPEATS IT AT A FIXED RATE, WHICHEVER ROW IT LANDS ON.
+    //
+    // The wheel already accelerates: `wheelStep` widens the jump as notches arrive faster, so a fast scroll
+    // moves eight rows where a deliberate one moves one. Every OTHER repeat — backspace, the arrows, home and
+    // end, page keys — ran once per event no matter how fast the terminal auto-repeated, so holding backspace
+    // through a long line crawled while holding the wheel flew. Both are "the same key, arriving fast".
+    //
+    // The run is folded into ONE call carrying `_repeat`, and the handlers that support it act that many
+    // times. A key not in the list is untouched: Enter, Escape and ordinary characters must never fire twice.
+    if (t && typeof t.key === 'string' && REPEATABLE_KEYS.has(t.key)) {
+      const now = Date.now();
+      const gap = now - (repeatState.at || 0);
+      repeatState.at = now;
+      repeatState.key = t.key;
+      // THE BATCH COMES FROM THE GAP, NOT FROM HOW LONG THE KEY HAS BEEN HELD.
+      //
+      // Counting the run and batching on its length multiplied twice: a held key already arrives every ~40ms,
+      // so growing the batch to eight made the last event stand for eight MORE deltas on top of the ~25Hz
+      // stream — hundreds of characters a second, and the caret shot past where anyone wanted it. The gap
+      // alone says how fast the terminal repeats, which is the thing to compensate for.
+      //
+      //   140ms+    a deliberate tap                    -> 1
+      //   70-140    a brisk double tap                  -> 2
+      //   35-70     the terminal repeating              -> 3
+      //   under 35  a fast repeat                       -> 4
+      t._repeat = gap >= REPEAT_WINDOW_MS ? 1
+        : gap >= REPEAT_WINDOW_MS / 2 ? 2
+          : gap >= REPEAT_WINDOW_MS / 4 ? 3
+            : 4;
+    } else {
+      repeatState.key = null;
+      repeatState.at = 0;
+    }
     // USER KEYBINDINGS, their own layer. A binding either REPLACES a key with another key
     // (applied by rewriting `t.key` below, so the whole switch sees the bound key without
     // knowing bindings exist) or runs a slash command. Mouse and wheel events are never
@@ -17502,7 +17732,7 @@ export async function startTUI(opts) {
         return;
       }
       if (t.key === 'pageup' || t.key === 'pagedown') {
-        scrollChat(state, t.key === 'pageup' ? 10 : -10);
+        scrollChat(state, t.key === 'pageup' ? 10 : -10);   // a page is a big step already, so no _repeat scaling
         renderFrame();
         return;
       }
@@ -17604,10 +17834,18 @@ export async function startTUI(opts) {
         if (qs.editing === 'other') qs.otherText = qs.editingText || '';
         else if (qs.editing === 'supplement') qs.supplement = qs.editingText || '';
         qs.editing = null;
+        // Tab is the OTHER way to leave a question, so it has to remember too — otherwise switching back with
+        // Shift+Tab showed the first option again even though the previous answer was still recorded.
+        const total0 = qs.items.length;
+        if (qs.index < total0) {
+          if (!qs.remember) qs.remember = new Map();
+          qs.remember.set(qs.index, { sel: qs.sel, picked: new Set(qs.picked) });
+        }
         const n = total + 1;   // questions + the Other tab
         qs.index = (qs.index + dir + n) % n;
-        qs.sel = 0;
-        qs.picked = new Set();
+        const back = qs.index < total0 && qs.remember ? qs.remember.get(qs.index) : null;
+        qs.sel = back ? back.sel : 0;
+        qs.picked = back ? new Set(back.picked) : new Set();
         if (qs.index === total) {
           // Landing on the Other tab opens its text field directly.
           qs.editing = 'supplement';
@@ -17657,7 +17895,18 @@ export async function startTUI(opts) {
             return;
           }
           if (!answer) { renderFrame(); return; }          // nothing typed: stay
-          qs.answers[cur.question] = answer;
+          // A MULTI-SELECT KEEPS ITS OTHER PICKS. This overwrote `answers[cur.question]` with the typed text
+          // alone, so a question where "Option A" and "Other: something" were both chosen came back with only
+          // the typed half — the checkboxes were on screen but the answer that reached the model had lost them.
+          if (cur.multiSelect) {
+            const labels = [...qs.picked].sort((a, b) => a - b)
+              .map((i) => (cur.options[i] ? cur.options[i].label : null))
+              .filter(Boolean);
+            labels.push(answer);
+            qs.answers[cur.question] = labels.join(', ');
+          } else {
+            qs.answers[cur.question] = answer;
+          }
           qs.otherText = '';
           qs.editing = null;
           advance();
@@ -17707,7 +17956,13 @@ export async function startTUI(opts) {
       if (t.key === 'enter') {
         if (qs.sel >= otherIdx) { openEditor('other'); return; }
         if (cur.multiSelect) {
-          const labels = [...qs.picked].sort((a, b) => a - b).map((i) => cur.options[i].label);
+          // An option index past `cur.options` is the trailing "Other" row, whose text lives in `otherText`.
+          // Dereferencing it blindly threw on a question where Other was among the checked rows.
+          const labels = [...qs.picked].sort((a, b) => a - b)
+            .map((i) => (cur.options[i] ? cur.options[i].label : null))
+            .filter(Boolean);
+          const typed = (qs.otherText || '').trim();
+          if (typed) labels.push(typed);
           if (labels.length) qs.answers[cur.question] = labels.join(', ');
           advance();
           return;
@@ -17725,7 +17980,7 @@ export async function startTUI(opts) {
         return;
       }
       if (t.key === 'pageup' || t.key === 'pagedown') {
-        scrollChat(state, t.key === 'pageup' ? 10 : -10);
+        scrollChat(state, t.key === 'pageup' ? 10 : -10);   // a page is a big step already, so no _repeat scaling
         renderFrame();
         return;
       }
@@ -18004,7 +18259,7 @@ export async function startTUI(opts) {
         return;
       }
       if (t.key === 'pageup' || t.key === 'pagedown') {
-        scrollChat(state, t.key === 'pageup' ? 10 : -10);
+        scrollChat(state, t.key === 'pageup' ? 10 : -10);   // a page is a big step already, so no _repeat scaling
         renderFrame(); return;
       }
       if (t.key === 'wheelup' || t.key === 'wheeldown') {
@@ -18057,7 +18312,11 @@ export async function startTUI(opts) {
         }
         // Draft is on its last/first row: the key is free. Scroll the transcript
         // (useful while output streams and you want to read back).
-        scrollChat(state, t.key === 'up' ? 3 : -3);
+        //
+        // `_repeat` makes a HELD arrow accelerate like the wheel does: three rows for a tap, up to
+        // `REPEAT_MAX * 3` when the key is repeating. Without it the rows crawled while the wheel flew, even
+        // though both arrive as the same fast stream of events.
+        scrollChat(state, (t.key === 'up' ? 3 : -3) * Math.max(1, Math.min(REPEAT_MAX, t._repeat || 1)));
         renderFrame(); return;
       }
     }
@@ -18203,10 +18462,12 @@ export async function startTUI(opts) {
     if (state.panel) {
       const p = state.panel;
       if (t.key === 'escape') { state.panel = null; state.hoverHit = null; renderFrame(); return; }
-      if (t.key === 'up') { p.top = Math.max(0, (p.top || 0) - 1); renderFrame(); return; }
-      if (t.key === 'down') { p.top = (p.top || 0) + 1; renderFrame(); return; }
-      if (t.key === 'pageup') { p.top = Math.max(0, (p.top || 0) - 10); renderFrame(); return; }
-      if (t.key === 'pagedown') { p.top = (p.top || 0) + 10; renderFrame(); return; }
+      // A held key moves the panel by `_repeat` rows, the same acceleration the transcript scroll uses.
+      const rep = Math.max(1, Math.min(REPEAT_MAX, t._repeat || 1));
+      if (t.key === 'up') { p.top = Math.max(0, (p.top || 0) - rep); renderFrame(); return; }
+      if (t.key === 'down') { p.top = (p.top || 0) + rep; renderFrame(); return; }
+      if (t.key === 'pageup') { p.top = Math.max(0, (p.top || 0) - 10 * rep); renderFrame(); return; }
+      if (t.key === 'pagedown') { p.top = (p.top || 0) + 10 * rep; renderFrame(); return; }
       if (t.key === 'home') { p.top = 0; renderFrame(); return; }
       return;
     }
@@ -18412,7 +18673,7 @@ export async function startTUI(opts) {
       // ↑/↓ scroll the box's history, in ROWS. Held on the state as an offset from
       // the tail, matching the transcript's convention.
       if (t.key === 'up' || t.key === 'down') {
-        const step = t.key === 'up' ? 4 : -4;
+        const step = (t.key === 'up' ? 4 : -4) * Math.max(1, Math.min(REPEAT_MAX, t._repeat || 1));
         state.btwScroll = Math.max(0, (state.btwScroll || 0) + step);
         renderFrame();
         return;
@@ -18592,7 +18853,7 @@ export async function startTUI(opts) {
         }
         return;
       }
-      scrollChat(state, t.key === 'pageup' ? 10 : -10);
+      scrollChat(state, t.key === 'pageup' ? 10 : -10);   // a page is a big step already, so no _repeat scaling
       renderFrame(); return;
     }
     // Shift+arrows EXTEND a composer selection instead of moving the caret. The
@@ -18637,13 +18898,24 @@ export async function startTUI(opts) {
 
     if (t.key === 'left' || t.key === 'right') {
       const dir = t.key === 'left' ? -1 : 1;
-      const mk = adjacentPasteMarker(state.input, state.caret || 0, dir);
-      if (mk) {
-        state.caret = dir < 0 ? mk.start : mk.end;
-      } else if (dir < 0) {
-        state.caret = Math.max(0, (state.caret || 0) - 1);
-      } else {
-        state.caret = Math.min(state.input.length, (state.caret || 0) + 1);
+      // A held arrow moves `_repeat` cells per event; a paste marker is skipped whole, so it consumes one
+      // step of the run rather than being walked into character by character.
+      const times = Math.max(1, Math.min(REPEAT_MAX, t._repeat || 1));
+      for (let nth = 0; nth < times; nth++) {
+        const mk = adjacentPasteMarker(state.input, state.caret || 0, dir);
+        if (mk) {
+          state.caret = dir < 0 ? mk.start : mk.end;
+        } else if (dir < 0) {
+          const next = Math.max(0, (state.caret || 0) - 1);
+          const moved = next !== (state.caret || 0);
+          state.caret = next;
+          if (!moved) break;
+        } else {
+          const next = Math.min(state.input.length, (state.caret || 0) + 1);
+          const moved = next !== (state.caret || 0);
+          state.caret = next;
+          if (!moved) break;
+        }
       }
       // A horizontal move abandons the sticky column (kimi's setCursorCol).
       state._caretPrefCol = null;
@@ -18730,21 +19002,29 @@ export async function startTUI(opts) {
         renderFrame();
         return;
       }
-      const sel = state.composerSel;
-      if (sel && sel.anchor !== sel.head) {
-        const a = Math.min(sel.anchor, sel.head);
-        const h = Math.max(sel.anchor, sel.head);
-        state.input = state.input.slice(0, a) + state.input.slice(h);
-        state.caret = a;
-      } else if (state.caret > 0) {
-        const mk = adjacentPasteMarker(state.input, state.caret, -1);
-        if (mk) {
-          state.input = state.input.slice(0, mk.start) + state.input.slice(mk.end);
-          state.caret = mk.start;
-          state.pastes.delete(mk.id);
+      // `_repeat` is how many times the held key stands for — see the note in `handleKey`. A held backspace
+      // then erases `_repeat` characters per event instead of one, which is what makes it keep up with the
+      // wheel's acceleration.
+      const times = Math.max(1, Math.min(REPEAT_MAX, t._repeat || 1));
+      for (let nth = 0; nth < times; nth++) {
+        const sel = state.composerSel;
+        if (sel && sel.anchor !== sel.head) {
+          const a = Math.min(sel.anchor, sel.head);
+          const h = Math.max(sel.anchor, sel.head);
+          state.input = state.input.slice(0, a) + state.input.slice(h);
+          state.caret = a;
+        } else if (state.caret > 0) {
+          const mk = adjacentPasteMarker(state.input, state.caret, -1);
+          if (mk) {
+            state.input = state.input.slice(0, mk.start) + state.input.slice(mk.end);
+            state.caret = mk.start;
+            state.pastes.delete(mk.id);
+          } else {
+            state.input = state.input.slice(0, state.caret - 1) + state.input.slice(state.caret);
+            state.caret--;
+          }
         } else {
-          state.input = state.input.slice(0, state.caret - 1) + state.input.slice(state.caret);
-          state.caret--;
+          break;   // nothing left to delete; the remaining repeats would be no-ops
         }
       }
       // Deleting can also change the mention (or delete the `@` itself), so the
@@ -18754,19 +19034,25 @@ export async function startTUI(opts) {
       renderFrame(); state.composerSel = null; return;
     }
     if (t.key === 'delete') {
-      const sel = state.composerSel;
-      if (sel && sel.anchor !== sel.head) {
-        const a = Math.min(sel.anchor, sel.head);
-        const h = Math.max(sel.anchor, sel.head);
-        state.input = state.input.slice(0, a) + state.input.slice(h);
-        state.caret = a;
-      } else {
-        const mk = adjacentPasteMarker(state.input, state.caret, 1);
-        if (mk) {
-          state.input = state.input.slice(0, mk.start) + state.input.slice(mk.end);
-          state.pastes.delete(mk.id);
-        } else if (state.caret < state.input.length) {
-          state.input = state.input.slice(0, state.caret) + state.input.slice(state.caret + 1);
+      // `_repeat` batches a held key, the same way backspace does.
+      const times = Math.max(1, Math.min(REPEAT_MAX, t._repeat || 1));
+      for (let nth = 0; nth < times; nth++) {
+        const sel = state.composerSel;
+        if (sel && sel.anchor !== sel.head) {
+          const a = Math.min(sel.anchor, sel.head);
+          const h = Math.max(sel.anchor, sel.head);
+          state.input = state.input.slice(0, a) + state.input.slice(h);
+          state.caret = a;
+        } else {
+          const mk = adjacentPasteMarker(state.input, state.caret, 1);
+          if (mk) {
+            state.input = state.input.slice(0, mk.start) + state.input.slice(mk.end);
+            state.pastes.delete(mk.id);
+          } else if (state.caret < state.input.length) {
+            state.input = state.input.slice(0, state.caret) + state.input.slice(state.caret + 1);
+          } else {
+            break;   // at the end of the line: the remaining repeats would be no-ops
+          }
         }
       }
       refreshMenu(state); renderFrame(); state.composerSel = null; return;
@@ -18957,6 +19243,9 @@ function wheelStep(state, family) {
     state.menuOpen = false; state.menuList = []; state.menuSel = 0;
     state.mentionOpen = false; state.mentionList = []; state.mentionSel = 0;
     state.mentionOffset = 0;
+    // A NEW TURN means a new chance for the goal to restart it. The counter exists so one turn restarts the
+    // goal at most once; without resetting it here, the second turn of a goal would never continue.
+    state._goalTurns = 0;
     state.historyIdx = -1;
     // The draft belongs to the history walk that just ended; the next ↑ starts fresh.
     state.draftInput = '';
