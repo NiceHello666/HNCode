@@ -10027,11 +10027,13 @@ export async function dispatch(cmdRaw, arg, state, cfg, session, h, submit, stdo
     case 'goal': {
       const a = raw.toLowerCase();
       // EVERY WRITE GOES THROUGH THE STORE the Goal tool reads, so /goal and the tool can never disagree
-      // about the objective. `persistState` keeps it across a restart; the tool's own set() does the same.
+      // about the objective. `persist` is this function's own wrapper around `h.persistState` — `sessHost` is
+      // a binding inside `startTUI` and does not exist at module level, which is what made `/goal` throw
+      // `sessHost is not defined`.
       const applyGoal = (value, paused) => {
         state.objective = String(value || '');
         state.goalPaused = !!paused;
-        sessHost.persistState();
+        persist();
         renderFrame();
       };
       if (!raw || a === 'status') {
