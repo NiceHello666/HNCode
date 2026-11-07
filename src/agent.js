@@ -942,7 +942,7 @@ const filtered = (Array.isArray(cfg.toolFilter) && cfg.toolFilter.length
         // cannot fit, the provider's context-length error is an honest, recoverable
         // failure instead of a vanished transcript.
         if (!summary && this.messages.length > 0) {
-          this.onEvent({ type: 'compaction_cancelled' });
+          this.onEvent({ type: 'compaction_cancelled', reason: 'the summary request failed, so nothing was trimmed' });
         } else {
         // NOW trim, at a split point the boundary rule allows.
         const { split, dropped: droppedCount, kept } = this.applyCompactionSplit(maxCtx, summary);
@@ -952,6 +952,10 @@ const filtered = (Array.isArray(cfg.toolFilter) && cfg.toolFilter.length
         // point of mutation instead of relying on that check to fire.
         this._ledger.reset();
         usedNow = this.usedTokens();
+        // THE REPORT DESCRIBES THE REQUEST THAT WENT OUT, so after a trim it still describes the OLD one.
+        // Drop it: the next turn falls back to the local estimate until the provider reports again, instead of
+        // reading a stale figure and compacting a history that was just compacted.
+        this.ctxReportedTokens = 0;
         this.onEvent({
           type: 'compacted', before, after: usedNow, kept,
           dropped: droppedCount, summary,

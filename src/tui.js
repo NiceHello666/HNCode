@@ -1524,7 +1524,13 @@ const DIFF_CONTEXT_LINES = 5;
  */
 export function editDiffRows(diff) {
   if (!diff || typeof diff.old !== 'string' || typeof diff.new !== 'string') return [];
-  const split = (s) => String(s).replace(/\r\n/g, '\n').split('\n');
+  // An empty string is ZERO lines: `''.split('\n')` is `['']`, which would draw a phantom blank row.
+  // An empty side is ZERO lines and a trailing newline is not a line: `''.split('\n')` is `['']`,
+  // which drew a phantom blank row, and `'a\n'` split to `['a', '']`, which drew one past the end.
+  const split = (s) => {
+    const t = String(s).replace(/\r\n/g, '\n').replace(/\n$/, '');
+    return t === '' ? [] : t.split('\n');
+  };
   const ctx = diff.context || {};
   const before = Array.isArray(ctx.before) ? ctx.before : [];
   const after = Array.isArray(ctx.after) ? ctx.after : [];
@@ -2900,7 +2906,8 @@ function messageLines(msg, width, workspace, expanded, spin, pulseStart, rawMode
         ? col(` (Ctrl-O to ${expanded ? 'hide' : 'show'} compaction summary)`, C.gray) : '';
       head = bullet + col('Compaction complete', C.green + C.bold) + detail + hint;
     } else if (canceled) {
-      head = bullet + col('Compaction cancelled', C.yellow + C.bold);
+      head = bullet + col('Compaction cancelled', C.yellow + C.bold)
+        + (msg.reason ? col(' (' + msg.reason + ')', C.gray) : '');
     } else {
       head = bullet + col('Compacting context…', C.cyan + C.bold);
     }
@@ -6557,25 +6564,23 @@ const queueH = takeover ? 0 : queuePanelHeight(state);
     // earlier question with the mouse; without these the labels were plain text and a click did nothing.
     const tabHits = [];
     {
-      // ONE QUESTION MEANS NO TABS. There is nothing to switch to, and for a free-text question the only
-      // tab would read "Other" beside a field that is already the answer.
-      if (qs.items.length > 1) {
-        let tabs = '';
-        const tabName = (i) => {
-          const it = qs.items[i];
-          return String((it && it.header) || `Q${i + 1}`).trim() || `Q${i + 1}`;
-        };
-        for (let i = 0; i <= qs.items.length; i++) {
-          const name = i === qs.items.length ? OTHER_LABEL : tabName(i);
-          const on = i === qs.index;
-          const colStart = visualCol(tabs);
-          const label = ' ' + name + ' ';
-          tabs += on ? col(label, C.selBg + C.cyan + C.bold) : col(label, C.gray);
-          tabHits.push({ index: i, colStart, colEnd: colStart + visualCol(label) - 1 });
-          tabs += ' ';
-        }
-        box.push(boxRow(fitAnsi(tabs, innerW - 2)));
+      // ALWAYS DRAWN. The trailing Other tab means even one question has two destinations, and
+      // hiding the strip hid that the note existed at all.
+      let tabs = '';
+      const tabName = (i) => {
+      const it = qs.items[i];
+      return String((it && it.header) || `Q${i + 1}`).trim() || `Q${i + 1}`;
+      };
+      for (let i = 0; i <= qs.items.length; i++) {
+      const name = i === qs.items.length ? OTHER_LABEL : tabName(i);
+      const on = i === qs.index;
+      const colStart = visualCol(tabs);
+      const label = ' ' + name + ' ';
+      tabs += on ? col(label, C.selBg + C.cyan + C.bold) : col(label, C.gray);
+      tabHits.push({ index: i, colStart, colEnd: colStart + visualCol(label) - 1 });
+      tabs += ' ';
       }
+      box.push(boxRow(fitAnsi(tabs, innerW - 2)));
     }
     const itemRows = [];
     let caretInBox = -1;
@@ -6611,15 +6616,51 @@ const queueH = takeover ? 0 : queuePanelHeight(state);
           // THE LIVE BUFFER, not the committed value. Typing writes `editingText`; `otherText` only holds what was
           // committed when the field was left, so rendering it made the field look empty while the user typed into it.
           const typed = qs.editing === 'other' ? String(qs.editingText || '') : (qs.otherText || '');
-          // A PLACEHOLDER SITS INSIDE THE FIELD, grey, and vanishes on the first keystroke. As a row underneath it read
-          // as a caption explaining a field that already looked self-explanatory.
-          const shown = typed || 'type your answer, then Enter';
-          const paint = typed ? C.white : C.gray;
-          const head = col('❯ ', C.cyan) + col(shown, paint);
-          const fill = ' '.repeat(Math.max(0, innerW - 2 - visualCol(shown)));
-          caretInBox = box.length;
-          caretColInBox = 2 + visualCol(typed);
-          box.push(boxRow(col(head + fill, '')));
+          const caretAt = Math.max(0, Math.min(typed.length, qs.editingCaret == null ? typed.length : qs.editingCaret));
+          // The marker plus the padding on each side is what the text cannot use.
+          const bodyW = Math.max(1, innerW - 2 - visualCol('❯ '));
+          // A PLACEHOLDER SITS INSIDE THE FIELD, grey, and vanishes on the first keystroke.
+          const empty = typed === '';
+          const shown = empty ? 'type your answer, then Enter' : typed;
+          const paint = empty ? C.gray : C.white;
+          // WRAP, so a long answer stays visible instead of being clipped at the box edge.
+          // WRAP BY PARAGRAPH, then by width. `wrapWithOffsets` cuts on width only, so an explicit newline has to be
+          // split out first or it is drawn as the two characters `\` and `n`.
+          const segs = [];
+          {
+            let base = 0;
+            const paras = shown.split('\n');
+            for (let pi = 0; pi < paras.length; pi++) {
+              const para = paras[pi];
+              for (const w of wrapWithOffsets(para, bodyW)) segs.push({ text: w.text, start: base + w.start });
+              base += para.length + 1;   // + the newline we split on
+            }
+            // A trailing empty line matters while typing: it is where the next character will go. Without it a full
+            // row leaves the caret with nowhere to sit.
+            if (!empty && caretAt === typed.length && !/\n$/.test(typed)) segs.push({ text: '', start: typed.length });
+            }
+            // The caret belongs to the segment that CONTAINS it; the LAST match wins on a boundary so the cursor sits at
+            // the end of the text rather than jumping to the next row.
+            let caretRow = Math.max(0, segs.length - 1);
+            let caretCol = 0;
+            for (let si = 0; si < segs.length; si++) {
+              const seg = segs[si];
+              const segEnd = seg.start + seg.text.length;
+              if (caretAt >= seg.start && caretAt <= segEnd) {
+                caretRow = si;
+                caretCol = visualCol(seg.text.slice(0, caretAt - seg.start));
+              }
+              // The first row carries the prompt glyph; the rest are indented to match it.
+              const marker = si === 0 ? col('❯ ', C.cyan) : '  ';
+              // Padded to the full body width: a short row would leave the right wall short and the next row would appear
+              // to run into it.
+              const body = col(seg.text, paint) + ' '.repeat(Math.max(0, bodyW - visualCol(seg.text)));
+              box.push(boxRow(col(marker + body, '')));
+            }
+            // How many rows the field took, so the caret row can be located in the box.
+            qs.freeTextRows = segs.length;
+            caretInBox = box.length - segs.length + Math.min(caretRow, segs.length - 1);
+            caretColInBox = 2 + caretCol;
           } else {
           const opts = cur.options.map((o) => ({ label: o.label, description: o.description, kind: 'option' }));
           opts.push({ label: OTHER_LABEL, description: '', kind: 'other' });
@@ -6642,8 +6683,15 @@ const queueH = takeover ? 0 : queuePanelHeight(state);
             else marker = isSel ? '> ' : '  ';
             // The current row is marked by `> ` (single) / the filled square (multi); no
             // background highlight.
-            const markerPaint = isSel ? C.cyan : (chosen ? C.cyan : C.gray);
-            const labelPaint = isSel ? (C.cyan + C.bold) : (chosen ? C.cyan : C.white);
+            // A CHOSEN ROW IS BOLD; THE HOVERED ROW IS TINTED AND PLAIN.
+            //
+            // They used to share `C.cyan`, so there was no way to tell which rows were ticked and which one the cursor
+            // happened to be on — the one distinction the screen exists to make. Weight carries the choice, the
+            // background carries the cursor, and the marker carries the cursor when colour is unavailable.
+            const markerPaint = isSel ? (chosen ? (C.cyan + C.bold) : C.cyan) : (chosen ? C.cyan : C.gray);
+            const labelPaint = chosen
+              ? (C.cyan + C.bold)
+              : (isSel ? (C.selBg + C.cyan) : C.white);
             const typed = (o.kind === 'other' && qs.otherText) ? `: ${qs.otherText}` : '';
             const head = col(marker, markerPaint) + col(String(o.label) + typed, labelPaint);
             const desc = o.description ? col('  ' + o.description, C.gray) : '';
@@ -7043,9 +7091,9 @@ const queueH = takeover ? 0 : queuePanelHeight(state);
         const textPart = styledRow.slice(contWidth);
         const textStart = rowMeta.start != null ? rowMeta.start : 0;
         const highlighted = (sel && sel.anchor !== sel.head)
-          ? highlightSelection(styledRow, textStart, sel.anchor, sel.head)
-          : styledRow;
-        rowAnsi = ' ' + C.white + fitAnsi(highlighted, textW) + ' ';
+          ? highlightSelection(textPart, textStart, sel.anchor, sel.head)
+          : textPart;
+        rowAnsi = ' ' + indent + C.white + fitAnsi(highlighted, Math.max(1, textW - contWidth)) + ' ';
       }
       lines.push(
         CPAD + col('│', shellBorder) + rowAnsi + C.reset + col('│', shellBorder)
@@ -17333,7 +17381,7 @@ export async function startTUI(opts) {
     // the user left them.
     if (qs.index < total) {
       if (!qs.remember) qs.remember = new Map();
-      qs.remember.set(qs.index, { sel: qs.sel, picked: new Set(qs.picked) });
+          qs.remember.set(qs.index, { sel: qs.sel, picked: new Set(qs.picked), otherText: qs.otherText || '' });
     }
     if (qs.index < total - 1) {
       qs.index++;
@@ -17345,7 +17393,10 @@ export async function startTUI(opts) {
       const q = qs.items[qs.index];
       if (q && q.freeText) {
         qs.editing = 'other';
-        qs.editingText = qs.otherText || '';
+        // THE RECORDED TEXT for THIS question: `otherText` is shared by every question, so it holds whichever
+        // answer was edited most recently — or nothing, once submitting cleared it.
+        qs.editingText = (back && back.otherText) || '';
+        qs.otherText = qs.editingText;
         qs.editingCaret = qs.editingText.length;
       }
       return;
@@ -18580,6 +18631,15 @@ export async function startTUI(opts) {
         const back = qs.index < total0 && qs.remember ? qs.remember.get(qs.index) : null;
         qs.sel = back ? back.sel : 0;
         qs.picked = back ? new Set(back.picked) : new Set();
+        // A FREE-TEXT QUESTION REOPENS ITS FIELD, with this question's text: `editing` is what makes the row
+        // exist at all, so without this the question came back with nothing to type into.
+        const qBack = qs.items[qs.index];
+        if (qBack && qBack.freeText) {
+          qs.editing = 'other';
+          qs.editingText = (back && back.otherText) || '';
+          qs.otherText = qs.editingText;
+          qs.editingCaret = qs.editingText.length;
+        }
         if (qs.index === total) {
           // Landing on the Other tab opens its text field directly.
           qs.editing = 'supplement';

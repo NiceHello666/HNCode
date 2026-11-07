@@ -429,7 +429,12 @@ function buildEditDiff({ fileLines, oldText, newText, startLine }) {
   //
   // `net` is the number of lines the edit added (negative when it shrank the file), so every line below
   // the replaced block moves by exactly that much.
-  const net = normalizeText(newText).split('\n').length - replacedCount;
+  // AN EMPTY REPLACEMENT IS ZERO LINES, NOT ONE. `''.split('\n')` is `['']`, so a deletion counted itself as
+  // a one-line replacement and `net` came out 0 instead of -1 — the AFTER context was then numbered as if
+  // nothing had been removed, and the diff carried a phantom `+` row holding an empty string, which reads as an
+  // insertion where the file in fact lost a line.
+  const newLines = normalizeText(newText) === '' ? [] : normalizeText(newText).split('\n');
+  const net = newLines.length - replacedCount;
   for (let n = lastReplaced + 1; n <= lastReplaced + DIFF_CONTEXT; n++) {
     if (n >= 1 && n <= lines.length) after.push({ n: n + net, text: lines[n - 1] });
   }

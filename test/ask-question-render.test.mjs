@@ -52,5 +52,7 @@ test('a free-text question renders a field and no option list', () => {
   const painted = renderQuestion({ question: 'Name it?', header: 'C', options: [], freeText: true });
   assert.match(painted, /Name it\?/, 'the question is shown');
   assert.match(painted, /type your answer/, 'the field carries its placeholder');
-  assert.doesNotMatch(painted, /Other/, 'and there is no option list beside it');
+  // The tab bar ALWAYS shows Other — it is a destination of its own. What must NOT be here is the
+  // OPTION LIST: an editable row drawn as `Other:`, which would put a choice beside the field.
+  assert.doesNotMatch(painted, /Other:/, 'there is no option list beside the field');
 });
