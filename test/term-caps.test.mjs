@@ -215,8 +215,8 @@ test('the cell size is asked for with XTWINOPS 16, and 14 as a cross-check', () 
   assert.ok(PROBE_QUERY.includes('\x1b[14t'), 'and 14 as a cross-check for the text area');
   assert.ok(!PROBE_QUERY.includes('\x1b[18t'), '18 is not a query op and must be gone');
   const { found, rest } = parseProbeReplies('\x1b[6;8;17t\x1b[4;800;600t\x1b[?62c');
-  assert.deepEqual(found.cell, { w: 8, h: 17 }, 'opcode 6 is the CELL size');
-  assert.deepEqual(found.textArea, { w: 800, h: 600 }, 'opcode 4 is the TEXT AREA');
+  assert.deepEqual(found.cell, { w: 17, h: 8 }, 'opcode 6 reports height first, then width');
+  assert.deepEqual(found.textArea, { w: 600, h: 800 }, 'and so does opcode 4');
   assert.equal(rest, '', 'and both are consumed, not left for the key parser');
 });
 
@@ -258,7 +258,7 @@ test('the graphics reply is consumed even when it carries no cell size', () => {
   // terminal that answers it does not leak bytes into the key parser.
   const { found, rest } = parseProbeReplies('\x1b[_Gi=31;OK,f=24,s=32,v=1,cols=100;(\x1b\\\x1b[6;8;17t\x1b[?62;4c');
   assert.equal(found.kittyGraphics, true);
-  assert.deepEqual(found.cell, { w: 8, h: 17 }, 'the cell size comes from XTWINOPS');
+  assert.deepEqual(found.cell, { w: 17, h: 8 }, 'opcode 6 reports height first, then width');
   assert.equal(rest, '', 'and nothing leaked');
 });
 

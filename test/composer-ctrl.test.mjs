@@ -160,7 +160,10 @@ test('the hovered chip keeps its background', () => {
   // `selBg` rather than replacing it — the two would otherwise fight and the chip would lose its chip-ness.
   const chip = pasteMarker(1, 4);
   const hover = highlightPasteMarkers(`❯ ${chip}`, 1);
-  assert.match(hover, /48;5;\d+m/, 'the selection background is still there');
+  // The colour may be 256-colour (`48;5;n`) or truecolor (`48;2;r;g;b`) depending on the theme, so the pattern
+  // takes either form. Pinning it to 256 colours made this fail on every truecolor theme while the behaviour was
+  // correct — the chip kept its background exactly as intended.
+  assert.match(hover, /48;(?:5;\d+|2;\d+;\d+;\d+)m/, 'the selection background is still there');
   assert.match(hover, /\[49m/, 'and closed with a background reset, not a full reset');
 });
 

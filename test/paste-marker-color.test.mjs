@@ -42,16 +42,18 @@ test('the tail keeps whatever colour the caller set', () => {
 
 test('every marker in a row is chipped, and none leaves a reset behind', () => {
   const out = body('a [paste #1 +2 lines] b [paste #2 image] c');
-  assert.equal((out.match(/48;5;23/g) || []).length, 2, 'both markers got a background');
+  // Either 256-colour or truecolor, depending on the theme — the assertion is that BOTH markers got a
+  // background, not which encoding carried it. Pinning the exact index made this fail on truecolor while the
+  // behaviour was correct.
+  assert.equal((out.match(/48;(?:5;\d+|2;\d+;\d+;\d+)/g) || []).length, 2, 'both markers got a background');
   assert.equal((out.match(/\[0m/g) || []).length, 0, 'no bare reset anywhere in the row');
 });
-
 test('a row with no marker is returned untouched', () => {
+
   // The guard has to stay cheap and exact: a row without a marker must not be rewritten at all.
   assert.equal(body('just ordinary text'), 'just ordinary text');
   assert.equal(body(''), '');
 });
-
 test('the background is restored, not merely cleared', () => {
   // `C.bgReset` is ESC[49m: close the selection background, leave the foreground alone. That is the
   // distinction the whole file is about, so it is asserted directly rather than inferred.

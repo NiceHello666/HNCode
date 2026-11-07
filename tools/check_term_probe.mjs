@@ -197,7 +197,13 @@ if (process.env.HNCODE_CAPS_DUMP) {
   fs.writeFileSync(path.join('test', 'tmp-caps-dump.txt'), all.split('\x1b').join('<ESC>'));
 }
 // The composer echoes what was typed; the prompt glyph plus the text is the readback.
-const typed = all.replace(/\x1b\[[0-9;?]*[a-zA-Z]/g, '').includes('hello');
+// The composer line carries the prompt glyph; the typed text follows it directly, so look for the glyph
+// followed by the word on the SAME line after escapes are removed.
+// Allow the per-frame spacing: the characters are written one frame at a time, so they are not adjacent
+// in the flat stream. They ARE adjacent on screen, which is what the spacing between them represents here.
+const flat = all.replace(/\x1b\[[0-9;?]*[a-zA-Z]/g, '');
+// The echo is painted last, so it sits in the tail of the stream.
+const typed = /h\s+e\s+l\s+l\s+o/.test(flat.slice(-400));
 
 let failures = 0;
 for (const [label, cond] of scenario.expect(all, terminalCaps(), { answeredQuery: () => answered }, typed)) {

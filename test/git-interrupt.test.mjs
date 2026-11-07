@@ -23,7 +23,9 @@ test('an aborted signal stops the command and says it was interrupted', async ()
   const ctrl = new AbortController();
   const started = Date.now();
   const p = runGitAsync(['log', '--all', '--format=%H%s'], CWD, { signal: ctrl.signal, timeoutMs: 60000 });
-  setTimeout(() => ctrl.abort(), 120);
+  // Abort on the next tick: the child is spawned but its output is not collected yet, so the interrupt
+  // always lands while the command is still running. A fixed delay raced a fast `git log` on a small repo.
+  setImmediate(() => ctrl.abort());
   const r = await p;
   assert.equal(r.error, 'interrupted', `the reason is the interrupt, not a timeout: ${r.error}`);
   assert.ok(Date.now() - started < 5000, 'it stopped promptly rather than waiting the timeout out');

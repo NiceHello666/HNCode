@@ -238,10 +238,13 @@ export function leadOf(teamName) {
 /**
  * Mail for the team's lead that it has not read yet.
  *
- * "THE LEAD" IS A ROSTER ROLE HELD BY A REAL AGENT. `addMember` gives the `lead` role to the
- * FIRST member added, and that member has a full agent identity like anyone else — `agentId`,
- * `agentType`, `cwd`, a phase, its own inbox. The user is never on the roster, so a message
- * addressed to the lead is addressed to an agent, and sending the lead an instruction is the
+ * "THE LEAD" IS A NAME, NOT NECESSARILY A ROSTERED AGENT. `createTeam` records `leadName` — `team-lead` by
+ * default — and `addMember` gives every recruit the plain `member` role. Labelling the first recruit a lead
+ * was tried and reversed: `/team add` recruits someone to DO the work, and the person typing is already in
+ * charge, so a self-styled lead believed nobody had assigned it anything.
+ *
+ * `leadName` may still match a member on the roster, and when it does that member IS the lead and has a full
+ * agent identity — `agentId`, `agentType`, `cwd`, a phase, its own inbox. Sending it an instruction is the
  * normal way to command the team.
  *
  * `TEAM_LEAD_NAME` is a separate thing: the fixed alias the USER'S OWN sends carry (`/team msg`,

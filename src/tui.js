@@ -6557,21 +6557,25 @@ const queueH = takeover ? 0 : queuePanelHeight(state);
     // earlier question with the mouse; without these the labels were plain text and a click did nothing.
     const tabHits = [];
     {
-      let tabs = '';
-      const tabName = (i) => {
-        const it = qs.items[i];
-        return String((it && it.header) || `Q${i + 1}`).trim() || `Q${i + 1}`;
-      };
-      for (let i = 0; i <= qs.items.length; i++) {
-        const name = i === qs.items.length ? OTHER_LABEL : tabName(i);
-        const on = i === qs.index;
-        const colStart = visualCol(tabs);
-        const label = ' ' + name + ' ';
-        tabs += on ? col(label, C.selBg + C.cyan + C.bold) : col(label, C.gray);
-        tabHits.push({ index: i, colStart, colEnd: colStart + visualCol(label) - 1 });
-        tabs += ' ';
+      // ONE QUESTION MEANS NO TABS. There is nothing to switch to, and for a free-text question the only
+      // tab would read "Other" beside a field that is already the answer.
+      if (qs.items.length > 1) {
+        let tabs = '';
+        const tabName = (i) => {
+          const it = qs.items[i];
+          return String((it && it.header) || `Q${i + 1}`).trim() || `Q${i + 1}`;
+        };
+        for (let i = 0; i <= qs.items.length; i++) {
+          const name = i === qs.items.length ? OTHER_LABEL : tabName(i);
+          const on = i === qs.index;
+          const colStart = visualCol(tabs);
+          const label = ' ' + name + ' ';
+          tabs += on ? col(label, C.selBg + C.cyan + C.bold) : col(label, C.gray);
+          tabHits.push({ index: i, colStart, colEnd: colStart + visualCol(label) - 1 });
+          tabs += ' ';
+        }
+        box.push(boxRow(fitAnsi(tabs, innerW - 2)));
       }
-      box.push(boxRow(fitAnsi(tabs, innerW - 2)));
     }
     const itemRows = [];
     let caretInBox = -1;
@@ -6594,6 +6598,29 @@ const queueH = takeover ? 0 : queuePanelHeight(state);
             box.push(boxRow(col('  ' + seg, C.white)));
           }
           // Options: the model's options, then our per-question "Other" (free answer).
+          // A FREE-TEXT QUESTION DRAWS ITS FIELD, NOT A LIST.
+          //
+          // `options` is empty for one of these, so the list below would render nothing but the "Other" row and
+          // leave the user looking for a way to type. The field IS the question, so it goes where the options
+          // would have been and starts open.
+          if (cur.freeText) {
+          // THE FIELD IS THE ONLY INTERACTIVE ROW, so it carries the hit: a click on it keeps focus where it already
+          // is. Without a hitbox the press fell through to "click outside the dialog", which dismissed the question
+          // instead of placing the caret.
+          itemRows.push({ boxIdx: box.length, index: 0 });
+          // THE LIVE BUFFER, not the committed value. Typing writes `editingText`; `otherText` only holds what was
+          // committed when the field was left, so rendering it made the field look empty while the user typed into it.
+          const typed = qs.editing === 'other' ? String(qs.editingText || '') : (qs.otherText || '');
+          // A PLACEHOLDER SITS INSIDE THE FIELD, grey, and vanishes on the first keystroke. As a row underneath it read
+          // as a caption explaining a field that already looked self-explanatory.
+          const shown = typed || 'type your answer, then Enter';
+          const paint = typed ? C.white : C.gray;
+          const head = col('❯ ', C.cyan) + col(shown, paint);
+          const fill = ' '.repeat(Math.max(0, innerW - 2 - visualCol(shown)));
+          caretInBox = box.length;
+          caretColInBox = 2 + visualCol(typed);
+          box.push(boxRow(col(head + fill, '')));
+          } else {
           const opts = cur.options.map((o) => ({ label: o.label, description: o.description, kind: 'option' }));
           opts.push({ label: OTHER_LABEL, description: '', kind: 'other' });
           const boxBudget = (questionH || Infinity) - 2 - box.length;
@@ -6623,14 +6650,15 @@ const queueH = takeover ? 0 : queuePanelHeight(state);
             itemRows.push({ boxIdx: box.length, index: j });
             box.push(boxRow(fitAnsi(head + desc, innerW - 2)));
           });
-          if (qs.editing === 'other' && showHint) {
+          }
+          if (!cur.freeText && qs.editing === 'other' && showHint) {
             const label = OTHER_LABEL + ': ';
             const text = String(qs.editingText || '');
             const ec = Math.max(0, Math.min(text.length, qs.editingCaret == null ? text.length : qs.editingCaret));
             caretInBox = box.length;
             caretColInBox = visualCol(label) + visualCol(text.slice(0, ec));
             box.push(boxRow(col(label, C.gray) + col(text, C.white)));
-          } else if (showHint) {
+          } else if (!cur.freeText && showHint) {
             const hint = cur.multiSelect
               ? '↑↓ move · Space toggle · Enter confirm · Esc dismiss'
               : '↑↓ move · Enter select · Esc dismiss';
@@ -7004,6 +7032,15 @@ const queueH = takeover ? 0 : queuePanelHeight(state);
         rowAnsi = ' ' + col(pre, preCol) + C.white +
           fitAnsi(highlighted, Math.max(1, textW - visualCol(pre))) + ' ';
       } else {
+        // THE INDENT IS NOT TEXT. A continuation row arrives as `cont + text` — two spaces standing in for
+        // `❯ ` — and `rowMeta.start` is the offset of the TEXT, not of the row. Handing the whole row to
+        // `highlightSelection` therefore shifted the selection by the prefix's width: the two blank columns lit
+        // up and the highlight ran two characters early, which is the offset seen on every wrapped line.
+        //
+        // The first-row branch above already strips its prefix; this one has to strip the continuation's.
+        const contWidth = rowMeta.preWidth != null ? rowMeta.preWidth : visualCol(pre);
+        const indent = styledRow.slice(0, contWidth);
+        const textPart = styledRow.slice(contWidth);
         const textStart = rowMeta.start != null ? rowMeta.start : 0;
         const highlighted = (sel && sel.anchor !== sel.head)
           ? highlightSelection(styledRow, textStart, sel.anchor, sel.head)
@@ -8653,9 +8690,9 @@ export async function dispatch(cmdRaw, arg, state, cfg, session, h, submit, stdo
       openPicker({
         title: 'Select permission mode',
         items: [
-          { label: 'Ask', sub: 'read-only runs automatically; every other action asks first', current: state.mode === 'ask', value: 'ask' },
-          { label: 'Yolo', sub: 'nothing asks: edits and commands run automatically, inside the workspace or not', current: state.mode === 'yolo', value: 'yolo' },
-          { label: 'Auto', sub: 'nothing asks and nothing is reviewed: everything runs and is decided automatically', current: state.mode === 'auto', value: 'auto' },
+          { label: 'Ask', sub: 'read-only tools and read-only shell commands run automatically; everything else asks', current: state.mode === 'ask', value: 'ask' },
+          { label: 'Yolo', sub: 'runs anything inside the workspace, and any non-destructive command; asks for a path OUTSIDE the workspace and for a destructive command', current: state.mode === 'yolo', value: 'yolo' },
+          { label: 'Auto', sub: 'never asks and never waits for approval: everything runs and is decided automatically (an explicit deny or ask rule still wins)', current: state.mode === 'auto', value: 'auto' },
         ],
         sel: ['ask', 'yolo', 'auto'].indexOf(state.mode),
         searchable: false,
@@ -10399,7 +10436,21 @@ export async function dispatch(cmdRaw, arg, state, cfg, session, h, submit, stdo
       if (a.startsWith('replace ')) { applyGoal(raw.slice(8).trim(), false); app('Goal replaced.'); return; }
       applyGoal(raw, false);
       app(`Goal set: ${raw}`);
-      sendPrompt(raw);
+      // TELL THE MODEL IT IS IN GOAL MODE.
+      //
+      // Sending the objective alone read as an ordinary instruction: the model answered, stopped, and waited —
+      // not knowing that stopping ends nothing because the loop reopens the work. It also had no way to learn the
+      // loop exists, so it never used the Goal tool to clear the objective and the restart happened for ever.
+      //
+      // The text names the objective, says the turn will be reopened until it is met, and names the tool that
+      // ends it. The loop's own restart message says the same three things, so the two cannot drift apart.
+      sendPrompt([
+        `You are now working towards a GOAL: ${raw}`,
+        '',
+        'The turn loop reopens this work until the goal is met or cleared, so do not stop early and do not ask',
+        'whether to continue — keep working. When the goal is fully met, call the Goal tool with action "clear"',
+        'so the loop stops. If it is not met yet, report what you did and keep going.',
+      ].join('\n'));
       return;
     }
 
@@ -13985,7 +14036,10 @@ const agents = readAgentsMd(state.cwd || state.workspace || cfg.workspace, state
       // this list because ASKING the user is not a side effect — gating it behind
       // an approval prompt would mean answering two prompts to ask one question.
       // (In auto mode the TOOL refuses itself before any UI; see ctx.permissionMode.)
-      const safeTools = ['Read', 'Grep', 'Glob', 'FetchURL', 'WebSearch', 'TaskOutput', 'TaskList', 'TaskStop', 'TaskWait', 'TodoList', 'FileLines', 'AskUserQuestion'];
+      // Tools that act ONLY inside the session: the roster, the mailbox, the task list, the memories.
+      // `isInsideWorkspace` answers `false` for any tool it does not know, so without this they all asked for
+      // approval in yolo — the one mode whose point is not asking.
+      const safeTools = ['Read', 'Grep', 'Glob', 'FetchURL', 'WebSearch', 'TaskOutput', 'TaskList', 'TaskStop', 'TaskWait', 'TodoList', 'Goal', 'FileLines', 'AgentList', 'AgentMessage', 'AgentInterrupt', 'AgentClose', 'TaskInput', 'SendMessage', 'TeamTaskCreate', 'TeamTaskUpdate', 'TeamTaskList', 'ListTeammates', 'Memory', 'AskUserQuestion'];
       if (rule !== 'ask' && safeTools.includes(toolName)) return true;
       // A read-only SHELL COMMAND (ls/git status/rg/cat …) is as safe as a
       // read-only TOOL, so it runs without a prompt in Ask mode too — the user
@@ -14064,8 +14118,17 @@ const agents = readAgentsMd(state.cwd || state.workspace || cfg.workspace, state
         editingCaret: 0,
         otherText: '',
         supplement: '',
-        resolve: (answers) => resolve(answers),
-      };
+      resolve: (answers) => resolve(answers),
+    };
+    // FOCUS THE FIRST QUESTION if it is free text: it has one row and that row is a field.
+    {
+      const q0 = questions && questions[0];
+      if (q0 && q0.freeText) {
+        state.question.editing = 'other';
+        state.question.editingText = '';
+        state.question.editingCaret = 0;
+      }
+    }
       // An aborted turn must not leave the dialog stranded on screen.
       const sig = ctx && ctx.signal;
       const onAbort = () => {
@@ -14611,7 +14674,15 @@ const agents = readAgentsMd(state.cwd || state.workspace || cfg.workspace, state
           // here: the reply below already schedules one, and the async git result asks for a repaint
           // of its own when it lands.
           refreshGitInfo(state, { force: true });
-        } else if (e.type === 'error') viewCur.addChat({ role: 'tool_result', text: (e.error && e.error.message) || String(e.error) });
+        } else if (e.type === 'error') {
+          // REMEMBER THAT THIS TURN FAILED, so the goal loop below does not restart it.
+          //
+          // A restart is only justified when the turn ENDED — the model stopped with work left. When it
+          // ended because the request was refused (no credit, bad key, rate limit) restarting repeats the
+          // same refusal, which spends whatever quota is left and buries the error under retries.
+          state._turnFailed = true;
+          viewCur.addChat({ role: 'tool_result', text: (e.error && e.error.message) || String(e.error) });
+        }
         else if (e.type === 'truncation_recovery') {
           // The answer hit the output cap mid-way and the agent asked the model to
           // continue. Without a row here the transcript simply grew a second
@@ -14902,8 +14973,26 @@ const agents = readAgentsMd(state.cwd || state.workspace || cfg.workspace, state
     // Skipped in every case where the turn did not end normally: a dismissal means the user wants it to stop,
     // and a queued message is already the next turn (restarting here would run both).
     const goalNow = String(state.objective || '').trim();
-    const goalApplies = goalNow && !state.goalPaused && !approvedPlan && !state.queued.length
+    // A FAILED TURN IS NOT A FINISHED ONE, and it must not be restarted.
+    //
+    // The restart exists for "the model stopped with work left". When the turn ended because the request was
+    // REFUSED — no credit, an invalid key, a rate limit — restarting sends the same request into the same
+    // wall. It spends whatever quota remains, and the transcript fills with retries until the real error is
+    // buried. `_turnFailed` is set by the error handler above.
+    const goalApplies = goalNow && !state.goalPaused && !state._turnFailed && !approvedPlan && !state.queued.length
       && !state._goalTurns;                 // set below, so one restart per goal per turn
+    // GOAL PAUSED AFTER A FAILURE — and said out loud.
+    //
+    // The objective stays set so the work can continue, but the loop does not retry a turn that was refused:
+    // that would re-spend quota on a request the endpoint already declined. Telling the user is the other half
+    // — a silent stop after an error reads as "the agent finished" when in fact nothing was accomplished.
+    if (goalNow && !state.goalPaused && state._turnFailed) {
+      viewCur.addChat({
+        role: 'system',
+        text: '[goal] not restarted: the turn failed. Fix the cause, then /goal resume to continue.',
+      });
+      state.goalPaused = true;
+    }
     if (goalApplies) {
       state._goalTurns = (state._goalTurns || 0) + 1;
       viewCur.addChat({
@@ -17108,6 +17197,7 @@ export async function startTUI(opts) {
   // Keys typed while the capability probe owned stdin were handed back rather than
   // dropped, so the composer starts with them instead of losing them.
   let keyBuf = probe.rest || '';
+  try { fs.appendFileSync(path.join(os.tmpdir(), "kbuf.txt"), "probe.rest=" + JSON.stringify(probe.rest) + "\n"); } catch {} // __KEYBUF_PROBE__
   let escTimer = null;
   let escRetries = 0;
   let confirmTimer = null;
@@ -17250,6 +17340,14 @@ export async function startTUI(opts) {
       const back = qs.remember && qs.remember.get(qs.index);
       qs.sel = back ? back.sel : 0;
       qs.picked = back ? new Set(back.picked) : new Set();
+      // A FREE-TEXT QUESTION ARRIVES FOCUSED: the field is its only row, so leaving it un-focused would show
+      // a question the user cannot answer.
+      const q = qs.items[qs.index];
+      if (q && q.freeText) {
+        qs.editing = 'other';
+        qs.editingText = qs.otherText || '';
+        qs.editingCaret = qs.editingText.length;
+      }
       return;
     }
     qs.index = total;   // the Other tab
@@ -18233,6 +18331,7 @@ export async function startTUI(opts) {
   const repeatState = { key: null, at: 0, run: 0 };
 
   function handleKey(t) {
+    try { fs.appendFileSync(path.join(os.tmpdir(), "kbuf.txt"), "key=" + JSON.stringify(t && (t.ch || t.key)) + " input=" + JSON.stringify(state.input) + "\n"); } catch {} // __KEYBUF_PROBE__
     // A KITTY GRAPHICS REPLY IS NOT A KEYSTROKE. It is the terminal acknowledging an upload (`G i=31;OK`) or
     // reporting that it dropped an image. The token exists so the bytes are CONSUMED rather than typed into the
     // composer; there is nothing to act on yet, because a failed upload is handled by placing the formula as
@@ -19891,6 +19990,7 @@ function wheelStep(state, family) {
     // A NEW TURN means a new chance for the goal to restart it. The counter exists so one turn restarts the
     // goal at most once; without resetting it here, the second turn of a goal would never continue.
     state._goalTurns = 0;
+    state._turnFailed = false;   // a fresh turn has not failed yet
     state.historyIdx = -1;
     // The draft belongs to the history walk that just ended; the next ↑ starts fresh.
     state.draftInput = '';
