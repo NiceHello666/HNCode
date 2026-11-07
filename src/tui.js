@@ -6650,19 +6650,19 @@ const queueH = takeover ? 0 : queuePanelHeight(state);
             itemRows.push({ boxIdx: box.length, index: j });
             box.push(boxRow(fitAnsi(head + desc, innerW - 2)));
           });
-          }
-          if (!cur.freeText && qs.editing === 'other' && showHint) {
-            const label = OTHER_LABEL + ': ';
-            const text = String(qs.editingText || '');
-            const ec = Math.max(0, Math.min(text.length, qs.editingCaret == null ? text.length : qs.editingCaret));
-            caretInBox = box.length;
-            caretColInBox = visualCol(label) + visualCol(text.slice(0, ec));
-            box.push(boxRow(col(label, C.gray) + col(text, C.white)));
-          } else if (!cur.freeText && showHint) {
-            const hint = cur.multiSelect
-              ? '↑↓ move · Space toggle · Enter confirm · Esc dismiss'
-              : '↑↓ move · Enter select · Esc dismiss';
-            box.push(boxRow(col(hint, C.gray)));
+    if (qs.editing === 'other' && showHint) {
+      const label = OTHER_LABEL + ': ';
+      const text = String(qs.editingText || '');
+      const ec = Math.max(0, Math.min(text.length, qs.editingCaret == null ? text.length : qs.editingCaret));
+      caretInBox = box.length;
+      caretColInBox = visualCol(label) + visualCol(text.slice(0, ec));
+      box.push(boxRow(col(label, C.gray) + col(text, C.white)));
+    } else if (showHint) {
+      const hint = cur.multiSelect
+        ? '↑↓ move · Space toggle · Enter confirm · Esc dismiss'
+        : '↑↓ move · Enter select · Esc dismiss';
+      box.push(boxRow(col(hint, C.gray)));
+            }
           }
     }
     const boxTop = lines.length;

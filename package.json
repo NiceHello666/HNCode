@@ -1,6 +1,6 @@
 {
   "name": "@hncode/hncode",
-  "version": "0.6.3",
+  "version": "0.6.4",
   "description": "hncode — A cyan-blue TUI AI coding agent with zero runtime dependencies.",
   "type": "module",
   "main": "src/index.js",
