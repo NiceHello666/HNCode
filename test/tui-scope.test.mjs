@@ -35,12 +35,19 @@ const lines = src.split(/\r?\n/);
 const START = lines.findIndex((l) => /^export async function startTUI\(/.test(l));
 assert.ok(START > 0, 'startTUI is declared at module level');
 
-/** Function names declared directly inside `startTUI` (indent 2). */
+/**
+ * Names declared directly inside `startTUI` (indent 2) — functions AND variables.
+ *
+ * The variables matter for a class of bug the function-only scan cannot see: `const sessHost = host` is an
+ * OBJECT, so a module-level function writing `sessHost.persistState()` reaches a name that does not exist out
+ * there. The scan looks for `name(` and `.persistState(` is not `sessHost(`, so `/goal` shipped with a
+ * ReferenceError that this file reported as clean.
+ */
 function startTUINames() {
   const names = new Set();
   for (let i = START; i < lines.length; i++) {
-    const m = /^  (?:async )?function ([A-Za-z0-9_]+)/.exec(lines[i]);
-    if (m) names.add(m[1]);
+    const fn = /^  (?:async )?function ([A-Za-z0-9_]+)/.exec(lines[i]);
+    if (fn) names.add(fn[1]);
   }
   return names;
 }
@@ -140,6 +147,13 @@ test('no module-level function calls a startTUI-only name', () => {
   // is to RESOLVE what each function binds — its parameters, its destructured locals, and
   // anything the module level declares — and only then flag an unresolved name.
   const inner = startTUINames();
+  // The names that are OBJECTS created inside startTUI and handed to module-level code through `host`. A
+  // `x.prop` on one of these reaches a binding that does not exist out there; on anything else it is an
+  // ordinary property read on a parameter or a local of the same name.
+  //
+  // Listed rather than inferred: `const done = msg.phase === 'done'` inside startTUI and a local `done` inside
+  // a module-level function share a spelling, and no regex can tell the two apart.
+  const innerObjects = new Set(['sessHost', 'viewCur', 'webCur']);
 
   // Everything the module level binds: functions, consts, classes and imports.
   const moduleBindings = new Set();
@@ -179,6 +193,15 @@ test('no module-level function calls a startTUI-only name', () => {
       if (local.has(n) || moduleBindings.has(n)) continue;
       scanned++;
       if (new RegExp(`(^|[^A-Za-z0-9_$.])${n}\\s*\\(`).test(body)) problems.push(`${fn.name}() -> ${n}()`);
+      // AND THE OBJECT FORM. `sessHost.persistState()` reaches the same missing binding, but the pattern above
+      // requires a call with no dot in front, and this one has a dot AFTER the name — which is how `/goal`
+      // shipped throwing `sessHost is not defined` with this file reporting a clean scan.
+      //
+      // Only names that ARE objects: a bare `x.` in the body is also a property read on some unrelated local
+      // (`done.`, `host.` from a parameter), and flagging those made the scan unusable.
+      if (innerObjects.has(n) && new RegExp(`(^|[^A-Za-z0-9_$.])${n}\\s*\\.`).test(body)) {
+        problems.push(`${fn.name}() -> ${n}.`);
+      }
     }
   }
 

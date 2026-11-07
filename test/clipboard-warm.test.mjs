@@ -87,8 +87,12 @@ test('clipboard.js gives the warm sentinel its own queue slot', async () => {
   const src = fs.readFileSync(path.join(import.meta.dirname, '..', 'src', 'clipboard.js'), 'utf8');
   const start = src.indexOf('helperQueue.push(() => { helperReady = true; });');
   assert.ok(start > 0, 'the warm sentinel must have a queued resolver, or it eats a read\'s answer');
-  const write = src.indexOf("helper.stdin.write(\"try { Add-Type", start);
+  // The write may be a multi-line call (the warm script grew a second statement), so the assertion is on the
+  // FIRST `helper.stdin.write` after the queued resolver rather than on one exact line of source.
+  const write = src.indexOf('helper.stdin.write(', start);
   assert.ok(write > start, 'the queued resolver must be pushed BEFORE the sentinel is written');
+  assert.ok(/Add-Type -AssemblyName System\.Windows\.Forms/.test(src.slice(write, write + 600)),
+    'the warm write is the one that preloads the assemblies');
   // And no read may run before the shell says it is ready.
   assert.ok(/waitHelperReady\(HELPER_READY_MS\)/.test(src),
     'reads must wait for readiness instead of being sent to a shell that cannot answer yet');
