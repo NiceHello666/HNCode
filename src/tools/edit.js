@@ -28,17 +28,36 @@ import { hashRegion as hashLines } from './read.js';
 
 export const spec = {
   name: 'Edit',
-  description: 'Edit a file. Three shapes: LINE-RANGE (path + start_line + end_line + new_string), SUBSTRING (path + old_string + new_string, unique unless replace_all), RANGED SUBSTRING (the same plus start_line + end_line, which narrows where old_string is searched). \nBOTH BOUNDS ARE INCLUSIVE: start_line=3, end_line=5 replaces lines 3, 4 and 5 — three lines, so new_string must have exactly three lines. A fourth line is a duplicate, not an addition. \nnew_string is VERBATIM: no re-indent, no trim. Every line carries its own leading whitespace, the first one included — copy it from the Read output after the tab that follows each line number. old_string is matched exactly, including its own first-line indentation. \nOmitting new_string is an error. After a multi-line edit, Read the region again: mis-indented code still parses, so a green test is not proof the edit landed where you meant.',
+  description: `Edit a file. Three shapes: LINE-RANGE (path + start_line + end_line + new_string),
+SUBSTRING (path + old_string + new_string, unique unless replace_all), RANGED SUBSTRING (the same plus
+start_line + end_line, which narrows where old_string is searched).
+
+BOTH BOUNDS ARE INCLUSIVE: start_line=3, end_line=5 covers lines 3, 4 and 5 — three lines, so new_string must
+have exactly three lines.
+
+TO DELETE, SEND AN EMPTY new_string. start_line=7, end_line=7 with new_string="" removes line 7 and nothing
+else. That is the ONLY correct way to delete. Restating the next line as the replacement COPIES it, the file
+then holds that line twice, and because the duplicate looks like damage the retry restates another neighbour —
+the duplicates multiply. Never copy a neighbouring line into new_string to stand in for deleting.
+
+new_string is written VERBATIM — no indentation is added, removed or re-derived. Every line carries its own
+leading whitespace, the FIRST one included; copy it from the Read output after the tab that follows each line
+number (Read prints '12' then a tab, then the indented code, so you send the leading spaces yourself).
+
+COUNT FIRST: in line-range mode new_string must have exactly end_line - start_line + 1 lines, and every line
+you write must be one you are replacing. A line outside the range is not deleted and survives as a duplicate.
+
+Omitting new_string entirely is an error — pass "" to delete.`,
   parameters: {
     type: 'object',
     properties: {
       path: { type: 'string', description: 'Path to the file to edit.' },
       old_string: { type: 'string', description: 'Exact text to replace, including whitespace and newlines. Omit for pure line-range mode. COMBINE it with start_line/end_line to replace only the occurrence inside that range.' },
-      new_string: { type: 'string', description: 'Replacement text, written VERBATIM in BOTH modes — no indentation is added, removed, or re-derived. Write the leading spaces on EVERY line yourself, including the FIRST one, copying them from the Read output after its `N\\t` line-number prefix (Read prints `12\\t    return x`, so you send `    return x`). In LINE-RANGE mode it must contain EXACTLY the lines being replaced: a line that sits outside [start_line, end_line] is not deleted, so restating it here leaves a duplicate. In SUBSTRING mode it replaces old_string, which is itself matched exactly including its own indentation.' },
+      new_string: { type: 'string', description: 'Replacement text, written VERBATIM in BOTH modes — no indentation is added, removed, or re-derived. Write the leading spaces on EVERY line yourself, including the FIRST one, copying them from the Read output after its `N\\t` line-number prefix (Read prints `12\\t    return x`, so you send `    return x`). In LINE-RANGE mode it must contain EXACTLY the lines being replaced: a line that sits outside [start_line, end_line] is not deleted, so restating it here leaves a duplicate. Count them first: new_string must have exactly end_line - start_line + 1 lines. In SUBSTRING mode it replaces old_string, which is itself matched exactly including its own indentation.' },
 
       replace_all: { type: 'boolean', default: false, description: 'Replace all occurrences of old_string.' },
       start_line: { type: 'integer', minimum: 1, description: 'PREFERRED MODE. 1-based first line to replace, INCLUSIVE — the range covers start_line and end_line and every line between them. Requires end_line and new_string. With old_string too, it is the first line to SEARCH for it in.' },
-      end_line: { type: 'integer', minimum: 1, description: 'PREFERRED MODE. 1-based last line to replace, INCLUSIVE (requires start_line). start_line=3, end_line=5 replaces lines 3, 4 AND 5 — three lines, so new_string must have three lines. With old_string too, it is the last line to search in.' },
+      end_line: { type: 'integer', minimum: 1, description: 'PREFERRED MODE. 1-based last line to replace, INCLUSIVE (requires start_line). start_line=3, end_line=5 replaces lines 3, 4 AND 5 — three lines, so new_string must have three lines. If your new_string has four, one of them is outside the range and will survive as a duplicate. With old_string too, it is the last line to search in.' },
     },
     // Three accepted shapes:
     //   line-range        start_line + end_line + new_string
@@ -181,14 +200,21 @@ export const spec = {
       const stale = checkStaleRange(p, lines, start, end, ctx);
       if (stale) return stale;
 
-      const inserted = normalizeText(new_string).split('\n');
-      // The lines being REPLACED, captured before the splice. The TUI renders an
-      // Edit's diff from the tool ARGUMENTS, and line-range mode has no
-      // `old_string` to diff against — so without reporting them here the edit
-      // drew NO diff at all (no +/- rows, no +N/-N counts). Reporting them lets
-      // the caller diff the replaced region -> `new_string`.
-      const replacedText = lines.slice(start - 1, end).join('\n');
+      // AN EMPTY new_string DELETES THE RANGE. No line survives, so the replacement is nothing at all.
+      //
+      // `''.split('\n')` is `['']` — ONE EMPTY STRING — not an empty array. The splice therefore replaced the
+      // range with a single blank line, so "delete these lines" left a hole and shifted everything below it.
+      // Deleting has to mean deleting: when there is no replacement text, the range is removed outright.
+      //
+      // This is also the answer to the mistake that keeps appearing in edits: to remove one line, send an EMPTY
+      // new_string over that one line. Restating the neighbour instead copies it, and the file ends up with the
+      // line twice — the duplicate is a symptom of having no delete, not of carelessness.
+      const inserted = new_string === '' ? [] : normalizeText(new_string).split('\n');
 
+      // The lines being REPLACED, captured before the splice. The TUI renders an Edit's diff from the tool
+      // ARGUMENTS, and line-range mode has no `old_string` to diff against — so without reporting them here the
+      // edit drew NO diff at all.
+      const replacedText = lines.slice(start - 1, end).join('\n');
       const out = [...lines.slice(0, start - 1), ...inserted, ...lines.slice(end)];
       const normUpdated = out.join('\n');
       const updated = eol === '\r\n' ? normUpdated.split('\n').join('\r\n') : normUpdated;
@@ -199,24 +225,12 @@ export const spec = {
         ensureDir(p);
         fs.writeFileSync(p, updated, 'utf8');
       } catch (e) { return `Error writing ${args.path}: ${e.message}`; }
-      refreshReadPool(p, normUpdated, { start, end: start + inserted.length - 1 }, ctx);
+      // NO READ-SNAPSHOT REFRESH. The write changed the file, so every region the model was holding is now a
+      // record of text that no longer exists — including the span just written, whose current content the
+      // model has never seen. Regenerating trust from the arguments would let it edit again on top of a change
+      // it only THINKS it knows. It reads the file instead.
       const removed = end - start + 1;
-      // Publish the diff for the UI. The Edit line is drawn from these, so a
-      // line-range edit shows the same +/- rows and +N/-N counts as a substring
-      // edit instead of nothing. `ctx.lastEditDiff` is consumed (and cleared) by
-      // the agent loop right after this tool returns.
-      //
-      // `lines` is the pre-edit content, which is what `start` indexes into.
-      // The diff's NEW text is `inserted` — what the file now holds — not the
-      // raw `new_string`: when the seam-drop removed a line, the raw text showed a
-      // `+` row that is not in the file and shifted every after-context line
-      // number by the dropped count.
       if (ctx) ctx.lastEditDiff = buildEditDiff({ fileLines: lines, oldText: replacedText, newText: inserted.join('\n'), startLine: start });
-      // Say what the seam did, whichever way it went: a silent drop and a silent keep are both
-      // indistinguishable from an edit that never had the ambiguity. The dropped line is named
-      // with its ACTUAL pair (the two result lines that would have been identical) — it is not
-      // always "the last line of new_string against end_line + 1": a block can carry the repeat
-      // inside itself, with blank lines between the copies.
       return `Edited ${args.path}: replaced lines ${start}-${end} (${removed} line${removed === 1 ? '' : 's'}) with ${inserted.length} line${inserted.length === 1 ? '' : 's'}.`;
     }
 
@@ -350,39 +364,9 @@ export const spec = {
       ensureDir(p);
       fs.writeFileSync(p, updated, 'utf8');
     } catch (e) { return `Error writing ${args.path}: ${e.message}`; }
-    // Silently re-arm the Read snapshot for the edited region so the AI can keep
-    // editing on top of its own change WITHOUT another Read: we recompute the
-    // affected line range + hash from the NEW content and refresh the pool. We
-    // also drop any previously-recorded region whose content no longer matches
-    // (those are genuinely stale now). Nothing here is told to the model.
-    if (ctx && ctx.readPool) {
-      const entry = ctx.readPool.get(p);
-      if (entry) {
-        const newLines = normUpdated.split('\n');
-        entry.fileHash = hashStr(normUpdated);
-        entry.lines = newLines.length;
-        // Locate the edit site in the NEW content: same character offset as the
-        // match in the old one, because the text before the match is untouched.
-        // An anchor taken from the NEW text's first line found the first copy of
-        // that line ANYWHERE in the file (and `indexOf('')` returned 0 for a
-        // deletion), recording the re-armed region at a line the model never edited.
-        if (matchAt >= 0) {
-          const at = normUpdated.slice(0, matchAt).split('\n').length - 1; // 0-based
-          const newSpan = Math.max(1, String(matchNew).split('\n').length);
-          const start = at + 1;
-          const end = Math.min(newLines.length, at + newSpan);
-          // Re-hash every surviving old region against the new content, and add
-          // the freshly-edited span. Regions that no longer match are dropped.
-          const kept = entry.regions.filter((r) => hashLines(newLines, r.start, r.end) === r.hash);
-          kept.push({ start, end, hash: hashLines(newLines, start, end) });
-          entry.regions = kept;
-        } else {
-          // Could not locate the site: drop stale regions so nothing false stays.
-          entry.regions = entry.regions.filter((r) => hashLines(newLines, r.start, r.end) === r.hash);
-        }
-        try { const st = fs.statSync(p); entry.size = st.size; entry.mtimeMs = st.mtimeMs; } catch {}
-      }
-    }
+    // NO READ-SNAPSHOT REFRESH — see the note on the line-range path above. Whatever the model was holding is
+    // now a record of a file that no longer exists, so the next edit of these lines has to be preceded by a
+    // Read of them.
     const occurrences = replace_all ? count : 1;
     // Publish the diff for the UI (same contract as the line-range path above).
     // `startLine` comes from the actual match offset, so a snippet that starts
@@ -445,7 +429,12 @@ function buildEditDiff({ fileLines, oldText, newText, startLine }) {
   //
   // `net` is the number of lines the edit added (negative when it shrank the file), so every line below
   // the replaced block moves by exactly that much.
-  const net = normalizeText(newText).split('\n').length - replacedCount;
+  // AN EMPTY REPLACEMENT IS ZERO LINES, NOT ONE. `''.split('\n')` is `['']`, so a deletion counted itself as
+  // a one-line replacement and `net` came out 0 instead of -1 — the AFTER context was then numbered as if
+  // nothing had been removed, and the diff carried a phantom `+` row holding an empty string, which reads as an
+  // insertion where the file in fact lost a line.
+  const newLines = normalizeText(newText) === '' ? [] : normalizeText(newText).split('\n');
+  const net = newLines.length - replacedCount;
   for (let n = lastReplaced + 1; n <= lastReplaced + DIFF_CONTEXT; n++) {
     if (n >= 1 && n <= lines.length) after.push({ n: n + net, text: lines[n - 1] });
   }
@@ -622,18 +611,4 @@ function checkStaleRange(p, curLines, start, end, ctx) {
   return `Edit rejected: ${p} changed since it was Read (lines ${start}-${end} are not in an intact Read snapshot). Re-run ${args_readHint(p, start, end - start + 1)} to get the current content, then Edit.`;
 }
 
-// Refresh the region cache after a successful edit: drop regions that no longer
-// match the NEW content, and record the freshly-written span. Mirrors the
-// re-arm block used by the substring path.
-function refreshReadPool(p, normUpdated, written, ctx) {
-  if (!ctx || !ctx.readPool) return;
-  const entry = ctx.readPool.get(p);
-  if (!entry) return;
-  const newLines = normUpdated.split('\n');
-  entry.fileHash = hashStr(normUpdated);
-  entry.lines = newLines.length;
-  const kept = entry.regions.filter((r) => hashLines(newLines, r.start, r.end) === r.hash);
-  kept.push({ start: written.start, end: Math.min(newLines.length, Math.max(written.start, written.end)), hash: hashLines(newLines, written.start, Math.min(newLines.length, Math.max(written.start, written.end))) });
-  entry.regions = kept;
-  try { const st = fs.statSync(p); entry.size = st.size; entry.mtimeMs = st.mtimeMs; } catch {}
-}
+

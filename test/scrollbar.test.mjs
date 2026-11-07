@@ -201,9 +201,14 @@ test('an open overlay dims a filled row, not just its glyphs', () => {
   assert.ok(openAt > 0, 'the frame still draws a context bar under an overlay');
   const openBar = String(open.lines[openAt]);
   assert.ok(openBar.includes(C.dim), 'the bar is faint');
-  for (const f of present) {
-    assert.ok(openBar.includes(f),
-      `the bar LOST ${JSON.stringify(f)} under an overlay — the segments must stay distinct`);
+  // Below truecolor the fills must survive. In truecolor they are deliberately pulled toward the page instead
+  // (asserted just below), so requiring them here as well was a contradiction: the two branches asked for
+  // opposite things and only one of them can hold on a given terminal.
+  if (!TRUECOLOR) {
+    for (const f of present) {
+      assert.ok(openBar.includes(f),
+        `the bar LOST ${JSON.stringify(f)} under an overlay — the segments must stay distinct`);
+    }
   }
   if (TRUECOLOR) {
     // With an exact triple available the fill is genuinely pulled toward the page, which is

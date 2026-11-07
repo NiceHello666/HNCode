@@ -63,7 +63,7 @@ test('the counter never goes backwards across the steps of a turn', () => {
 
   const shown = () => {
     const line = composeFrame(s, 90, 24).lines.map(plain).find((l) => l.includes('Accelerating')) || '';
-    const m = /\| ([\d.]+)(k?) tokens\]/.exec(line);
+    const m = /\|\s*[^\w\s]*\s*([\d.]+)(k?) tokens\]/.exec(line);
     return m ? Number(m[1]) * (m[2] ? 1000 : 1) : NaN;
   };
 

@@ -73,10 +73,13 @@ const COMPACTION_INSTRUCTION = [
   '',
   'Be concise and proportional: a long multi-step task warrants detail, a nearly finished exchange needs only a sentence or two.',
   '',
-  'Respond with text only. Do not call any tools. Any tool-call syntax in your answer is discarded and scores the handoff as failed.'
+  'Respond with text only. Do not call any tools. Any tool-call syntax in your answer is discarded and scores the handoff as failed.',
+  '',
+  'That includes XML-style tool syntax such as `<||DSML||invoke name="...">` or `<function_call>`: no such tag is',
+  'recognised here, so it becomes part of the summary and the next turn reads it as a step that happened.',
 ].join('\n');
-
 // Trailing note: the model should RESUME, not answer the summary.
+
 // A summariser can answer with tool-call syntax even when no tools were offered — the format is in its
 // training data, and a model interrupted mid-workflow reaches for it. Nothing was called, so the text is
 // noise, and left in a handoff summary the next turn reads it as a step that happened.
@@ -96,10 +99,20 @@ function stripToolCallText(text) {
   let out = text;
   // A special-token block: closed form, or an unterminated one running to the end of its line.
   out = out.replace(/<\|tool_call\|>[^\n]*(?:<\|\/tool_call\|>)?/g, '');
-  // Fenced block form.
+  // A fenced block form.
   out = out.replace(/```tool_call[\s\S]*?```/g, '');
   // A bare JSON object on its own lines that declares a tool invocation.
   out = out.replace(/^\s*\{[^\n]*"name"\s*:\s*"[^"]+"[^\n]*"arguments"[^\n]*\}\s*$/gm, '');
+  // THE DSML DIALECT. Some models write a tool call as an XML-ish block with a doubled delimiter around the
+  // tag name (`<||DSML||invoke name="…">`), which none of the patterns above match. It arrives as a whole
+  // block, so it is removed as one — an unterminated block included, since a summariser cut off by the token
+  // limit leaves exactly that.
+  out = out.replace(/<\|+\|?DSML\|?\|+[\s\S]*?(?=<\/\|\|+DSML\|\|+>|$)/gi, '');
+  out = out.replace(/<\/?\|+\|?DSML\|?\|+[^>]*>/gi, '');
+  // THE `<function_call>` DIALECT and its `<tool_call>` sibling: a JSON payload wrapped in a tag. Removed with
+  // its body when both tags are present, and on its own when the body follows on the next line.
+  out = out.replace(/<(function_call|tool_call)>[\s\S]*?<\/\1>/gi, '');
+  out = out.replace(/<(function_call|tool_call)>[^\n]*/gi, '');
   out = out.replace(/\n{3,}/g, '\n\n').trim();
 
   if (out.length > 0) return out;
@@ -115,7 +128,6 @@ function stripToolCallText(text) {
 
 const COMPACTION_CONTINUATION_TEXT = 'Context compaction is complete — continue the work that was in progress when it began.';
 
-// Clip to a TOKEN budget, counting non-ASCII as one token per character (the same
 // Clip to a TOKEN budget, counting non-ASCII as one token per character (the same
 // rule estimateTokens uses). Slicing by characters is wrong for CJK text: 4000
 // Chinese characters are ~4000 tokens, not ~1000.
@@ -708,6 +720,16 @@ const filtered = (Array.isArray(cfg.toolFilter) && cfg.toolFilter.length
           // What it IS used for: cost and `/usage`, where it is the only honest source, and the turn's
           // output counter.
           this.usage = addUsage(this.usage, e.usage);
+          // THE REAL SIZE OF THE REQUEST THAT JUST WENT OUT.
+          //
+          // `usage.input` is what the endpoint actually billed for this request, which is the honest answer
+          // to "how full is the context". The compaction threshold reads it (see `usedNow` below) instead of
+          // the local estimate, which runs low because it cannot model the provider's framing. `input`
+          // INCLUDES the reply's own prompt but not the reply, which is exactly the figure to compare against
+          // the limit.
+          if (e.usage && Number.isFinite(e.usage.input) && e.usage.input > 0) {
+            this.ctxReportedTokens = e.usage.input;
+          }
           this.onEvent({ type: 'usage', usage: e.usage, total: this.usage });
           break;
         case 'tool_start':
@@ -778,7 +800,16 @@ const filtered = (Array.isArray(cfg.toolFilter) && cfg.toolFilter.length
       // request that leaves less than the reserved headroom is compacted even
       // below 85%, so the reply has room to be generated.
       const maxCtx = this.cfg.maxContextTokens || 512000;
+      // THE PROVIDER'S OWN COUNT WINS WHEN THERE IS ONE.
+      //
+      // `usedTokens()` is a local estimate from the token ledger. The endpoint reports the real size with
+      // every reply, and that figure is what the status bar shows — but this decision used the estimate
+      // regardless, so a session the gauge put at 88% could stay under an 85% trigger indefinitely: the
+      // estimate runs low because it cannot model the provider's own message framing and tool preamble.
+      // Two numbers for the same thing is the bug; the reported one is the one that is true.
       let usedNow = this.usedTokens();
+      const reported = Number(this.ctxReportedTokens);
+      if (Number.isFinite(reported) && reported > 0) usedNow = reported;
       // THE MESSAGE THAT TRIGGERED THIS TURN IS NOT YET IN A REQUEST.
       //
       // The user's message is appended before `run()` is entered, so a fresh turn that pushes the
@@ -911,7 +942,7 @@ const filtered = (Array.isArray(cfg.toolFilter) && cfg.toolFilter.length
         // cannot fit, the provider's context-length error is an honest, recoverable
         // failure instead of a vanished transcript.
         if (!summary && this.messages.length > 0) {
-          this.onEvent({ type: 'compaction_cancelled' });
+          this.onEvent({ type: 'compaction_cancelled', reason: 'the summary request failed, so nothing was trimmed' });
         } else {
         // NOW trim, at a split point the boundary rule allows.
         const { split, dropped: droppedCount, kept } = this.applyCompactionSplit(maxCtx, summary);
@@ -921,6 +952,10 @@ const filtered = (Array.isArray(cfg.toolFilter) && cfg.toolFilter.length
         // point of mutation instead of relying on that check to fire.
         this._ledger.reset();
         usedNow = this.usedTokens();
+        // THE REPORT DESCRIBES THE REQUEST THAT WENT OUT, so after a trim it still describes the OLD one.
+        // Drop it: the next turn falls back to the local estimate until the provider reports again, instead of
+        // reading a stale figure and compacting a history that was just compacted.
+        this.ctxReportedTokens = 0;
         this.onEvent({
           type: 'compacted', before, after: usedNow, kept,
           dropped: droppedCount, summary,

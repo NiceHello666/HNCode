@@ -33,24 +33,24 @@ function working(tokens, ms = 650000) {
 }
 
 test('the tail renders ` <time> | <tokens>`', () => {
-  assert.match(working(50000), /\[10m 50s \| 50k tokens\]/);
-  assert.match(working(1234), /\[10m 50s \| 1\.2k tokens\]/);
-  assert.match(working(1000), /\[10m 50s \| 1k tokens\]/);
-  assert.match(working(999), /\[10m 50s \| 999 tokens\]/);
+  assert.match(working(50000), /\[10m 50s \|\s*[^\w\s]*\s*50k tokens\]/);
+  assert.match(working(1234), /\[10m 50s \|\s*[^\w\s]*\s*1\.2k tokens\]/);
+  assert.match(working(1000), /\[10m 50s \|\s*[^\w\s]*\s*1k tokens\]/);
+  assert.match(working(999), /\[10m 50s \|\s*[^\w\s]*\s*999 tokens\]/);
 });
 
 test('the singular is used for exactly one token', () => {
   // The one count small enough to read as a word.
-  assert.match(working(1), /\[10m 50s \| 1 token\]/);
+  assert.match(working(1), /\[10m 50s \|\s*[^\w\s]*\s*1 token\]/);
   assert.doesNotMatch(working(1), /1 tokens/);
-  assert.match(working(2), /\[10m 50s \| 2 tokens\]/);
+  assert.match(working(2), /\[10m 50s \|\s*[^\w\s]*\s*2 tokens\]/);
 });
 
 test('zero tokens is shown rather than hidden', () => {
   // An absent counter and a zero one are indistinguishable to the user, and appearing
   // partway through a turn makes the row jump width under the eye.
   const line = working(0);
-  assert.match(line, /\[10m 50s \| 0 tokens\]/);
+  assert.match(line, /\[10m 50s \|\s*[^\w\s]*\s*0 tokens\]/);
 });
 
 test('the large-count format agrees with Claude Code', () => {
@@ -59,25 +59,25 @@ test('the large-count format agrees with Claude Code', () => {
   //
   // The old rule switched to whole thousands at 10k and had no unit above `k`, so 1.2M displayed as
   // `1235k` — the reader had to count digits to see the size.
-  assert.match(working(12400), /\[10m 50s \| 12\.4k tokens\]/, 'a decimal is kept past 10k');
-  assert.match(working(1234567), /\[10m 50s \| 1\.2M tokens\]/, 'a million gets its own unit');
+  assert.match(working(12400), /\[10m 50s \|\s*[^\w\s]*\s*12\.4k tokens\]/, 'a decimal is kept past 10k');
+  assert.match(working(1234567), /\[10m 50s \|\s*[^\w\s]*\s*1\.2M tokens\]/, 'a million gets its own unit');
   assert.doesNotMatch(working(1234567), /1235k/, 'and not a k-count that has to be converted');
-  assert.match(working(999999999), /\[10m 50s \| 1B tokens\]/, 'so does a billion');
+  assert.match(working(999999999), /\[10m 50s \|\s*[^\w\s]*\s*1B tokens\]/, 'so does a billion');
 });
 
 test('a value that rounds up to the next unit is shown in that unit', () => {
   // 999999 is 999.999k, which rounds to `1000k` — and `1000k` is `1m`. Leaving it as `1000k` makes
   // the reader do the conversion the formatter exists to do for them.
-  assert.match(working(999999), /\[10m 50s \| 1M tokens\]/);
+  assert.match(working(999999), /\[10m 50s \|\s*[^\w\s]*\s*1M tokens\]/);
   assert.doesNotMatch(working(999999), /1000k/);
-  assert.match(working(999999999), /\[10m 50s \| 1B tokens\]/);
+  assert.match(working(999999999), /\[10m 50s \|\s*[^\w\s]*\s*1B tokens\]/);
   assert.doesNotMatch(working(999999999), /1000m/);
 });
 
 test('the count is rounded down, never overflowing into the next unit by accident', () => {
   // `Math.floor` on the raw count keeps a display from claiming more than arrived.
-  assert.match(working(1999), /\[10m 50s \| 2k tokens\]/, '1.999k reads as 2k, not 2.0k');
-  assert.match(working(1000), /\[10m 50s \| 1k tokens\]/, 'and exactly 1000 is 1k, not 1.0k');
+  assert.match(working(1999), /\[10m 50s \|\s*[^\w\s]*\s*2k tokens\]/, '1.999k reads as 2k, not 2.0k');
+  assert.match(working(1000), /\[10m 50s \|\s*[^\w\s]*\s*1k tokens\]/, 'and exactly 1000 is 1k, not 1.0k');
 });
 
 test('the count moves as output arrives, not only at the end', () => {

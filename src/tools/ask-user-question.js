@@ -53,6 +53,8 @@ Do NOT use it for what you can infer from context, or for trivial decisions — 
 
 Usage:
 - Users always get an "Other" option; do not create one.
+    + 'For an answer that cannot be enumerated (a name, a path, a description), set free_text: true and omit'
+    + ' options — the user gets a focused field instead of a list.',
 - 2-4 distinct options per question, labels 1-5 words, descriptions carry the trade-offs. Labels unique within a question, question texts unique across the call.
 - 1-4 questions at a time, related ones grouped. multi_select allows several answers.
 - Put a recommended option first and append "(Recommended)" to its label.
@@ -105,8 +107,15 @@ export const spec = {
               type: 'boolean',
               description: 'Whether the user can select multiple options.',
             },
+            free_text: {
+              type: 'boolean',
+              description:
+                'Ask for a WRITTEN answer with no options: the field is focused immediately and the reply is'
+                + ' the text typed. Use it when the answer cannot be enumerated — a name, a path, a'
+                + ' description. Omit options when this is true.',
+            },
           },
-          required: ['question', 'options'],
+          required: ['question'],
         },
       },
     },
@@ -139,7 +148,10 @@ export const spec = {
       const text = String((q && q.question) || '').trim();
       if (!text) return 'Error: every question needs a non-empty `question` string.';
       const opts = Array.isArray(q && q.options) ? q.options : [];
-      if (opts.length < MIN_OPTIONS || opts.length > MAX_OPTIONS) {
+      const freeText = !!(q && q.free_text);
+      // A FREE-TEXT QUESTION HAS NO OPTIONS. The 2-4 rule exists so a choice is a real choice; applying it here
+      // would force a question like "what should the release be called?" to invent two decoys first.
+      if (!freeText && (opts.length < MIN_OPTIONS || opts.length > MAX_OPTIONS)) {
         return `Error: question ${JSON.stringify(text)} needs ${MIN_OPTIONS}-${MAX_OPTIONS} options (got ${opts.length}).`;
       }
       const options = [];
@@ -153,9 +165,12 @@ export const spec = {
         header: String((q && q.header) || '').trim().slice(0, 12),
         options,
         multiSelect: !!(q && q.multi_select),
+        // CARRIED THROUGH AS `freeText`, which is the name the dialog reads. Without this the flag stopped at
+        // the tool: the question arrived with no options AND no marker, so the dialog drew the option list —
+        // empty apart from its "Other" row — and the field never opened.
+        freeText,
       });
     }
-
     const dup = questionUniquenessError(questions);
     if (dup) return dup;
 

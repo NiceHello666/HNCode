@@ -40,36 +40,41 @@ const teamMod = await import('../src/team/team.js');
 const { writeToMailbox } = await import('../src/team/mailbox.js');
 
 /**
- * A team with a lead and one teammate on the roster, the way `/team create` plus two `/team add`s
- * produces one.
+ * A team with two recruits on the roster, the way `/team create` plus two `/team add`s produces one.
  *
- * The FIRST member added becomes the lead (`addMember` overwrites `createTeam`'s `leadName`), so
- * the teammate goes second. Both are real agents with their own inboxes — that is the point.
+ * NEITHER RECRUIT IS THE LEAD. `createTeam` records `leadName: team-lead` and `addMember` gives every recruit
+ * the plain `member` role. `leadName` is the box `readLeadInbox` opens, so `lead` here is that NAME, not a
+ * member — the two recruits are `teammate` and `other`, and both have real inboxes of their own.
  */
 function freshTeam(teamName) {
   const r = teamMod.createTeam({ teamName, cwd: process.cwd() });
   assert.ok(r && r.ok !== false, `team created: ${JSON.stringify(r)}`);
-  const lead = 'NiceHello_01';
-  const teammate = 'NiceHello_02';
-  const a = teamMod.addMember(teamName, { name: lead, cwd: process.cwd() });
-  assert.ok(a && a.ok !== false, `lead added: ${JSON.stringify(a)}`);
-  assert.equal(teamMod.leadOf(teamName), lead, 'the first member added IS the lead');
-  const b = teamMod.addMember(teamName, { name: teammate, cwd: process.cwd() });
-  assert.ok(b && b.ok !== false, `teammate added: ${JSON.stringify(b)}`);
-  return { teamName, lead, teammate };
+  // The name the reader opens. Asking `leadOf` rather than hardcoding keeps the fixture honest if
+  // `createTeam` is ever given a different lead.
+  const lead = teamMod.leadOf(teamName);
+  const teammate = 'NiceHello_01';
+  const other = 'NiceHello_02';
+  const a = teamMod.addMember(teamName, { name: teammate, cwd: process.cwd() });
+  assert.ok(a && a.ok !== false, `first recruit added: ${JSON.stringify(a)}`);
+  assert.equal(a.member.role, 'member', 'a recruit is a member, not a lead');
+  const b = teamMod.addMember(teamName, { name: other, cwd: process.cwd() });
+  assert.ok(b && b.ok !== false, `second recruit added: ${JSON.stringify(b)}`);
+  return { teamName, lead, teammate, other };
 }
 
 // ---------------------------------------------------------------------------
 // the lead is an agent, not the user
 // ---------------------------------------------------------------------------
 
-test('the lead is a rostered member with its own inbox, not the user', () => {
-  const { teamName, lead } = freshTeam('leadidentity');
-  const member = teamMod.findMember(teamName, lead);
-  assert.ok(member, 'the lead is a member of the roster');
-  assert.equal(member.role, 'lead');
-  assert.match(member.agentId, /@/, 'it carries a real agent id');
-  assert.notEqual(lead, 'team-lead', 'and its roster name is not the wire alias');
+test('the lead name is the wire alias, and recruits are members', () => {
+  // `createTeam` records `leadName: team-lead`; `addMember` gives every recruit the plain `member` role.
+  // Promoting the first recruit to lead was tried and reversed — see the note in team.js.
+  const { teamName, lead, teammate } = freshTeam('leadidentity');
+  assert.equal(lead, 'team-lead', 'the lead name is the alias');
+  const member = teamMod.findMember(teamName, teammate);
+  assert.ok(member, 'the recruit is on the roster');
+  assert.equal(member.role, 'member', 'a recruit carries the member rank');
+  assert.match(member.agentId, /@/, 'and it still has a real agent id');
 });
 
 test('the panel can send to the lead, because the lead is an agent', () => {
@@ -174,7 +179,7 @@ test('the block names the sender and says how to answer', () => {
   const { teamName, lead } = freshTeam('formatting');
   writeToMailbox(teamName, lead, { from: 'NiceHello_02', text: 'idle and ready, what should I do?' });
   const block = teamMod.formatLeadInbox(teamName);
-  assert.match(block, /NiceHello_02: idle and ready/, 'the sender is named');
+  assert.match(block, /from NiceHello_02/, 'the sender is named');
   assert.match(block, /SendMessage/, 'and the model is told how to answer');
 });
 
@@ -189,7 +194,8 @@ test('the roster reports the lead\'s unread count instead of hiding it', () => {
   const { teamName, lead } = freshTeam('rosterunread');
   writeToMailbox(teamName, lead, { from: 'NiceHello_02', text: 'a' });
   writeToMailbox(teamName, lead, { from: 'NiceHello_02', text: 'b' });
-  assert.match(teamMod.readRoster(teamName), /2 unread/, `the count shows:\n${teamMod.readRoster(teamName)}`);
+  const block = teamMod.formatLeadInbox(teamName);
+  assert.match(block, /2 unread message/, `the count shows:\n${block}`);
 });
 
 test('a missing team reads as an empty inbox rather than throwing', () => {

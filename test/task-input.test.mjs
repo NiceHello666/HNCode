@@ -86,18 +86,22 @@ test('an interactive task has a stdin pipe; a plain one does not', async () => {
 test('text reaches the process, and Enter is what delivers it', async () => {
   await bash.execute({ command: startEcho(), run_in_background: true, interactive: true }, ctx);
   const id = Object.keys(ctx.tasks).slice(-1)[0];
-  await wait(400);
+  // Wait for the child to be reading, not for a fixed 400ms. The task is ready when it has a stdin pipe;
+  // a short settle then covers the gap between the pipe existing and the script subscribing to it.
+  for (let i = 0; i < 60 && !ctx.tasks[id].stdin; i++) await wait(50);
+  await wait(200);
 
   await TaskInputSpec.execute({ task_id: id, text: 'hello' }, ctx);
   await TaskInputSpec.execute({ task_id: id, text: 'world', enter: false }, ctx);
-  await wait(300);
+  // Poll for the echo instead of sleeping: the write has to travel through a pipe and back as stdout.
+  for (let i = 0; i < 60 && !/echo:hello/.test(String(ctx.tasks[id].output || '')); i++) await wait(50);
 
   let out = String(ctx.tasks[id].output || '');
   assert.match(out, /echo:hello/, 'the first line round-tripped');
   assert.doesNotMatch(out, /echo:world/, 'a write without Enter is not delivered yet');
 
   await TaskInputSpec.execute({ task_id: id, text: '' }, ctx);
-  await wait(400);
+  for (let i = 0; i < 60 && !/echo:world/.test(String(ctx.tasks[id].output || '')); i++) await wait(50);
   out = String(ctx.tasks[id].output || '');
   assert.match(out, /echo:world/, 'and lands once Enter arrives');
 });
@@ -121,7 +125,11 @@ test('a finished task is refused rather than silently accepted', async () => {
   const r = await bash.execute({ command: 'echo done', run_in_background: true, interactive: true }, ctx);
   void r;
   const id = Object.keys(ctx.tasks).slice(-1)[0];
-  await wait(500);
+  // Wait for the task to actually reach a terminal state: `echo done` exits on its own, but the exit signal
+  // lands at whatever speed the machine allows, and a fixed sleep raced it under a parallel test run.
+  for (let i = 0; i < 60 && ctx.tasks[id] && !["completed", "failed", "killed"].includes(ctx.tasks[id].status); i++) {
+    await wait(50);
+  }
   const out = await TaskInputSpec.execute({ task_id: id, text: 'x' }, ctx);
   assert.match(String(out), /no stdin|is completed|closed its stdin/);
 });

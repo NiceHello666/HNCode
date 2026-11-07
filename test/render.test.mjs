@@ -122,7 +122,10 @@ function panelGaps(frame) {
       }
       const cp = ansi.codePointAt(i);
       const w = visualWidth(String.fromCodePoint(cp));
-      if (c >= b.col0 && c <= b.col1 && !pending.includes(PANEL_BG)) gaps.push({ row: r, col: c });
+      // The panel background may be 256-colour (`48;5;236`) or truecolor (`48;2;46;46;46`) depending on the
+      // theme. What matters is that SOME background is in force on every panel cell; pinning the exact
+      // encoding made this fail on a truecolor theme while the panel was perfectly opaque.
+      if (c >= b.col0 && c <= b.col1 && !/\x1b\[48;(?:5;\d+|2;\d+;\d+;\d+)m/.test(pending)) gaps.push({ row: r, col: c });
       c += w;
       i += cp > 0xffff ? 2 : 1;
     }
@@ -473,13 +476,19 @@ test('every row behind the panel is greyed, and the panel keeps its own colours'
   // PREPENDED to the cell's own style rather than replacing it. The row must be one that
   // actually carries a foreground escape; the rows immediately around a centred panel are
   // often blank padding, which carries none and would make this vacuous.
-  const withText = raw.findIndex((r, i) => (i < b.row0 || i > b.row1) && /\x1b\[38;5;\d+/.test(r));
+  // The colour may be 256-colour (`38;5;n`), truecolor (`38;2;r;g;b`) or a bright ANSI code (`97m`) depending
+  // on the theme. Pinning it to one encoding made this fail on every truecolor theme while the dimming was
+  // correct, so the pattern accepts any of the three.
+  const FG = /(?:\x1b\[(?:38;[25];[0-9;]+|9[0-7])m)/;
+  const withText = raw.findIndex((r, i) => (i < b.row0 || i > b.row1) && FG.test(r));
   assert.ok(withText >= 0, 'some backdrop row outside the panel carries text');
   assert.ok(raw[withText].includes(FAINT), 'that backdrop row is dimmed');
-  // The colour survives BESIDE the faint, in the same cell. If dimming had overwritten
-  // the cell's style the foreground would be gone and the transcript would go flat grey.
-  assert.ok(/\x1b\[2m[^\x1b]*\x1b\[38;5;\d+/.test(raw[withText])
-    || /\x1b\[38;5;\d+[^\x1b]*\x1b\[2m/.test(raw[withText]),
+  // The colour survives BESIDE the faint, in the same cell. If dimming had overwritten the cell's style the
+  // foreground would be gone and the transcript would go flat grey. Either order counts, and either colour
+  // encoding — the point is that both escapes are present in the cell, not which one the theme chose.
+  const FGSRC = '\\x1b\\[(?:38;[25];[0-9;]+|9[0-7])m';
+  assert.ok(new RegExp(`\\x1b\\[2m[^\\x1b]*${FGSRC}`).test(raw[withText])
+    || new RegExp(`${FGSRC}[^\\x1b]*\\x1b\\[2m`).test(raw[withText]),
     'the dimmed backdrop still carries its own foreground colour');
 });
 

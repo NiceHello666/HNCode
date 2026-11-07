@@ -49,16 +49,17 @@ test('a team starts empty, and the first member becomes its lead', async () => {
     assert.equal(r.team.members.length, 0, 'no placeholder member');
     assert.equal(r.team.leadAgentId, '', 'and no leader until one joins');
 
-    // The rule: whoever joins first takes the role.
+    // The rule: every recruit is a MEMBER. Promoting the first was tried and reversed — `/team add`
+    // recruits someone to do the work, and labelling it a lead made it believe nothing had been assigned.
     const m = team.addMember('demo', { name: 'alice', model: 'm-a' });
     assert.equal(m.ok, true);
-    assert.equal(m.member.role, 'lead');
-    assert.equal(team.leadOf('demo'), 'alice');
-    assert.equal(store.readTeamFile('demo').leadAgentId, 'alice@demo');
+    assert.equal(m.member.role, 'member');
+    assert.equal(team.leadOf('demo'), 'team-lead', 'the lead is the alias createTeam recorded');
+    assert.equal(store.readTeamFile('demo').leadAgentId, '', 'and no agent holds it yet');
 
-    // And the next one is a peer.
+    // And the next one is a peer too.
     const b = team.addMember('demo', { name: 'bob' });
-    assert.equal(b.member.role, 'member', 'only the first is the lead');
+    assert.equal(b.member.role, 'member', 'a recruit is always a member');
 
     // Overwriting would strand the existing members with no lead, and its task history with no
     // owner.
@@ -291,10 +292,10 @@ test('dissolving a team tells its members first', async () => {
     // The LEAD is not told: it is the party dissolving the team. A second member is what
     // gives the notification somewhere to go.
     team.addMember('demo', { name: 'bob' });
-
+    // Neither recruit is the lead (the lead is the alias, not a member), so BOTH are told.
     const r = team.disbandTeam('demo', { reason: 'we are done' });
     assert.equal(r.ok, true);
-    assert.equal(r.told, 1);
+    assert.equal(r.told, 2);
     assert.equal(store.readTeamFile('demo'), null, 'the roster is gone');
   });
 });
@@ -310,11 +311,11 @@ test('a teammate is told when its team is dissolved', async () => {
 });
 
 test('the panel labels a lead as the lead, not as a member yet to start', async () => {
-  // Two mistakes stacked into one wrong row. The `lead` state was chosen by comparing the name to
-  // the wire alias `team-lead`, which never matched — `addMember` gives the role to the first
-  // member added, under its OWN name — so the branch was dead. The phase then fell through the
-  // renderer's chain to its final fallback, which reads `not started`: the row said the lead had
-  // not come up, about an agent that was merely still initialising.
+  // EVERY ROW IS A MEMBER, and its label comes from its own phase.
+  //
+  // The panel once tried to mark the lead by comparing a name to the wire alias — a branch that never fired,
+  // because the lead was a promoted member under its OWN name. Neither half survives: the lead is the alias and
+  // no member holds it, so a row is labelled by the phase the member reports.
   await withHome(async () => {
     const { teamRows } = await import('../src/team-panel.js');
     team.createTeam({ teamName: 'demo' });
@@ -322,16 +323,16 @@ test('the panel labels a lead as the lead, not as a member yet to start', async 
     team.addMember('demo', { name: 'bob' });
 
     const rows = teamRows({ teamName: 'demo' });
-    const lead = rows.find((r) => r.name === 'alice');
-    assert.ok(lead, 'the lead is on the roster');
-    assert.equal(lead.isLead, true, 'recognised by ROLE');
-    assert.equal(lead.state, 'lead', 'and shows as the lead, not as its phase');
+    const alice = rows.find((r) => r.name === 'alice');
+    assert.ok(alice, 'the recruit is on the roster');
+    assert.equal(alice.isLead, false, 'no recruit is the lead');
+    assert.ok(['starting', 'working', 'thinking', 'idle'].includes(alice.state),
+      `the row reports a real phase: ${alice.state}`);
 
-    // A member's own phase still drives its label.
-    const member = rows.find((r) => r.name === 'bob');
-    assert.equal(member.isLead, false);
-    assert.ok(['starting', 'working', 'thinking', 'idle'].includes(member.state),
-      `a member reports a real phase: ${member.state}`);
+    const bob = rows.find((r) => r.name === 'bob');
+    assert.equal(bob.isLead, false);
+    assert.ok(['starting', 'working', 'thinking', 'idle'].includes(bob.state),
+      `a member reports a real phase: ${bob.state}`);
   });
 });
 
