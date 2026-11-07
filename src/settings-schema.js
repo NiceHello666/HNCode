@@ -151,6 +151,21 @@ export const SETTINGS_SCHEMA = [
     ui: { tab: 'tools', group: 'Delegation', label: 'Swarm mode', hint: 'Expose AgentSwarm for fanning work across subagents' } },
   { key: 'output_style', ...str(''),
     ui: { tab: 'tools', group: 'Output', label: 'Output style', hint: 'Named style overriding how replies are written' } },
+  // THE WEB SEARCH KEYS. Keyless search is rate-limited per IP, so on a shared or busy address WebSearch
+  // answers with refusals that read as "search is broken". Tavily keys are per account, and the tool tries
+  // them in order — several keys make the monthly quota additive.
+  //
+  // `kind: 'text'` is what makes /settings open the multi-line editor instead of asking for one line: the
+  // value IS a list, one key per line.
+  { key: 'web_search_api_key', ...text(''),
+    ui: {
+      tab: 'tools',
+      group: 'Web',
+      label: 'WebSearch API keys',
+      hint: 'One key per line, tried in order — a second key is used when the first is out of quota. '
+        + 'Get them free at https://app.tavily.com (sign in, copy from the dashboard). '
+        + 'Empty uses keyless mode, which is rate-limited per IP.',
+    } },
   { key: 'auto_trim_aggressive', ...bool(false), ui: null },
   { key: 'no_delegation', ...bool(false), ui: null },
 

@@ -509,6 +509,15 @@ const b = baseUrl.replace(/\/+$/, '');
     // because the two are a matter of taste and the cost is one branch.
     shimmerEdge: String(root.shimmer_edge || process.env.HNCODE_SHIMMER_EDGE || 'cosine').toLowerCase() === 'linear'
       ? 'linear' : 'cosine',
+    // WEB SEARCH KEYS (`web_search_api_key`).
+    //
+    // Keyless mode is rate-limited BY IP, so a shared or busy address gets refusals that look like "search is
+    // broken". Tavily keys are per account and the tool tries them IN ORDER, so the monthly quota is additive.
+    //
+    // The value is a LIST, one key per line. It is kept as a STRING here — newline-separated — because that is
+    // what the multi-line editor edits and what `setConfigString` writes; splitting happens at the call site so
+    // a stray blank line can never count as a key. A single key is a list of one, so an old config still works.
+    webSearchApiKey: String(root.web_search_api_key || process.env.HNCODE_WEB_SEARCH_API_KEY || '').trim(),
     raw: root,
   };
 }

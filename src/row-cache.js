@@ -29,6 +29,15 @@
 // what "the same" means. `evictIfStale` is the second half of the same contract: a streamed
 // message's text grows every frame, so an entry whose text no longer matches is not a
 // reuse, and the cache has to notice rather than serve it.
+//
+// THE TEXT IS HASHED, NOT EMBEDDED
+// --------------------------------
+// The first version put the whole message text in the key. Measured: a 1260-character
+// message produced a 1286-character key, so filling the 1500-entry cache held ~7MB of
+// pure key strings — more than the rendered rows they identify. Every lookup also built a
+// fresh megabyte-scale string to compare. A 32-bit hash plus the text LENGTH keeps a key
+// under 60 characters; the length is what makes a collision mean "two texts of the same
+// size hashed alike" rather than "any two texts", and a collision only costs a re-render.
 
 /** How many messages keep their rows. Chosen by measurement, not by feel: the rows for a
  *  typical assistant message are a few hundred bytes each, so 1500 covers a long session's
@@ -36,8 +45,20 @@
 export const ROW_CACHE_LIMIT = 1500;
 
 /**
- * A cache key that identifies a rendered message.
+ * FNV-1a over a string, as an unsigned 32-bit number.
  *
+ * @param {string} s
+ * @returns {number}
+ */
+function hashText(s) {
+  let h = 2166136261 >>> 0;
+  for (let i = 0; i < s.length; i++) {
+    h ^= s.charCodeAt(i);
+    h = Math.imul(h, 16777619) >>> 0;
+  }
+  return h >>> 0;
+}
+/**
  * Every input the render reads goes in, so "the same key" means "the same rows":
  *   `id`  a stable identity for the message. Index-based ids break the moment a message
  *         is inserted or removed, which is exactly what compaction and /undo do.
@@ -49,9 +70,17 @@ export const ROW_CACHE_LIMIT = 1500;
  *   spinner key.
  */
 export function makeRowKey(parts) {
+  // THE TEXT IS HASHED, NOT EMBEDDED. Measured: a 1260-character message produced a
+  // 1286-character key, so a full cache held megabytes of key strings — more than the rows
+  // they identify — and every lookup built a fresh one to compare. Hash plus LENGTH keeps a
+  // key around 50 characters. The length is what narrows a collision from "any two texts"
+  // to "two texts of the same size that also hash alike", and a collision costs a re-render,
+  // not a wrong row.
+  const text = parts.text == null ? '' : String(parts.text);
   return [
     parts.id,
-    parts.text == null ? '' : parts.text,
+    text.length,
+    hashText(text),
     parts.w,
     parts.fg,
     parts.codeFg,

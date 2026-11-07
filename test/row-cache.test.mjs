@@ -71,19 +71,25 @@ test('a streamed message gets a new key every frame, because its text changed', 
 });
 
 test('text containing the separator cannot collide with another message', () => {
-  // The key joins its parts with a control character. If a message could CONTAIN that
-  // character, two different messages could produce one key and one would be drawn with
-  // the other's rows.
-  resetRowCache();
+  // THE TEXT NO LONGER REACHES THE KEY, so the separator cannot be forged from it.
+  //
+  // It used to be embedded verbatim, and a message containing the separator could collide with a different
+  // message's key. The text is hashed now, so what goes in the key is a number: no content a user or a model
+  // can write is able to add a separator.
   const a = key({ id: 'assistant', text: 'x' });
   const b = key({ id: 'assistant', text: 'x\x1fy\x1f80' });
-  assert.notEqual(a, b);
-  // And the separator really is a control character, not a printable one that text can
-  // plausibly contain by accident.
-  const k = key({ id: 'a\x1fb', text: 'c' });
-  // The trailing separator plus an empty theme: `theme` is the last part, so an
-  // unspecified one contributes nothing but its separator.
-  assert.equal(k, 'a\x1fb\x1fc\x1f80\x1fx\x1fy\x1f0\x1f0\x1f0\x1f0\x1f0\x1f');
+  assert.notEqual(a, b, 'different texts must not share a key');
+
+  // The key has a fixed, small shape: nothing in it can grow with the message.
+  const short = key({ text: 'hi' });
+  const long = key({ text: 'x'.repeat(100000) });
+  assert.ok(Math.abs(long.length - short.length) < 12,
+    `key length must not track the message (short ${short.length}, long ${long.length})`);
+  assert.ok(long.length < 80, `a key is small (${long.length} chars)`);
+
+  // The text LENGTH is part of it, so two texts of different sizes never collide even before hashing.
+  assert.notEqual(key({ text: 'abc' }), key({ text: 'abd' }));
+  assert.equal(key({ text: 'abc' }), key({ text: 'abc' }), 'the same text is the same key');
 });
 
 test('the palette is part of the row key', () => {

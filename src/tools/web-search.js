@@ -94,46 +94,112 @@ export const spec = {
     const query = String(args.query || '').trim();
     if (!query) return 'Error: query must not be empty.';
     const signal = (ctx && ctx.signal) || undefined;
-    try {
-      // POST with a JSON body — the keyless mode is not offered on a GET. `X-Tavily-Access-Mode: keyless`
-      // is what selects it; without the header the request is rejected for a missing API key.
-      const res = await fetch(ENDPOINT, {
-        method: 'POST',
-        headers: {
+
+    // SEVERAL KEYS, TRIED IN ORDER.
+    //
+    // One key has one monthly quota, and when it runs out the tool has nothing left to say but "search is
+    // broken". A list makes the quota additive: the second key is simply tried when the first is refused, and
+    // the answer is the same either way. Empty entries are skipped so a trailing newline in the editor is not
+    // an "empty key" attempt.
+    const keys = parseKeys(ctx && (ctx.webSearchApiKey || (ctx.cfg && ctx.cfg.webSearchApiKey)));
+
+    // Keyless is the fallback only when NO key is configured at all — it is rate-limited per IP, so it is worth
+    // trying exactly when there is no account to spend instead.
+    const attempts = keys.length ? keys.map((k) => ({ key: k })) : [{ key: '' }];
+
+    let lastFailure = '';
+    for (let i = 0; i < attempts.length; i++) {
+      const { key } = attempts[i];
+      try {
+        const headers = {
           'Content-Type': 'application/json',
-          'X-Tavily-Access-Mode': 'keyless',
           'User-Agent': UA,
           Accept: 'application/json',
-        },
-        body: JSON.stringify({ query, max_results: 8 }),
-        signal,
-      });
-      if (!res.ok) {
-        const body = await res.text().catch(() => '');
-        return `Error: search failed (${res.status} ${res.statusText}).${body ? ' ' + body.slice(0, 200) : ''}`;
+        };
+        if (key) headers.Authorization = `Bearer ${key}`;
+        else headers['X-Tavily-Access-Mode'] = 'keyless';
+        const res = await fetch(ENDPOINT, {
+          method: 'POST',
+          headers,
+          // `search_depth: 'basic'` COSTS ONE CREDIT; the default is `advanced`, which costs two per request.
+          // A snippet is all this tool shows, so the deeper crawl buys nothing — it was doubling the price of
+          // every search for content that gets truncated to a sentence or two anyway.
+          body: JSON.stringify({ query, max_results: 8, search_depth: 'basic' }),
+          signal,
+        });
+        if (!res.ok) {
+          const body = await res.text().catch(() => '');
+          lastFailure = `${res.status} ${res.statusText}${body ? ' ' + body.slice(0, 160) : ''}`;
+          // Move to the next key. A 4xx from THIS key is the reason to try another — 429 is the monthly quota
+          // and 401 is a typo — while a 5xx is the service, and the next key would hit the same wall. Only
+          // stop early when there IS no next key.
+          if (i + 1 < attempts.length) continue;
+          break;
+        }
+        return await renderResults(res, query);
+      } catch (e) {
+        if (e && e.name === 'AbortError') return `Error searching "${query}": interrupted`;
+        lastFailure = e.message || String(e);
+        if (i + 1 < attempts.length) continue;
+        break;
       }
-      // The endpoint answers with JSON. If it ever does not, say so rather than parsing a page.
-      const text = await res.text();
-      let json;
-      try { json = JSON.parse(text); }
-      catch { return `Error: search returned a non-JSON response (${text.length} bytes) for "${query}".`; }
-
-      const results = parseSearchResults(json, 8);
-      if (!results.length) {
-        // A genuine empty result set, NOT an error. A broken page must not look like a successful search.
-        return `No search results found for: ${query}`;
-      }
-      // The API also returns a written `answer` for some queries. It is its own summary, so it is labelled
-      // as such — the model should cite the sources, not this paragraph.
-      const answer = typeof json.answer === 'string' && json.answer.trim()
-        ? `Summary (from the search API, not a source):\n${json.answer.trim()}\n\n`
-        : '';
-      return answer + results
-        .map((r, i) => `${i + 1}. ${r.title}\n   ${r.url}\n   ${r.snippet}`)
-        .join('\n\n');
-    } catch (e) {
-      const msg = e && e.name === 'AbortError' ? 'interrupted' : (e.message || String(e));
-      return `Error searching "${query}": ${msg}`;
     }
+
+    // Every key failed, or the only key did. Say which mode was in play: in keyless that is the IP limit and
+    // the fix is a key, with a key it is the key.
+    const mode = keys.length
+      ? `${keys.length} configured API key${keys.length === 1 ? '' : 's'}`
+      : 'keyless mode (rate-limited per IP — set web_search_api_key to lift it)';
+    return `Error: search failed with ${mode}: ${lastFailure}`;
   },
 };
+
+/**
+ * The keys in a configured value, one per line.
+ *
+ * `web_search_api_key` holds a LIST: one key per line, because that is what a multi-line editor gives and what
+ * a user pasting several keys already has. A single-line value is a list of one, so an existing config keeps
+ * working unchanged.
+ *
+ * @param {string|string[]} raw
+ * @returns {string[]}
+ */
+export function parseKeys(raw) {
+  if (Array.isArray(raw)) return raw.map((x) => String(x).trim()).filter(Boolean);
+  return String(raw == null ? '' : raw)
+    .split(/\r?\n/)
+    .map((x) => x.trim())
+    .filter(Boolean);
+}
+
+/**
+ * Turn a successful response into the text the model reads.
+ *
+ * @param {Response} res
+ * @param {string} query
+ * @returns {Promise<string>}
+ */
+async function renderResults(res, query) {
+  // The endpoint answers with JSON. If it ever does not, say so rather than parsing a page.
+  const text = await res.text();
+  let json;
+  try { json = JSON.parse(text); }
+  catch { return `Error: search returned a non-JSON response (${text.length} bytes) for "${query}".`; }
+
+  const results = parseSearchResults(json, 8);
+  if (!results.length) {
+    // A genuine empty result set, NOT an error. A broken page must not look like a successful search.
+    return `No search results found for: ${query}`;
+  }
+  // The API also returns a written `answer` for some queries. It is its own summary, so it is labelled as
+  // such — the model should cite the sources, not this paragraph.
+  const answer = typeof json.answer === 'string' && json.answer.trim()
+    ? `Summary (from the search API, not a source):\n${json.answer.trim()}\n\n`
+    : '';
+  // NO CREDIT COUNT. The docs show a `usage.credits` field in their example response, but the live endpoint
+  // does not send one — measured on both `basic` and `advanced` depth, `json.usage` is undefined.
+  return answer + results
+    .map((r, i) => `${i + 1}. ${r.title}\n   ${r.url}\n   ${r.snippet}`)
+    .join('\n\n');
+}
+
