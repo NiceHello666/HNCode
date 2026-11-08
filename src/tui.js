@@ -7125,7 +7125,8 @@ const queueH = takeover ? 0 : queuePanelHeight(state);
       const nameField = col(label, selected ? (C.cyan + C.bold) : C.gray);
       const hint = cmd.argumentHint ? col(' ' + cmd.argumentHint, C.gray) : '';
       const pad = Math.max(2, 18 - visualCol(label) - visualCol(hint));
-      const desc = col(cmd.desc, C.gray);
+      // `description` for a skill completion, `desc` for a command: both spellings exist, so accept either.
+      const desc = col(cmd.desc || cmd.description || '', C.gray);
       addHit(lines.length, 2, mInner, { kind: 'menuItem', index: off + j });
       lines.push(menuRow(mark + nameField + hint + ' '.repeat(pad) + desc));
     });
@@ -12779,7 +12780,15 @@ export async function dispatch(cmdRaw, arg, state, cfg, session, h, submit, stdo
       if (!url) { appErr('No git remote named "origin" — cannot build a PR URL.'); return; }
       const branch = gitmod.currentBranch(cwd);
       sayPanel(`Open a pull request for ${branch} → ${base}:\n  ${url}`);
-      app('PR link copied to the transcript (Ctrl+Shift+C to copy).');
+      // ACTUALLY COPY IT, and report what happened.
+      //
+      // The notice used to claim the link was copied while the clipboard was left alone, so the paste that followed
+      // produced whatever was copied last. `copyText` also signals failure by RETURNING false rather than throwing,
+      // so its result is what decides the message — a try/catch around it announced success either way.
+      let copied = false;
+      try { copied = copyText(url); } catch { copied = false; }
+      if (copied) app('PR link copied to your clipboard');
+      else app('Could not reach the clipboard \u2014 the link is on screen above.');
       return;
     }
     case 'cache': {
@@ -14131,7 +14140,7 @@ const agents = readAgentsMd(state.cwd || state.workspace || cfg.workspace, state
       // Tools that act ONLY inside the session: the roster, the mailbox, the task list, the memories.
       // `isInsideWorkspace` answers `false` for any tool it does not know, so without this they all asked for
       // approval in yolo — the one mode whose point is not asking.
-      const safeTools = ['Read', 'Grep', 'Glob', 'FetchURL', 'WebSearch', 'TaskOutput', 'TaskList', 'TaskStop', 'TaskWait', 'TodoList', 'Goal', 'FileLines', 'AgentList', 'AgentMessage', 'AgentInterrupt', 'AgentClose', 'TaskInput', 'SendMessage', 'TeamTaskCreate', 'TeamTaskUpdate', 'TeamTaskList', 'ListTeammates', 'Memory', 'AskUserQuestion'];
+      const safeTools = ['Read', 'Grep', 'Glob', 'FetchURL', 'WebSearch', 'TaskOutput', 'TaskList', 'TaskStop', 'TaskWait', 'TodoList', 'Goal', 'ActivateSkill', 'FileLines', 'AgentList', 'AgentMessage', 'AgentInterrupt', 'AgentClose', 'TaskInput', 'SendMessage', 'TeamTaskCreate', 'TeamTaskUpdate', 'TeamTaskList', 'ListTeammates', 'Memory', 'AskUserQuestion'];
       if (rule !== 'ask' && safeTools.includes(toolName)) return true;
       // A read-only SHELL COMMAND (ls/git status/rg/cat …) is as safe as a
       // read-only TOOL, so it runs without a prompt in Ask mode too — the user
@@ -16554,9 +16563,9 @@ export async function startTUI(opts) {
   async function registryAct() {
     const b = state.registryBrowser;
     if (!b || !b.data) return;
-    const { rowsForTab } = await import('./registry-browser.js');
+    const { visibleRowsForTab } = await import('./registry-browser.js');
     const remote = await import('./remote.js');
-    const rows = rowsForTab(b, b.tab);
+    const rows = visibleRowsForTab(b, b.tab);
     const row = rows[Math.min(b.selectedIndex || 0, Math.max(0, rows.length - 1))];
     if (!row || row.disabled || row.action === 'none') return;
     const name = row.name;

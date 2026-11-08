@@ -171,6 +171,23 @@ function statusColor(tone) {
   return C.blue;
 }
 
+/**
+ * The rows a tab SHOWS, after the search filter.
+ *
+ * The renderer and the action handler must agree on this or the list lies: with a query typed,
+ * `selectedIndex` counts entries in the FILTERED list, so looking it up in the unfiltered one acts on whatever
+ * happened to sit at that position instead of the row under the cursor.
+ *
+ * The tab COUNTS stay on the unfiltered list — a filter must never make a tab look empty.
+ */
+export function visibleRowsForTab(state, tabId) {
+  const rows = rowsForTab(state, tabId);
+  const query = String(state && state.filter || '').trim().toLowerCase();
+  if (!query) return rows;
+  return rows.filter((r) => [r.label, r.description, r.name]
+    .map((v) => String(v == null ? '' : v)).join(' ').toLowerCase().includes(query));
+}
+
 export function renderRegistryBrowser(state, cols, rows) {
   if (cols < MIN_WIDTH || rows < MIN_HEIGHT) {
     const lines = [fitExactly(C.red + 'Terminal too small (need >= ' + MIN_WIDTH + ' x ' + MIN_HEIGHT + ')' + C.reset, cols)];
@@ -181,7 +198,9 @@ export function renderRegistryBrowser(state, cols, rows) {
   const tabs = state.kind === 'skills' ? SKILL_TABS : PLUGIN_TABS;
   const tabIdx = Math.max(0, tabs.findIndex((t) => t.id === state.tab));
   const tab = tabs[tabIdx] || tabs[0];
-  const all = rowsForTab(state, tab.id);
+  // The header row and the empty-state message both need to know whether a filter is on.
+  const query = String(state.filter || '').trim().toLowerCase();
+  const all = visibleRowsForTab(state, tab.id);
   const sel = Math.max(0, Math.min(all.length - 1, state.selectedIndex || 0));
 
   const out = [];
@@ -197,9 +216,16 @@ export function renderRegistryBrowser(state, cols, rows) {
   // The key hints stay visible while the fetch runs: the panel is usable during it
   // (the local tabs are already loaded), so replacing the hints with a status message
   // would hide the keys exactly when the user is most likely to press them.
-  const hint = ' Tab switch \u00b7 \u2191\u2193 select \u00b7 Enter install/remove \u00b7 Esc close';
+  const hint = ' / search \u00b7 Tab switch \u00b7 \u2191\u2193 select \u00b7 Enter install/remove \u00b7 Esc close';
   out.push(fitExactly(C.gray + hint + (state.busy ? C.gray + `  ${state.busy}` : '') + C.reset, cols));
   out.push('');
+  // The search field, drawn whenever it is open or has text, so a filtered list always explains itself.
+  if (state.filtering || query) {
+    const shown = String(state.filter || '');
+    const caret = state.filtering ? '\u2588' : '';
+    out.push(C.gray + ' / ' + C.reset + C.white + shown + C.reset + C.cyan + caret + C.reset
+      + C.gray + (query ? `   ${all.length} match${all.length === 1 ? '' : 'es'}` : '   type to filter') + C.reset);
+  }
 
   // Tab strip, with the count of each tab's rows.
   {
@@ -240,22 +266,52 @@ export function renderRegistryBrowser(state, cols, rows) {
           : '  Nothing here.';
     out.push(C.gray + msg + C.reset);
   }
-  for (let i = 0; i < all.length; i++) {
+  // How many LINES each row occupies: its label plus its wrapped description.
+  const descW = Math.max(8, cols - 6);
+  const rowH = all.map((r) => 1 + wrapText(r.description, descW).length);
+  const visibleLines = Math.max(1, bodyRows);
+
+  // The first row to draw. `state.listTop` persists across frames — recomputing it from scratch each time would
+  // snap the window back to the top on every key, and the cursor would appear to leave the list.
+  let first = Math.max(0, Math.min(state.listTop || 0, Math.max(0, all.length - 1)));
+  // Scroll down while the selection does not fit; scroll up if it sits above the window.
+  if (sel < first) first = sel;
+  for (;;) {
+    let used = 0;
+    for (let i = first; i <= sel && i < all.length; i++) used += rowH[i];
+    if (used <= visibleLines || first >= sel) break;
+    first++;
+  }
+  state.listTop = first;
+
+  // Draw from `first`, stopping when the window is full. A row is never split: a label whose description fell
+  // off the bottom reads as a row that has none.
+  let drawn = 0;
+  for (let i = first; i < all.length; i++) {
+    if (drawn > 0 && drawn + rowH[i] > visibleLines) break;
+    drawn += rowH[i];
     const r = all[i];
     const isSel = i === sel;
     const ptr = isSel ? C.cyan + '\u276f ' + C.reset : '  ';
     const nameStyle = isSel ? (C.cyan + C.bold) : C.white;
     const badge = r.status ? '  ' + statusColor(r.statusTone) + r.status + C.reset : '';
     const dis = r.disabled ? C.gray : '';
-    const labelRow = out.length;   // the clickable row for this item
+    const labelRow = out.length;
     out.push(fitExactly(ptr + nameStyle + dis + r.label + C.reset + badge, cols));
-    // The whole label row is a click target: clicking selects the item (and a
-    // second click / the footer activates it), mirroring the tasks browser.
+    // The whole label row is a click target: clicking selects the item (and a second click / the footer
+    // activates it), mirroring the tasks browser.
     hits.push({ row: labelRow, col0: 0, col1: cols - 1, kind: 'regRow', index: i });
-    for (const line of wrapText(r.description, Math.max(8, cols - 6))) {
+    for (const line of wrapText(r.description, descW)) {
       out.push(C.gray + '    ' + line + C.reset);
     }
   }
+  // Say when the list continues: a clipped list that looks complete is how a skill goes missing.
+  let after = first;
+  let acc = 0;
+  while (after < all.length && acc < drawn) { acc += rowH[after]; after++; }
+  const hiddenBelow = all.length - after;
+  if (first > 0) out.push(C.gray + `  \u2191 \u2191 \u2191 ${first} above` + C.reset);
+  if (hiddenBelow > 0) out.push(C.gray + `  \u2193 \u2193 \u2193 ${hiddenBelow} below` + C.reset);
   // A fetch failure has to show even when the LOCAL half has rows, or the Available
   // tab silently looks empty and the user cannot tell why.
   if (all.length && state.data && state.data.remoteError && tab.id === 'available') {
@@ -291,9 +347,36 @@ export function renderRegistryBrowser(state, cols, rows) {
  * 'close' | 'switchTab' | 'select' | 'install' | 'remove' | 'reload' | null
  */
 export function handleRegistryBrowserKey(state, t) {
+
   const tabs = state.kind === 'skills' ? SKILL_TABS : PLUGIN_TABS;
   const all = rowsForTab(state, state.tab);
   const ch = t.ch;
+  // ---- filter input -------------------------------------------------------------------------
+  //
+  // While `state.filtering` is on, every printable key goes into the query instead of acting on the list. Esc
+  // leaves the field without clearing the filter, so a half-typed word is not lost by a stray key; a second Esc
+  // clears it. Enter accepts the filter and returns the keyboard to the list.
+  if (state.filtering) {
+    if (t.key === 'escape') { state.filtering = false; return 'select'; }
+    if (t.key === 'enter') { state.filtering = false; return 'select'; }
+    if (t.key === 'backspace') {
+      state.filter = String(state.filter || '').slice(0, -1);
+      state.selectedIndex = 0;
+      state.listTop = 0;
+      return 'select';
+    }
+    if (t.key === 'up' || t.key === 'down') { state.filtering = false; }   // hand the arrows back to the list
+    else if (ch && ch.length === 1 && ch >= ' ') {
+      state.filter = String(state.filter || '') + ch;
+      state.selectedIndex = 0;
+      state.listTop = 0;
+      return 'select';
+    } else { return null; }
+  }
+
+  // `/` opens the field; a set filter stays visible in the header and Esc clears it from the list too.
+  if (ch === '/') { state.filtering = true; return 'select'; }
+  if (t.key === 'escape' && state.filter) { state.filter = ''; state.selectedIndex = 0; state.listTop = 0; return 'select'; }
 
   if (t.key === 'escape' || ch === 'q' || ch === 'Q') return 'close';
   if (t.key === 'tab') {
