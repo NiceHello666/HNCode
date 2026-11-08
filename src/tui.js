@@ -14140,7 +14140,7 @@ const agents = readAgentsMd(state.cwd || state.workspace || cfg.workspace, state
       // Tools that act ONLY inside the session: the roster, the mailbox, the task list, the memories.
       // `isInsideWorkspace` answers `false` for any tool it does not know, so without this they all asked for
       // approval in yolo — the one mode whose point is not asking.
-      const safeTools = ['Read', 'Grep', 'Glob', 'FetchURL', 'WebSearch', 'TaskOutput', 'TaskList', 'TaskStop', 'TaskWait', 'TodoList', 'Goal', 'ActivateSkill', 'FileLines', 'AgentList', 'AgentMessage', 'AgentInterrupt', 'AgentClose', 'TaskInput', 'SendMessage', 'TeamTaskCreate', 'TeamTaskUpdate', 'TeamTaskList', 'ListTeammates', 'Memory', 'AskUserQuestion'];
+      const safeTools = ['Read', 'Grep', 'Glob', 'FetchURL', 'WebSearch', 'TaskOutput', 'TaskList', 'TaskStop', 'TaskWait', 'TodoList', 'Goal', 'ActivateSkill', 'ProgrammaticToolCall', 'FileLines', 'AgentList', 'AgentMessage', 'AgentInterrupt', 'AgentClose', 'TaskInput', 'SendMessage', 'TeamTaskCreate', 'TeamTaskUpdate', 'TeamTaskList', 'ListTeammates', 'Memory', 'AskUserQuestion'];
       if (rule !== 'ask' && safeTools.includes(toolName)) return true;
       // A read-only SHELL COMMAND (ls/git status/rg/cat …) is as safe as a
       // read-only TOOL, so it runs without a prompt in Ask mode too — the user
