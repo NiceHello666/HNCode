@@ -1,6 +1,6 @@
 {
   "name": "@hncode/hncode-sdk",
-  "version": "0.6.5",
+  "version": "0.6.6",
   "description": "Runtime helpers and TypeScript types for writing hncode plugins.",
   "type": "module",
   "main": "index.js",
