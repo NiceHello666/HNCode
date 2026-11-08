@@ -552,9 +552,11 @@ export const PATCH_TARGETS = [
   "skills.js#addSkillFromText",
   "skills.js#deleteSkill",
   "skills.js#importSkill",
+  "skills.js#installSkillFromGitHub",
   "skills.js#listSkills",
   "skills.js#normalizeSkillName",
   "skills.js#parseFrontMatter",
+  "skills.js#parseRepoSpec",
   "skills.js#readSkill",
   "skills.js#SKILL_PREFIX",
   "skills.js#skillCompletions",
@@ -863,4 +865,4 @@ export const PATCH_TARGET_SET = new Set(PATCH_TARGETS);
 /** True when `target` names a real, patchable symbol. */
 export function isPatchTarget(target) { return PATCH_TARGET_SET.has(String(target)); }
 
-export const GENERATED_FROM = "hncode src/ (76 files, 850 symbols)";
+export const GENERATED_FROM = "hncode src/ (76 files, 852 symbols)";
