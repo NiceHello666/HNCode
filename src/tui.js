@@ -103,7 +103,7 @@ import { renderTaskOutputViewer, handleViewerKey, makeViewerState } from './task
 import { renderSwarmProgress } from './swarm-progress.js';
 import { sortedTasks, getTask, settleTask, STATUS_LABEL, backgroundTaskCard } from './agent-task.js';
 import { localVersion } from './version.js';
-import { listSkills, readSkill, importSkill, deleteSkill, skillPrompt, skillCompletions, normalizeSkillName, SKILL_PREFIX, skillsDir } from './skills.js';
+import { listSkills, readSkill, importSkill, installSkillFromGitHub, deleteSkill, skillPrompt, skillCompletions, normalizeSkillName, SKILL_PREFIX, skillsDir } from './skills.js';
 import { loadHooks, describeHooks, runShellHooks, HOOK_EVENTS } from './hooks.js';
 import { beginTurn, rewind as rewindFiles, describeRewind, listCheckpoints, restoreCheckpoint, describeCheckpoints, checkpointDelta } from './file-history.js';
 import { trimToolResults } from './tool-result.js';
@@ -258,7 +258,7 @@ export const COMMANDS = [
   { name: 'reload-config', desc: 'Reload config.toml settings only', priority: 60 },
   { name: 'plugins', desc: 'Open the plugin manager (installed + available in the repo)', priority: 60, argumentHint: '[install <name> | remove <name> | reload]' },
   { name: 'skills', desc: 'Open the skill manager (installed + available in the repo)', priority: 60, argumentHint: '[install <name> | remove <name>]' },
-  { name: 'import-skill', desc: 'Import a Markdown file as a skill (a duplicate name is overwritten)', priority: 60, argumentHint: '<file.md> [name]' },
+  { name: 'import-skill', desc: 'Add a skill from a Markdown file, or install every skill in a GitHub repository (owner/repo)', cooldown: false },
   { name: 'hooks', desc: 'Show configured shell hooks, or test one', priority: 60, argumentHint: '[list | test <event>]' },
   { name: 'git', desc: 'Show repository status (branch, changes, remote)', priority: 62 },
   { name: 'commit', desc: 'Stage and commit with a message (or let the agent draft one)', priority: 62, argumentHint: '[message]' },
@@ -10545,7 +10545,7 @@ export async function dispatch(cmdRaw, arg, state, cfg, session, h, submit, stdo
         ...panel,
         'Skills',
         `  /${SKILL_PREFIX}<name>     run an installed skill (Tab completes the name)`,
-        '  /import-skill <file.md>  add or overwrite a skill from a Markdown file',
+    '  /import-skill <file.md | owner/repo>  add a skill from a file, or install a repository of them',
         '  /skills                  open the skill manager (Tab switches tabs)',
         '  /skills install <name>   download one from the repo, without the panel',
         '  /skills remove <name>    delete the local copy',
@@ -12519,12 +12519,30 @@ export async function dispatch(cmdRaw, arg, state, cfg, session, h, submit, stdo
       return;
     }
     case 'import-skill': {
-      // Usage: /import-skill <file.md> [name]
+      // Usage: /import-skill <file.md | owner/repo[/sub]> [name]
       const parts = raw.split(/\s+/).filter(Boolean);
-      const file = parts[0];
+      const source = parts[0];
       const nameArg = parts[1];
-      if (!file) { appErr('Usage: /import-skill <file.md> [name]'); return; }
-      const res = importSkill(file, nameArg);
+      if (!source) { appErr('Usage: /import-skill <file.md | owner/repo[/subdir]> [name]'); return; }
+    
+      // A repository spec has no extension and carries a slash — a local Markdown path always ends in .md, and a
+      // path that does not is not something this command ever accepted.
+      const looksLikeRepo = !/\.md$/i.test(source) && /^[\w.-]+\/[\w.-]+/.test(source);
+      if (looksLikeRepo) {
+        say(`Installing skills from ${source}…`);
+        renderFrame();
+        void installSkillFromGitHub(source).then((res) => {
+          if (!res.ok) { appErr(`Install failed: ${res.error}`); renderFrame(); return; }
+          const names = res.installed.map((s) => s.name);
+          app(`Installed ${names.length} skill(s): ${names.join(', ')}`);
+          if (res.skipped.length) notice(`Skipped: ${res.skipped.join(', ')}`, 'error');
+          say(`Activate one with /skill:<name>, or type /skills to list them.`);
+          renderFrame();
+        }).catch((e) => { appErr(`Install failed: ${(e && e.message) || e}`); renderFrame(); });
+        return;
+      }
+    
+      const res = importSkill(source, nameArg);
       if (!res.ok) { appErr(res.error); return; }
       app(`${res.replaced ? 'Skill overwritten' : 'Skill imported'}: ${res.name} → ${res.path}`);
       say(`Activate it with /${SKILL_PREFIX}${res.name}`);
@@ -12938,12 +12956,15 @@ export async function dispatch(cmdRaw, arg, state, cfg, session, h, submit, stdo
         // and the model saw it as a detached system note rather than as their words.
         const extra = String(raw || '').trim();
         const prompt = skillPrompt(sk) + (extra ? `\n\n${extra}` : '');
-        // The row is a SKILL ACTIVATION card, not a user bubble and not the literal
-        // `/skill:foo` text (which read as the user having typed a command). The body
-        // rides a system message so it never renders as the user's own speech — the
-        // distinction kimi draws, and the reason this row exists at all.
+        // THE CARD says which skill ran; the USER MESSAGE is what the person typed, if anything.
+        //
+        // The args used to travel twice: once as `bubbleText`, which drew a bubble identical to the composer below the
+        // card, and once appended to the hidden body. Passing them as the prompt is what makes them the user's words —
+        // and when there are none, nothing is drawn but the card.
         addChat({ role: 'skill', text: name, args: extra, _conv: true });
-        await sendPrompt('/' + SKILL_PREFIX + name, { skillBody: prompt, bubbleText: extra });
+        // `submit` drops an empty prompt, so an activation with no args needs something to send. The body itself
+        // is what does the work; this line is only what makes the turn happen.
+        await sendPrompt(extra || `Run the ${name} skill.`, { skillBody: prompt });
         return;
       }
       // Check if this is a plugin-registered command.
@@ -13856,6 +13877,29 @@ async function runTurn(deps, text, opts = {}, viewArg) {
     const memory = readMemory(state.workspace || cfg.workspace);
     if (memory) {
       sysText += '\n\n' + memory;
+    }
+
+    // THE SKILLS ON DISK, BY NAME AND DESCRIPTION.
+    //
+    // Without this the model has no way to know a skill exists: the directory is invisible to it, so a skill that
+    // fits the task went unused unless the user remembered the name. Names and descriptions only — the bodies are
+    // read from disk when activated, and putting every body in every request would defeat the point of a skill.
+    //
+    // Read per turn, like the memory notes above, so installing one takes effect on the next message.
+    const availableSkills = listSkills().filter((s) => s.name);
+    if (availableSkills.length) {
+      const listed = availableSkills
+        .map((s) => `- ${s.name}${s.description ? `: ${s.description}` : ''}`)
+        .join('\n');
+      sysText += '\n\n' + [
+        '# Skills',
+        '',
+        'Reusable procedures installed for this machine. Each is invoked by name and then supplies its own',
+        'instructions. Use the ActivateSkill tool when one fits the work in front of you; the user can also call',
+        'them directly with /skill:<name>.',
+        '',
+        listed,
+      ].join('\n');
     }
     // OUTPUT STYLE (/output-style): a form-of-reply instruction read from a file,
     // re-read per turn like the notes above so editing the file takes effect on the

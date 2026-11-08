@@ -76,7 +76,7 @@ const RETRY_AFTER_MS = 1500;
  * `node:https` instead. It is the SAME request — same headers, same redirects, same body cap — just built
  * by hand so `rejectUnauthorized: false` can be passed.
  */
-async function fetchWithRetry(url, signal, insecure = false) {
+export async function fetchWithRetry(url, signal, insecure = false) {
   if (insecure) return httpsRequest(url, signal, true);
   const first = await fetch(url, { signal, redirect: 'follow', headers: HEADERS });
   if (first.status !== 429) return first;
@@ -93,7 +93,7 @@ async function fetchWithRetry(url, signal, insecure = false) {
  * buffered up to MAX_BYTES and handed back as an object with `.ok`, `.status`, `.headers.get()` and
  * `.arrayBuffer()`, so the rest of `execute` does not know which transport ran.
  */
-function httpsRequest(url, signal, insecure) {
+export function httpsRequest(url, signal, insecure) {
   return new Promise((resolve, reject) => {
     let u;
     try { u = new URL(url); } catch (e) { reject(e); return; }

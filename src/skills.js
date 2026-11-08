@@ -21,7 +21,7 @@
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-
+import { httpsRequest } from './tools/fetch-url.js';
 export const SKILL_PREFIX = 'skill:';
 
 // The skills directory. Kept next to the other hncode state (~/.hncode/…), and
@@ -45,7 +45,16 @@ export function normalizeSkillName(name) {
 // or malformed block (then body === text and meta is empty).
 export function parseFrontMatter(text) {
   const src = String(text == null ? '' : text);
-  const m = /^\uFEFF?---\r?\n([\s\S]*?)\r?\n---[ \t]*\r?\n?/.exec(src);
+  // A DELIMITER THAT WAS ESCAPED IS STILL A DELIMITER.
+  //
+  // `---\nname: x` is what a skill looks like when something wrote the block with the newlines escaped: the
+  // first and last delimiters carry a literal backslash-n while the fields between them use real newlines. The
+  // block then matched nothing and the skill listed as "(no description)" — the file reads correctly in an
+  // editor, so there was nothing to see. Only the two delimiters are unescaped; a body that contains `\n` on
+  // purpose is untouched, because the replacement stops at the first field.
+  const norm = src.replace(/^\uFEFF?---\\n(?=[A-Za-z0-9_-])/, '---\n')
+    .replace(/\\n---(\\n|$)/, '\n---$1');
+  const m = /^\uFEFF?---\r?\n([\s\S]*?)\r?\n---[ \t]*\r?\n?/.exec(norm);
   if (!m) return { meta: {}, body: src };
   const meta = {};
   for (const line of m[1].split(/\r?\n/)) {
@@ -171,6 +180,105 @@ export function skillCompletions(prefix = '') {
 
 // Build the text a skill contributes to the conversation. A short header keeps
 // the model from treating the body as the user's own words.
+// ---- installing from a GitHub repository ------------------------------------------------
+
+// A registry entry is `owner/repo`, optionally with a subdirectory: `owner/repo/skills`, or
+// `owner/repo@ref`. Skills are FOUND, not assumed: every `SKILL.md` below the given path is one,
+// because that is the layout the ecosystem uses — a folder per skill, each with its own file.
+//
+// The listing comes from the GitHub API, which needs no authentication for a public repository and
+// is rate limited per IP without a token. Fetching goes through the same transport as FetchURL so a
+// broken certificate chain on this network does not make the feature useless.
+const GH_API = 'https://api.github.com';
+
+/** Split `owner/repo[/sub][@ref]` into its parts, or null when the shape is wrong. */
+export function parseRepoSpec(spec) {
+  const text = String(spec == null ? '' : spec).trim().replace(/^https?:\/\/github\.com\//i, '');
+  if (!text) return null;
+  const at = text.lastIndexOf('@');
+  const ref = at > 0 ? text.slice(at + 1) : '';
+  const rest = at > 0 ? text.slice(0, at) : text;
+  const parts = rest.split('/').filter(Boolean);
+  if (parts.length < 2) return null;
+  const [owner, repo, ...sub] = parts;
+  return { owner, repo: repo.replace(/\.git$/i, ''), sub: sub.join('/'), ref: ref || '' };
+}
+
+async function ghJson(apiPath, insecure) {
+  const res = await httpsRequest(`${GH_API}${apiPath}`, undefined, insecure);
+  if (!res.ok) {
+    if (res.status === 404) return { error: `not found: ${apiPath}` };
+    if (res.status === 403) return { error: 'GitHub refused the request (rate limit without a token, or a private repository)' };
+    return { error: `GitHub returned ${res.status}` };
+  }
+  const buf = Buffer.from(await res.arrayBuffer());
+  try { return { data: JSON.parse(buf.toString('utf8')) }; } catch { return { error: 'GitHub returned something that is not JSON' }; }
+}
+
+/** Every `SKILL.md` at or below `path`, as { name, path }. */
+async function findSkillFiles(owner, repo, dirPath, ref, insecure, depth = 0) {
+  if (depth > 4) return [];
+  const q = ref ? `?ref=${encodeURIComponent(ref)}` : '';
+  const r = await ghJson(`/repos/${owner}/${repo}/contents/${dirPath}${q}`, insecure);
+  if (r.error) return { error: r.error };
+  const entries = Array.isArray(r.data) ? r.data : [];
+  const found = [];
+  for (const e of entries) {
+    if (e.type === 'file' && /^skill\.md$/i.test(e.name)) found.push({ name: e.name, path: e.path, url: e.download_url });
+  }
+  // A directory that holds a SKILL.md is a skill; do not descend into it looking for more, or a bundle of
+  // reference files beside one would be walked for nothing.
+  if (found.length) return found;
+  for (const e of entries) {
+    if (e.type !== 'dir') continue;
+    const sub = await findSkillFiles(owner, repo, e.path, ref, insecure, depth + 1);
+    if (sub && sub.error) continue;
+    found.push(...sub);
+  }
+  return found;
+}
+
+/**
+ * Install every skill in a GitHub repository (or a subdirectory of one).
+ *
+ * Returns { ok: true, installed: [{ name, path, replaced }], skipped: [name] } or { ok: false, error }.
+ * A name that is already present is REPLACED — the same rule `/import-skill` uses.
+ */
+export async function installSkillFromGitHub(specText, { insecure = true } = {}) {
+  const spec = parseRepoSpec(specText);
+  if (!spec) return { ok: false, error: `Expected owner/repo[/subdir], got "${specText}"` };
+  const { owner, repo, sub, ref } = spec;
+
+  const files = await findSkillFiles(owner, repo, sub, ref, insecure);
+  if (files && files.error) return { ok: false, error: files.error };
+  if (!files.length) {
+    return { ok: false, error: `no SKILL.md found in ${owner}/${repo}${sub ? '/' + sub : ''}` };
+  }
+
+  const dir = skillsDir();
+  const installed = [];
+  const skipped = [];
+  for (const f of files) {
+    // The DIRECTORY name is the skill name — `skills/ds-explain/SKILL.md` is `ds-explain`. The front matter
+    // may say something else, but the folder is what the repository is organised by and what the user expects
+    // to type after `/skill:`.
+    const folder = f.path.split('/').slice(-2)[0] || repo;
+    const res = await httpsRequest(f.url, undefined, insecure);
+    if (!res.ok) { skipped.push(folder); continue; }
+    const text = Buffer.from(await res.arrayBuffer()).toString('utf8');
+    const name = normalizeSkillName(folder);
+    if (!name || /[\\/]/.test(name)) { skipped.push(folder); continue; }
+    const dest = path.join(dir, `${name}.md`);
+    const replaced = fs.existsSync(dest);
+    try {
+      fs.mkdirSync(dir, { recursive: true });
+      fs.writeFileSync(dest, text, 'utf8');
+      installed.push({ name, path: dest, replaced });
+    } catch { skipped.push(folder); }
+  }
+  return { ok: installed.length > 0, installed, skipped, error: installed.length ? '' : 'nothing could be downloaded' };
+}
+
 export function skillPrompt(skill) {
   if (!skill || !skill.body) return '';
   return `[skill: ${skill.name}]\n\n${skill.body}`;
