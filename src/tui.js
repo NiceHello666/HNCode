@@ -187,6 +187,7 @@ export const COMMANDS = [
   { name: 'permission', desc: 'Select permission mode', priority: 100 },
   { name: 'settings', aliases: ['config'], desc: 'Browse and change every setting, grouped by area', priority: 100, argumentHint: '[tab|filter]' },
   { name: 'set', desc: 'Set one config value by key, or list what differs from the default', priority: 100, argumentHint: '[<key> [value]]' },
+  { name: 'sampling', desc: 'Show or set temperature, top_p and presence_penalty', priority: 100, argumentHint: '[on|off|temperature <n>|top_p <n>|presence_penalty <n>]' },
   { name: 'plan', desc: 'Toggle plan mode', priority: 100, argumentHint: '[on|off|clear]' },
   { name: 'websearch-api', desc: 'Edit the WebSearch API keys (one per line, tried in order)', priority: 96 },
   { name: 'focus', desc: 'Toggle Focus mode (minimal tools first, full tools after)', priority: 98, argumentHint: '[on|off]' },
@@ -8688,12 +8689,26 @@ export async function dispatch(cmdRaw, arg, state, cfg, session, h, submit, stdo
       if (key === 'calm_mode') cfg.calmMode = v;
       if (key === 'swarm_mode') cfg.swarm = v;
       if (key === 'tool_allow_external_paths') cfg.allowExternal = v;
+      if (key === 'sampling' && !v) {
+        // Off means NONE of them is sent — not their defaults, which is what a provider rejecting them
+        // would receive otherwise.
+        cfg.temperature = undefined; cfg.topP = undefined; cfg.presencePenalty = undefined;
+      }
     } else {
       cfg[key] = raw; cfg.raw[key] = raw;
       if (key === 'compact_threshold') cfg.compactThreshold = Number(raw) / 100;
       if (key === 'compact_keep_ratio') cfg.compactKeepRatio = Number(raw) / 100;
       if (key === 'trim_threshold') cfg.trimThreshold = Number(raw) / 100;
       if (key === 'trim_keep_ratio') cfg.trimKeepRatio = Number(raw) / 100;
+      // SAMPLING: a NUMBER, or gone. The generic writer stores the typed string, and `llm.js` sends it
+      // straight into the request — a provider given `"0.3"` rejects it or ignores it.
+      if (key === 'temperature' || key === 'top_p' || key === 'presence_penalty') {
+        const field = { temperature: 'temperature', top_p: 'topP', presence_penalty: 'presencePenalty' }[key];
+        const n = raw === '' ? null : Number(raw);
+        // Clearing the field removes the parameter, so the provider applies its own default — which is not
+        // the same thing as sending 0.
+        cfg[field] = n == null || !Number.isFinite(n) ? undefined : n;
+      }
       if (key === 'max_context_tokens') cfg.maxContextTokens = Number(raw) || cfg.maxContextTokens;
       if (key === 'provider') cfg.provider = raw;
       if (key === 'model') { cfg.model = raw; state.modelLabel = raw; }
@@ -8942,6 +8957,42 @@ export async function dispatch(cmdRaw, arg, state, cfg, session, h, submit, stdo
     }
 
 
+
+    case 'sampling': {
+      const parts = String(raw || '').trim().split(/\s+/).filter(Boolean);
+      const show = () => {
+        const row = (label, v, note) => `  ${label.padEnd(18)} ${v == null ? '(provider default)' : v}${note ? '   ' + note : ''}`;
+        sayPanel([
+          'Sampling parameters',
+          '',
+          row('send them', cfg.sampling === false ? 'off' : 'on', cfg.sampling === false ? 'nothing is sent' : ''),
+          row('temperature', cfg.temperature),
+          row('top_p', cfg.topP),
+          row('presence_penalty', cfg.presencePenalty, 'OpenAI-compatible only'),
+          '',
+          'Set with /sampling temperature 0.3, /sampling top_p 0.9, /sampling off',
+        ].join('\n'));
+      };
+      if (!parts.length) { show(); return; }
+      if (parts[0] === 'on' || parts[0] === 'off') {
+        applySetting('sampling', parts[0] === 'on' ? 'true' : 'false');
+        app(`Sampling: ${parts[0]}`);
+        show();
+        return;
+      }
+      const key = parts[0] === 'top-p' ? 'top_p' : parts[0] === 'presence-penalty' ? 'presence_penalty' : parts[0];
+      if (!['temperature', 'top_p', 'presence_penalty'].includes(key)) {
+        appErr('Usage: /sampling [on|off] | temperature <0-2> | top_p <0-1> | presence_penalty <-2-2>');
+        return;
+      }
+      if (parts.length === 1) { show(); return; }
+      // An empty value clears it: the field means "let the provider decide", and `0` is a real temperature.
+      const value = parts.slice(1).join(' ').trim();
+      if (!applySetting(key, value)) return;
+      app(value === '' ? `${key} cleared` : `${key} = ${value}`);
+      show();
+      return;
+    }
     case 'set': {
       // `/set <key> <value>` — the direct path, so any setting is reachable without
       // remembering which command owns it. `/set` alone lists what is changed.
@@ -20567,6 +20618,7 @@ function wheelStep(state, family) {
     hub.actions.setConfig = async (key, value) => {
       const ALLOWED = new Set([
         'calm_mode', 'auto_update', 'auto_compact', 'prompt_cache',
+        'temperature', 'top_p', 'presence_penalty', 'sampling',
         'tool_allow_external_paths', 'subagent_model', 'swarm_mode', 'theme',
       ]);
       const k = String(key || '');

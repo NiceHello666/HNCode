@@ -233,6 +233,8 @@ function authHeaders(cfg) {
 function buildBody(cfg, messages, streaming = true, opts = {}) {
   const common = { stream: streaming, max_tokens: cfg.maxOutputTokens };
   if (cfg.temperature != null) common.temperature = cfg.temperature;
+  if (cfg.topP != null) common.top_p = cfg.topP;
+  if (cfg.presencePenalty != null) common.presence_penalty = cfg.presencePenalty;
   // Ask for the token accounting on the FINAL stream frame. Without this the
   // OpenAI-compatible stream carries no `usage` at all, so the only token numbers
   // available were our own estimates (see /usage, which divided the transcript's
@@ -265,6 +267,9 @@ function buildBody(cfg, messages, streaming = true, opts = {}) {
       ...common, ...wire,
     };
     if (!body.tools || !body.tools.length) delete body.tools;
+    // NO PRESENCE PENALTY ON THIS PROTOCOL: it has no equivalent, and an unknown field is an error
+    // here rather than something quietly ignored.
+    delete body.presence_penalty;
     // Prompt caching: mark the stable prefix (tools + system + conversation head)
     // so the provider bills it as a cache READ instead of fresh input. The key is
     // the SESSION id, so it stays identical across turns and never thrashes.
@@ -287,6 +292,8 @@ function buildBody(cfg, messages, streaming = true, opts = {}) {
     };
     if (instructions) rbody.instructions = instructions;
     if (cfg.temperature != null) rbody.temperature = cfg.temperature;
+    if (cfg.topP != null) rbody.top_p = cfg.topP;
+    // No presence penalty on this protocol: sending it is an unknown-parameter error, not a hint.
     if (!opts.noTools) {
       const defsR = Object.prototype.hasOwnProperty.call(opts, 'tools')
         ? responsesToolDefs(opts.tools) : responsesToolDefs(llmToolsList);

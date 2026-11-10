@@ -370,6 +370,27 @@ const b = baseUrl.replace(/\/+$/, '');
     || root.max_output_size
     || (modelMaxOutput > 0 ? modelMaxOutput : DEFAULTS.maxOutputTokens),
   );
+  // A NUMBER OR NOTHING: an unparseable value falls back to "not set", which means the provider decides.
+  const numOrNull = (v, min, max) => {
+    if (v == null || v === '') return null;
+    const n = Number(v);
+    if (!Number.isFinite(n)) return null;
+    return Math.max(min, Math.min(max, n));
+  };
+  // `sampling` gates the whole group. A provider that rejects `temperature` outright — several refuse it for
+  // reasoning models — needs a switch, not a magic value nobody can find.
+  const samplingOn = process.env.HNCODE_SAMPLING
+    ? !/^(0|false|no|off)$/i.test(process.env.HNCODE_SAMPLING)
+    : root.sampling !== false;
+  const temperature = samplingOn
+    ? numOrNull(process.env.HNCODE_TEMPERATURE ?? root.temperature, 0, 2)
+    : null;
+  const topP = samplingOn
+    ? numOrNull(process.env.HNCODE_TOP_P ?? root.top_p, 0, 1)
+    : null;
+  const presencePenalty = samplingOn
+    ? numOrNull(process.env.HNCODE_PRESENCE_PENALTY ?? root.presence_penalty, -2, 2)
+    : null;
   const reasoning = process.env.HNCODE_REASONING ? /^(1|true|yes)$/i.test(process.env.HNCODE_REASONING) : !!root.reasoning;
   const allowExternal = process.env.HNCODE_ALLOW_EXTERNAL === '1' || !!root.tool_allow_external_paths;
 
@@ -377,6 +398,11 @@ const b = baseUrl.replace(/\/+$/, '');
     model, provider: providerName, innerModel,
     baseUrl: b, endpoint, apiKey, protocol,
     maxContextTokens: maxContext, maxOutputTokens: maxOutput, reasoning,
+    // Sampling. `undefined`/null means "do not send it", which is what lets a provider apply its own
+    // default — and what keeps a rejection from becoming a hard failure.
+    temperature: temperature == null ? undefined : temperature,
+    topP: topP == null ? undefined : topP,
+    presencePenalty: presencePenalty == null ? undefined : presencePenalty,
     workspace: process.env.HNCODE_WORKSPACE || root.workspace || DEFAULTS.workspace,
     allowExternal,
     // Standing permission rules (see permissions.js). `[permissions]` in config.toml:
