@@ -1,9 +1,9 @@
 # @hncode/hncode-sdk
 
-Types and runtime helpers for writing [hncode](https://npmjs.com/package/@hncode/hncode) plugins.
+Types and runtime helpers for writing [HNCode](https://npmjs.com/package/@hncode/hncode) plugins.
 
-A plugin runs **inside** the hncode process: the host calls your `install(api)` and
-hands you the `api` object. So a plugin never imports hncode itself — but at author
+A plugin runs **inside** the HNCode process: the host calls your `install(api)` and
+hands you the `api` object. So a plugin never imports HNCode itself — but at author
 time you want completion for `api.` and, for `api.patch`, the list of symbols you
 may target. That is what this package provides.
 
@@ -58,10 +58,10 @@ const plugin: HncodePlugin = {
 export default plugin;
 ```
 
-## Patching hncode's own code
+## Patching HNCode's own code
 
 `api.patch(target, handler)` wraps an exported function or class method in
-hncode's `src/` without editing it (the equivalent of a Minecraft mixin).
+HNCode's `src/` without editing it (the equivalent of a Minecraft mixin).
 
 ```js
 import { isPatchTarget } from '@hncode/hncode-sdk/targets';

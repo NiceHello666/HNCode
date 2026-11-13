@@ -391,11 +391,16 @@ export const PATCH_TARGETS = [
   "prompt-presets.js#presetLabel",
   "prompt-presets.js#PROMPT_PRESETS",
   "prompt-presets.js#TASKS",
+  "ptc.js#CALLABLE_TOOLS",
+  "ptc.js#callableTools",
+  "ptc.js#DEFAULT_LIMITS",
+  "ptc.js#runProgrammatic",
   "registry-browser.js#handleRegistryBrowserKey",
   "registry-browser.js#PLUGIN_TABS",
   "registry-browser.js#renderRegistryBrowser",
   "registry-browser.js#rowsForTab",
   "registry-browser.js#SKILL_TABS",
+  "registry-browser.js#visibleRowsForTab",
   "remote.js#DEFAULT_REF",
   "remote.js#DEFAULT_REPO",
   "remote.js#installRemotePlugin",
@@ -865,4 +870,4 @@ export const PATCH_TARGET_SET = new Set(PATCH_TARGETS);
 /** True when `target` names a real, patchable symbol. */
 export function isPatchTarget(target) { return PATCH_TARGET_SET.has(String(target)); }
 
-export const GENERATED_FROM = "hncode src/ (76 files, 852 symbols)";
+export const GENERATED_FROM = "hncode src/ (78 files, 857 symbols)";

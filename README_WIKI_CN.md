@@ -1,14 +1,18 @@
-# hncode Wiki
+![HNCode](imgs/HNCode.png)
 
-[English](https://github.com/NiceHello666/hncode/blob/main/README_WIKI.md) | 简体中文 | [返回 README](https://github.com/NiceHello666/hncode/blob/main/README_CN.md)
+---
 
-hncode 的完整文档 —— 一个运行在终端用户界面（TUI）里的 AI 编程助手。
+# HNCode Wiki
+
+[English](https://github.com/NiceHello666/HNCode/blob/main/README_WIKI.md) | 简体中文 | [返回 README](https://github.com/NiceHello666/HNCode/blob/main/README_CN.md)
+
+HNCode 的完整文档 —— 一个运行在终端用户界面（TUI）里的 AI 编程助手。
 
 ---
 
 ## 目录
 
-1. [hncode 是什么](#1-hncode-是什么)
+1. [HNCode 是什么](#1-HNCode-是什么)
 2. [环境要求](#2-环境要求)
 3. [安装](#3-安装)
 4. [首次运行](#4-首次运行)
@@ -39,9 +43,9 @@ hncode 的完整文档 —— 一个运行在终端用户界面（TUI）里的 A
 
 ---
 
-## 1. hncode 是什么
+## 1. HNCode 是什么
 
-hncode 是一个住在终端里的编程助手。你描述一个任务，它就会读写文件、执行 shell 命令、搜索代码库、抓取网页，并一直工作到任务完成 —— 具体行为取决于你选择的权限模式。
+HNCode 是一个住在终端里的编程助手。你描述一个任务，它就会读写文件、执行 shell 命令、搜索代码库、抓取网页，并一直工作到任务完成 —— 具体行为取决于你选择的权限模式。
 
 它灵感源自 [Kimi Code](https://github.com/MoonshotAI/kimi-code)，思路类似：使用原始终端（而非 `blessed`）渲染的青色蓝调 TUI、由模型驱动的工具调用循环，以及来自 OpenAI 兼容端点或 Anthropic 的流式响应。
 
@@ -93,16 +97,16 @@ npx @hncode/hncode
 ### 从源码安装
 
 ```bash
-git clone https://github.com/NiceHello666/hncode.git
+git clone https://github.com/NiceHello666/HNCode.git
 cd hncode
-npm link          # 全局暴露 `hncode` 命令
+npm link          # 全局暴露 `HNCode` 命令
 ```
 
 ---
 
 ## 4. 首次运行
 
-1. 启动 `hncode`。首次运行时安装脚本已创建 `~/.hncode/config.toml`。
+1. 启动 `HNCode`。首次运行时安装脚本已创建 `~/.hncode/config.toml`。
 2. **在 TUI 里**添加服务商：运行 `/provider`，挑选已知服务商（或添加自定义服务商），粘贴你的 API Key。模型会自动登记。（如果你已设置 `HNCODE_API_KEY`，此步可跳过。）
 3. 输入任务，按 **Enter**。
 
@@ -120,13 +124,13 @@ npm link          # 全局暴露 `hncode` 命令
 
 ## 5. 配置
 
-hncode **只**读取 `~/.hncode/config.toml`（以及 `HNCODE_*` 环境变量），不会读取其他产品的配置。
+HNCode **只**读取 `~/.hncode/config.toml`（以及 `HNCODE_*` 环境变量），不会读取其他产品的配置。
 
-**通常你不需要手写这个文件。** 服务商和模型都可以在 TUI 里配置，hncode 会替你写入 `config.toml`。直接编辑 TOML 属于*进阶*用法 —— 适合脚本化部署、特殊端点，或向导没暴露的设置。
+**通常你不需要手写这个文件。** 服务商和模型都可以在 TUI 里配置，HNCode 会替你写入 `config.toml`。直接编辑 TOML 属于*进阶*用法 —— 适合脚本化部署、特殊端点，或向导没暴露的设置。
 
 ### 5.1 基础：全部在 TUI 里配置
 
-在 hncode 打开时运行这些斜杠命令：
+在 HNCode 打开时运行这些斜杠命令：
 
 | 命令 | 作用 |
 |------|------|
@@ -139,7 +143,7 @@ hncode **只**读取 `~/.hncode/config.toml`（以及 `HNCODE_*` 环境变量）
 - 从 [models.dev](https://models.dev) 目录挑选**已知服务商** —— base URL 会自动预填，或
 - 添加**自定义服务商** —— 你自己提供名称、base URL、API Key 和协议（`OpenAI` 或 `Anthropic`）。
 
-保存后，hncode 会调用该服务商的 `/models` 端点并**自动登记所有模型**，同时记录各自的上下文窗口和思考能力。你事先不需要知道这些。
+保存后，HNCode 会调用该服务商的 `/models` 端点并**自动登记所有模型**，同时记录各自的上下文窗口和思考能力。你事先不需要知道这些。
 
 **编辑服务商**（`/provider` → 在某个服务商上按 Enter）可以修改它的名称、base URL、API Key 和协议类型。
 
@@ -167,7 +171,7 @@ model = "gpt-4o-mini"
 
 | 键 | 含义 |
 |----|------|
-| `base_url` | Base URL。hncode 会追加 `/chat/completions`（OpenAI）或 `/messages`（Anthropic）。 |
+| `base_url` | Base URL。HNCode 会追加 `/chat/completions`（OpenAI）或 `/messages`（Anthropic）。 |
 | `api_key` | 该服务商的密钥。 |
 | `protocol` | `openai`（默认）或 `anthropic`。 |
 
@@ -212,7 +216,7 @@ model = "gpt-4o-mini"
 ## 6. 命令行接口
 
 ```
-hncode [options] [command]
+HNCode [options] [command]
 ```
 
 ### 选项
@@ -244,8 +248,8 @@ hncode [options] [command]
 ### 无头模式
 
 ```bash
-hncode -p "解释一下 src/agent.js 做什么"
-hncode -p "列出 TODO" --output-format stream-json
+HNCode -p "解释一下 src/agent.js 做什么"
+HNCode -p "列出 TODO" --output-format stream-json
 ```
 
 `stream-json` 模式下，每个事件打印为一行 JSON 对象，方便管道传给其他工具。
@@ -336,7 +340,7 @@ hncode -p "列出 TODO" --output-format stream-json
 | `↑`（排队时） | 取回最后一条排队消息以便编辑。 |
 | `Ctrl-O` | 展开/折叠工具输出与思考内容。 |
 | `Ctrl-T` | 展开/折叠待办面板。 |
-| `Ctrl-C` 两次 | 退出 hncode。 |
+| `Ctrl-C` 两次 | 退出 HNCode。 |
 
 ### 粘贴
 
@@ -406,7 +410,7 @@ Plan 模式（`/plan`）把工具限制为只读。Focus 模式（`/focus`）以
 
 ## 11. 上下文管理与自动压缩
 
-每次请求都会携带此前的对话。当估算大小达到模型上下文窗口的 **85%** 时，hncode 会**自动压缩**：
+每次请求都会携带此前的对话。当估算大小达到模型上下文窗口的 **85%** 时，HNCode 会**自动压缩**：
 
 1. 保留最近的 **20%** 消息。
 2. 请模型**摘要**较早部分（目标、决策、涉及的文件、当前状态）。
@@ -429,7 +433,7 @@ token 估算采用与 Kimi Code 相同的启发式：`ceil(ASCII 字符数 / 4) 
 
 - 保存在 `~/.hncode/sessions/<id>.json`。
 - `/sessions` 只列出**当前目录**的会话。
-- `hncode --continue` 恢复**当前目录**最近的会话。
+- `HNCode --continue` 恢复**当前目录**最近的会话。
 - `/move <path>` 把会话迁移到另一个目录。
 - `/new` 新建会话（并清空待办面板）。
 - 模式标志（权限 / plan / focus / effort）随会话持久化。
@@ -444,7 +448,7 @@ token 估算采用与 Kimi Code 相同的启发式：`ceil(ASCII 字符数 / 4) 
 
 ### 最小的可用插件
 
-保存为 `~/.hncode/plugins/echo.mjs`，重启 hncode，模型就多了一个可以调用的工具：
+保存为 `~/.hncode/plugins/echo.mjs`，重启 HNCode，模型就多了一个可以调用的工具：
 
 ```javascript
 export function install(api) {
@@ -573,7 +577,7 @@ off();
 ### 向用户汇报
 
 用 `api.log` 而不是 `console`。TUI 独占屏幕，插件里的 `console.log` 写进的是一个
-hncode 运行期间你看不到的终端；`api.log` 会把消息放进对话区，也就是你正在看的地方：
+HNCode 运行期间你看不到的终端；`api.log` 会把消息放进对话区，也就是你正在看的地方：
 
 ```javascript
 export function install(api) {
@@ -588,7 +592,7 @@ export function install(api) {
  ! plugin: the legacy option is ignored
 ```
 
-hncode 自己的插件事件也走同一套 —— 加载成功、`install()` 抛错、文件里没有 `install()`
+HNCode 自己的插件事件也走同一套 —— 加载成功、`install()` 抛错、文件里没有 `install()`
 导出，这三种都会在对话区显示，而不是只写到 stderr。`api.log` 同时镜像到终端，所以盯着
 stderr 的插件作者也能看到。
 
@@ -661,7 +665,7 @@ description: 审查 PR，只找真正会发上线的 bug
 
 ## 15. 从仓库安装技能与插件
 
-hncode 的 npm 包里**不含**任何技能和插件。它们是按需从项目仓库拉取的，这样安装包很小，
+HNCode 的 npm 包里**不含**任何技能和插件。它们是按需从项目仓库拉取的，这样安装包很小，
 而且更新一个技能不需要发版。
 
 仓库里每个条目一个目录：
@@ -683,7 +687,7 @@ plugins/<名字>/index.js     ->  ~/.hncode/plugins/<名字>/index.js
  [Loaded (1)]  On disk (2)   Available (3)
 
  ❯ my-plugin/                     restart
-     not loaded — restart hncode to load it
+     not loaded — restart HNCode to load it
    secret-guard                   installed
      Catch credentials before they are written
 
@@ -718,7 +722,7 @@ plugins/<名字>/index.js     ->  ~/.hncode/plugins/<名字>/index.js
   混的图片不会落到你的插件目录里。
 - 技能目录**必须**包含 `SKILL.md`。没有的话会被标成无法安装，而不是生成一个没内容的技能。
 - 安装前会校验名字：含 `/`、`\` 或以 `.` 开头的一律拒绝。
-- 用 `HNCODE_REPO` / `HNCODE_REPO_REF` 指向 fork（默认 `NiceHello666/hncode` @ `main`）。
+- 用 `HNCODE_REPO` / `HNCODE_REPO_REF` 指向 fork（默认 `NiceHello666/HNCode` @ `main`）。
 - **关于 GitHub 限流**：列表走的是未认证的 GitHub API，每个 IP 每小时 60 次。打开一次
   `/skills` 会消耗 1 次列目录 + 每个技能 1 次（读描述），所以技能很多时会触发限流 ——
   面板会说明，本地分页照常可用。
@@ -737,7 +741,7 @@ plugins/<名字>/index.js     ->  ~/.hncode/plugins/<名字>/index.js
 ### 项目结构
 
 ```
-bin/            命令行入口（hncode、.cmd、.ps1）+ 安装钩子
+bin/            命令行入口（HNCode、.cmd、.ps1）+ 安装钩子
 src/
   index.js      argv 解析、子命令、无头模式、TUI 分发
   tui.js        原始 TTY 渲染器、按键处理、斜杠命令
@@ -774,22 +778,22 @@ src/
 
 | 现象 | 可能原因 / 处理 |
 |------|----------------|
-| `hncode: interactive mode requires a TTY` | 你在管道中运行。非交互请用 `hncode -p \"…\"`。 |
-| `no api_key configured` | 设置 `HNCODE_API_KEY`，或配置服务商（`/provider`）。运行 `hncode doctor config`。 |
-| Windows 上界面乱码 | 使用 **[Windows Terminal](https://github.com/microsoft/terminal)**；老式 `cmd.exe` 控制台渲染很差。微软商店可免费安装，hncode 的渲染就是为它设计的。 |
+| `HNCode: interactive mode requires a TTY` | 你在管道中运行。非交互请用 `HNCode -p \"…\"`。 |
+| `no api_key configured` | 设置 `HNCODE_API_KEY`，或配置服务商（`/provider`）。运行 `HNCode doctor config`。 |
+| Windows 上界面乱码 | 使用 **[Windows Terminal](https://github.com/microsoft/terminal)**；老式 `cmd.exe` 控制台渲染很差。微软商店可免费安装，HNCode 的渲染就是为它设计的。 |
 | 粘贴很慢 | 首次粘贴后应约为 10ms（剪贴板助手已预热）。首次极慢是 PowerShell 冷启动所致。 |
 | `Edit rejected: you have not read the lines…` | 先 `Read` 文件（相关行），再 `Edit`。 |
 | 上下文计量接近 100% | 运行 `/compact`，或等 85% 时自动压缩触发。 |
 | 自己写的插件没加载 | 现在原因会出现在**对话区**（`✗ plugin: …`），同时仍写到 stderr。名字必须唯一；目录式插件需要有 `index.js`。 |
 | `/plugins` 提示列表拉取失败 | GitHub 不可达，或触发了未认证 API 的限流（每小时 60 次）。**Loaded** 和 **On disk** 不受影响，它们读的是文件系统。 |
-| 装好的插件在 **On disk** 但不在 **Loaded** | 插件只在启动时加载，重启 hncode。 |
+| 装好的插件在 **On disk** 但不在 **Loaded** | 插件只在启动时加载，重启 HNCode。 |
 | `/skills install` 报没有 `SKILL.md` | 仓库里那个条目有问题：每个技能目录都必须包含 `SKILL.md`。 |
 
 ---
 
 ## 18. 许可证
 
-[PolyForm Noncommercial License 1.0.0](https://github.com/NiceHello666/hncode/blob/main/LICENSE)。
+[PolyForm Noncommercial License 1.0.0](https://github.com/NiceHello666/HNCode/blob/main/LICENSE)。
 
 1. ✅ 非商业用途免费——个人项目、学习、研究、业余爱好，以及非商业组织。
 2. ✅ 可以修改和分享，但任何副本都必须附带许可证全文和「不得商用」的声明。
@@ -798,4 +802,4 @@ src/
 
 ---
 
-[返回 README](https://github.com/NiceHello666/hncode/blob/main/README_CN.md) · [English Wiki](https://github.com/NiceHello666/hncode/blob/main/README_WIKI.md)
+[返回 README](https://github.com/NiceHello666/HNCode/blob/main/README_CN.md) · [English Wiki](https://github.com/NiceHello666/HNCode/blob/main/README_WIKI.md)

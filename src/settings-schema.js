@@ -125,6 +125,18 @@ export const SETTINGS_SCHEMA = [
     ui: { tab: 'model', group: 'Thinking', label: 'Context window', hint: 'Override the model window when the catalog is wrong; 0 means use it' } },
   { key: 'prompt_cache', ...bool(true),
     ui: { tab: 'model', group: 'Provider', label: 'Prompt caching', hint: 'Ask the provider to cache the request prefix' } },
+  { key: 'sampling', ...bool(true),
+    label: 'Send sampling parameters',
+    help: 'Off sends no temperature/top_p at all, for a provider that rejects them (several do, for reasoning models).' },
+  { key: 'temperature', ...str(''),
+    label: 'Temperature',
+    help: '0 is deterministic, 2 is wild. Empty leaves the provider default. Accepts 0-2 with one decimal.' },
+  { key: 'top_p', ...str(''),
+    label: 'Top P',
+    help: 'Nucleus sampling 0-1. Empty leaves the provider default. Usually set INSTEAD of temperature, not both.' },
+  { key: 'presence_penalty', ...str(''),
+    label: 'Presence penalty',
+    help: 'OpenAI-compatible only: -2 to 2, positive discourages repeating topics. Anthropic has no equivalent and never receives it.' },
 
   // ---- context ------------------------------------------------------------
   { key: 'auto_compact', ...bool(true),

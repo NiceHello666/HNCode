@@ -24,6 +24,7 @@ import { spec as diagnosticsSpec } from './diagnostics.js';
 import * as memoryMod from './memory.js';
 import * as goalMod from './goal.js';
 import * as activateSkillMod from './activate-skill.js';
+import * as ptcMod from './ptc.js';
 import { pluginTools, pluginToolGeneration } from '../plugin.js';
 
 
@@ -59,6 +60,7 @@ const builtinTools = [
   memoryMod.spec,
   goalMod.spec,
   activateSkillMod.spec,
+  ptcMod.spec,
   ...TEAM_TOOL_SPECS,
 ];
 

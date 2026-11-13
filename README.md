@@ -1,6 +1,10 @@
-# hncode — AI Coding Agent TUI
+![HNCode](imgs/HNCode.png)
 
-English | [简体中文](https://github.com/NiceHello666/hncode/blob/main/README_CN.md) | [Wiki](https://github.com/NiceHello666/hncode/blob/main/README_WIKI.md)
+# HNCode
+
+---
+
+English | [简体中文](https://github.com/NiceHello666/HNCode/blob/main/README_CN.md) | [Wiki](https://github.com/NiceHello666/HNCode/blob/main/README_WIKI.md)
 
 > **This is a product of my vibe coding session. I'm trying my best to make it perfect, so if you have any suggestions, feel free to open an issue.**
 
@@ -8,7 +12,7 @@ A cyan-blue terminal user interface (TUI) coding agent inspired by [Kimi Code](h
 
 ---
 
-## 🌟 Features
+## Features
 
 - **Cyan-blue TUI**: Raw terminal renderer for perfect Windows Terminal compatibility
 - **Dual Protocol Support**: Works with both OpenAI-compatible APIs and Anthropic
@@ -64,7 +68,7 @@ hncode control interrupt
 
 ---
 
-## 🚀 Installation
+## Installation
 
 ### Global Installation (Recommended)
 
@@ -85,27 +89,27 @@ npx @hncode/hncode
 
 ---
 
-## 📖 Documentation
+## Documentation
 
 This file is a quick overview. For the **full documentation** — every command, config option, architecture notes, and the plugin/development guide — see the Wiki:
 
-- **[Wiki (English)](https://github.com/NiceHello666/hncode/blob/main/README_WIKI.md)**
-- **[Wiki (简体中文)](https://github.com/NiceHello666/hncode/blob/main/README_WIKI_CN.md)**
+- **[Wiki (English)](https://github.com/NiceHello666/HNCode/blob/main/README_WIKI.md)**
+- **[Wiki (简体中文)](https://github.com/NiceHello666/HNCode/blob/main/README_WIKI_CN.md)**
 
 ---
 
-## 🤝 Contributing
+## Contributing
 
 **Feel free to:**
 - Submit issues for bugs or suggestions
 - Fork and create pull requests
-- Share your experience using hncode
+- Share your experience using HNCode
 
 ---
 
-## 📄 License
+## License
 
-This project is licensed under the [PolyForm Noncommercial License 1.0.0](https://github.com/NiceHello666/hncode/blob/main/LICENSE).
+This project is licensed under the [PolyForm Noncommercial License 1.0.0](https://github.com/NiceHello666/HNCode/blob/main/LICENSE).
 
 **In short:**
 1. ✅ Free for noncommercial use — personal projects, learning, research, hobby work, and noncommercial organizations
@@ -116,4 +120,4 @@ This project is licensed under the [PolyForm Noncommercial License 1.0.0](https:
 ---
 
 **NPM Package**: [@hncode/hncode](https://www.npmjs.com/package/@hncode/hncode)  
-**GitHub**: [NiceHello666/hncode](https://github.com/NiceHello666/hncode)
+**GitHub**: [NiceHello666/HNCode](https://github.com/NiceHello666/HNCode)

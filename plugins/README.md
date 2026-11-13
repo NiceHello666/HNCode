@@ -22,10 +22,10 @@ export default { name: 'hello', version: '1.0.0' };   // both fields REQUIRED
 plugin missing either is refused at load with an error notice — an unversioned
 plugin cannot be told apart from a stale one.
 
-## Patching hncode's own code (`api.patch`)
+## Patching HNCode's own code (`api.patch`)
 
 Beyond registering new tools/commands, a plugin can **wrap any exported function or
-class method in hncode's `src/`** by name:
+class method in HNCode's `src/`** by name:
 
 ```js
 export function install(api) {
@@ -44,13 +44,13 @@ Targets are `"file.js#symbol"` or `"file.js#Class.method"`. A handler may supply
 - `around(original, args, this)` — full control; its return value is the result.
 
 Async functions are handled transparently (a returned promise is awaited before `after`
-runs). The original source is never edited: hncode appends a small footer that reassigns
+runs). The original source is never edited: HNCode appends a small footer that reassigns
 the symbol at load time, so a function body is never parsed or rewritten.
 
 Two constraints:
 
 1. **Ordering.** Patching only works for modules that are imported *after* the plugin
-   registers its target. hncode's entry point (`bin/hncode`) loads plugins before the
+   registers its target. HNCode's entry point (`bin/hncode`) loads plugins before the
    rest of `src/`, so any module is patchable; a module imported before the loader was
    installed is served from cache and cannot be patched.
 2. **Legacy seams.** The original abstract seams (`systemPrompt`, `llmRequest`,

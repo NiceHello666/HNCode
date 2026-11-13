@@ -152,6 +152,61 @@ export async function closeWindow(hwnd) {
   return unsupported('window close on macOS is not implemented in this plugin yet');
 }
 
+/**
+ * Window state on macOS.
+ *
+ * Reported as unavailable rather than guessed: the Accessibility API can read and set these, but it needs a
+ * per-application script and a permission grant this plugin has not taken on. A tool that silently returns
+ * plausible-looking defaults would be worse than one that says it cannot answer.
+ */
+export async function getWindowInfo(hwnd) {
+  return unsupported('window details on macOS are not implemented in this plugin yet');
+}
+
+export async function setWindowState(hwnd, cmd) {
+  return unsupported(`window ${cmd} on macOS is not implemented in this plugin yet`);
+}
+
+/**
+ * Waiting for a window works on every platform: it polls `listWindows`, which macOS does implement.
+ *
+ * The polling lives here rather than in the model's turn — each round trip through a turn costs a full
+ * inference pass, and a window usually takes a second or two to appear.
+ */
+export async function waitForWindow({ title, className, hwnd, state = 'appear', timeoutMs = 15000, pollMs = 250 } = {}) {
+  if (!isMac) return unsupported('waiting for windows on macOS only');
+  const until = Date.now() + Math.max(0, Number(timeoutMs) || 15000);
+  const wantGone = String(state).toLowerCase() === 'disappear';
+  const titleNeedle = String(title || '').toLowerCase();
+  const classNeedle = String(className || '').toLowerCase();
+
+  let last = null;
+  for (;;) {
+    let windows = [];
+    try { windows = await listWindows(); } catch { windows = []; }
+    const hit = windows.find((w) => {
+      if (hwnd != null) return String(w.hwnd) === String(hwnd);
+      const byTitle = titleNeedle && String(w.title || '').toLowerCase().includes(titleNeedle);
+      const byClass = classNeedle && String(w.className || '').toLowerCase().includes(classNeedle);
+      return (!titleNeedle && !classNeedle) || byTitle || byClass;
+    });
+    last = hit || null;
+
+    if (wantGone ? !hit : !!hit) return { ok: true, found: wantGone ? null : hit };
+    if (Date.now() >= until) {
+      return {
+        ok: false,
+        found: null,
+        error: wantGone
+          ? `the window was still there after ${timeoutMs}ms`
+          : `no window matching ${JSON.stringify(title || className || '(any)')} appeared within ${timeoutMs}ms`,
+        lastSeen: last,
+      };
+    }
+    await new Promise((r) => setTimeout(r, Math.max(50, Number(pollMs) || 250)));
+  }
+}
+
 /** The displays, from system_profiler's display section. */
 export async function listDisplays() {
   if (!isMac) return unsupported('display enumeration on macOS only');
