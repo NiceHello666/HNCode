@@ -43,6 +43,20 @@ const PRELUDE = `
 [Console]::OutputEncoding = [System.Text.Encoding]::UTF8
 Add-Type -AssemblyName UIAutomationClient
 Add-Type -AssemblyName UIAutomationTypes
+# A rectangle as "x,y,w,h", with off-screen values normalised to 0.
+#
+# An element that is not on screen reports NaN or Infinity for its rectangle, and converting either
+# to an integer THROWS — "Cannot convert value to type System.Int32", which is reported as a failure
+# of the whole call rather than of one quirky element. Collapsed menus, scrolled-away rows and
+# virtualised lists all produce these, so every path that reads a rectangle uses this one function.
+function FmtRect($r) {
+  $x = 0; $y = 0; $w = 0; $h = 0
+  if (-not [double]::IsNaN($r.X) -and -not [double]::IsInfinity($r.X)) { $x = [int]$r.X }
+  if (-not [double]::IsNaN($r.Y) -and -not [double]::IsInfinity($r.Y)) { $y = [int]$r.Y }
+  if (-not [double]::IsNaN($r.Width) -and -not [double]::IsInfinity($r.Width)) { $w = [int]$r.Width }
+  if (-not [double]::IsNaN($r.Height) -and -not [double]::IsInfinity($r.Height)) { $h = [int]$r.Height }
+  return ($x.ToString() + ',' + $y.ToString() + ',' + $w.ToString() + ',' + $h.ToString())
+}
 `;
 
 /** Run a UIA script. */
@@ -164,20 +178,6 @@ function Walk($root, $maxDepth, $maxNodes, $wantTypes, $returnElements = $false)
   return $out
 }
 
-# A rectangle as "x,y,w,h", with off-screen values normalised to 0.
-#
-# An element that is not on screen reports NaN or Infinity for its rectangle, and converting either
-# to an integer THROWS — "Cannot convert value to type System.Int32", which is reported as a failure
-# of the whole call rather than of one quirky element. Collapsed menus, scrolled-away rows and
-# virtualised lists all produce these, so every path that reads a rectangle uses this one function.
-function FmtRect($r) {
-  $x = 0; $y = 0; $w = 0; $h = 0
-  if (-not [double]::IsNaN($r.X) -and -not [double]::IsInfinity($r.X)) { $x = [int]$r.X }
-  if (-not [double]::IsNaN($r.Y) -and -not [double]::IsInfinity($r.Y)) { $y = [int]$r.Y }
-  if (-not [double]::IsNaN($r.Width) -and -not [double]::IsInfinity($r.Width)) { $w = [int]$r.Width }
-  if (-not [double]::IsNaN($r.Height) -and -not [double]::IsInfinity($r.Height)) { $h = [int]$r.Height }
-  return ($x.ToString() + ',' + $y.ToString() + ',' + $w.ToString() + ',' + $h.ToString())
-}
 `;
 
 /** Parse the tab-separated walk output into element objects. */
@@ -187,7 +187,15 @@ export function parseElements(text) {
     const line = raw.replace(/\r$/, '');
     if (!line || !line.includes('\t')) continue;
     const f = line.split('\t');
-    if (f.length < 11) continue;
+    // THE COLUMN COUNT IS THE CONTRACT, BOTH WAYS. A tab inside a name splits one field into two, so the row
+    // grows a column and every field after it shifts — the element then reports x=0 and enabled=false, and a
+    // click lands somewhere else entirely, with no error anywhere. A SHORT row is an older emitter that carried
+    // fewer fields; a LONG one is corruption. The walk escapes tabs, so this only fires when that guarantee
+    // breaks, and dropping the line is better than acting on numbers that describe a different element.
+    if (f.length < 11 || f.length > 13) continue;
+    const coords = [f[6], f[7], f[8], f[9]].map((v) => Number(v));
+    // A shifted row parses as NaN here, which is the second tell of the same corruption.
+    if (coords.some((n) => !Number.isFinite(n))) continue;
     out.push({
       index: Number(f[0]),
       depth: Number(f[1]),
@@ -195,7 +203,7 @@ export function parseElements(text) {
       name: f[3],
       automationId: f[4],
       className: f[5],
-      x: Number(f[6]), y: Number(f[7]), width: Number(f[8]), height: Number(f[9]),
+      x: coords[0], y: coords[1], width: coords[2], height: coords[3],
       enabled: /true/i.test(f[10]),
       // Absent from output written before the walk carried them, so a missing field is simply empty
       // rather than a reason to reject the line.

@@ -1,6 +1,10 @@
-# hncode — AI 编程助手 TUI
+![HNCode](imgs/HNCode.png)
 
-[English](https://github.com/NiceHello666/hncode/blob/main/README.md) | 简体中文 | [Wiki](https://github.com/NiceHello666/hncode/blob/main/README_WIKI_CN.md)
+# HNCode
+
+---
+
+[English](https://github.com/NiceHello666/HNCode/blob/main/README.md) | 简体中文 | [Wiki](https://github.com/NiceHello666/HNCode/blob/main/README_WIKI_CN.md)
 
 > **这是我vibe coding的产物. 我在尽全力让它变的完美, 所以如果你有何建议, 欢迎开一个issue.**
 
@@ -8,7 +12,7 @@
 
 ---
 
-## 🌟 核心特性
+## 核心特性
 
 - **原生 TUI 渲染**: 使用原始终端序列渲染，完美兼容 Windows Terminal，解决 blessed 等库在 Windows 上的兼容性问题
 - **双协议支持**: 同时支持 OpenAI-compatible API 和 Anthropic API
@@ -20,7 +24,7 @@
 
 ---
 
-## 🚀 安装
+## 安装
 
 ### 全局安装（推荐）
 
@@ -41,27 +45,27 @@ npx @hncode/hncode
 
 ---
 
-## 📖 文档
+## 文档
 
 本文件只是简要介绍。**完整文档**（所有命令、配置项、架构说明、插件与开发指南）请见 Wiki：
 
-- **[Wiki（英文）](https://github.com/NiceHello666/hncode/blob/main/README_WIKI.md)**
-- **[Wiki（简体中文）](https://github.com/NiceHello666/hncode/blob/main/README_WIKI_CN.md)**
+- **[Wiki（英文）](https://github.com/NiceHello666/HNCode/blob/main/README_WIKI.md)**
+- **[Wiki（简体中文）](https://github.com/NiceHello666/HNCode/blob/main/README_WIKI_CN.md)**
 
 ---
 
-## 🤝 贡献
+## 贡献
 
 **欢迎：**
 - 提交问题报告 bug 或提出建议
 - Fork 并创建拉取请求
-- 分享您使用 hncode 的体验
+- 分享您使用 HNCode 的体验
 
 ---
 
-## 📄 许可证
+## 许可证
 
-本项目的许可受 [PolyForm Noncommercial License 1.0.0](https://github.com/NiceHello666/hncode/blob/main/LICENSE) 保护。
+本项目的许可受 [PolyForm Noncommercial License 1.0.0](https://github.com/NiceHello666/HNCode/blob/main/LICENSE) 保护。
 
 **简单来说:**
 1. ✅ 非商业用途免费——个人项目、学习、研究、业余爱好，以及非商业组织
@@ -72,4 +76,4 @@ npx @hncode/hncode
 ---
 
 **NPM 包**: [@hncode/hncode](https://www.npmjs.com/package/@hncode/hncode)  
-**GitHub**: [NiceHello666/hncode](https://github.com/NiceHello666/hncode)
+**GitHub**: [NiceHello666/HNCode](https://github.com/NiceHello666/HNCode)

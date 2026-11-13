@@ -10,15 +10,43 @@
 import { Worker } from 'node:worker_threads';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { pluginTools } from './plugin.js';
 
 const here = path.dirname(fileURLToPath(import.meta.url));
 
-/** Tools whose results are safe and useful to hand to code, and whose invocation needs no UI. */
-const CALLABLE = new Set([
+
+/**
+ * The tools this program ships that are safe to call from generated code.
+ *
+ * A hardcoded list is right for the built-ins — whether `Write` belongs in a sandbox is a decision about THIS
+ * program, and it should be made once, here, and not by whoever writes the next tool.
+ *
+ * It is the wrong shape for a PLUGIN, though: a plugin already knows whether its own tool touches anything, and
+ * the core cannot keep a list of names it has never heard of. A plugin spec declaring `programmatic: true` joins
+ * this set at call time — see `callableTools()`.
+ */
+const BUILTIN_CALLABLE = [
   'Read', 'FileLines', 'Glob', 'Grep', 'Git', 'FetchURL', 'WebSearch',
   'TodoList', 'TaskList', 'TaskOutput', 'Memory', 'ListTeammates', 'TeamTaskList',
   'ActivateSkill', 'Goal', 'Diagnostics',
-]);
+];
+
+/**
+ * Which tools `callTool` may reach right now.
+ *
+ * Read fresh on every run rather than captured at import: a plugin loaded after this module still gets in, and a
+ * plugin that unloaded takes its tools with it.
+ */
+export function callableTools() {
+  const names = new Set(BUILTIN_CALLABLE);
+  for (const t of pluginTools) {
+    if (t && t.programmatic === true && t.name) names.add(t.name);
+  }
+  return [...names];
+}
+
+/** Kept for callers that want the built-in set only. */
+export const CALLABLE_TOOLS = [...BUILTIN_CALLABLE];
 
 export const DEFAULT_LIMITS = {
   // A code body that orchestrates twenty calls is already unusual; five hundred is a loop that has gone wrong.
@@ -27,8 +55,6 @@ export const DEFAULT_LIMITS = {
   maxOutputBytes: 32000,
   timeoutMs: 120000,
 };
-
-export const CALLABLE_TOOLS = [...CALLABLE];
 
 /**
  * Run `code` in a sandbox, letting it call the tools in `CALLABLE`.
@@ -55,8 +81,11 @@ export function runProgrammatic(code, ctx, limits = {}) {
       resolve(result);
     };
 
+    // Resolved ONCE per run, so the list the model is told about and the list the guard enforces are the same one
+    // even if a plugin loads while the code is running.
+    const callable = new Set(callableTools());
     const worker = new Worker(path.join(here, 'ptc-worker.js'), {
-      workerData: { toolNames: [...CALLABLE], timeoutMs: lim.timeoutMs },
+      workerData: { toolNames: [...callable], timeoutMs: lim.timeoutMs },
       // The sandbox needs no stdio and no shared memory.
       stdout: true,
       stderr: true,
@@ -77,7 +106,7 @@ export function runProgrammatic(code, ctx, limits = {}) {
           return;
         }
         const name = String(m.name || '');
-        if (!CALLABLE.has(name)) {
+        if (!callable.has(name)) {
           worker.postMessage({ type: 'tool_result', id: m.id, ok: false, error: `${name} is not callable from code` });
           return;
         }

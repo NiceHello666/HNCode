@@ -135,3 +135,72 @@ function _walk(dir, relPrefix, parentPatterns, found, opts) {
     }
   }
 }
+
+/**
+ * The same walk, WITHOUT freezing the process it runs in.
+ *
+ * `walkFiles` is synchronous end to end (`readdirSync`, `statSync`). That is fine for a script with nothing else
+ * to do, and fatal for an editor: the event loop cannot paint, read a keystroke or answer a timer while the walk
+ * holds it. Measured on a drive root, one Glob took 43 seconds — during which the interface was simply dead,
+ * because nothing else could run.
+ *
+ * This version uses `fs.promises` and yields every so often, so the loop stays alive. The RESULT is identical;
+ * only the schedule differs.
+ *
+ * @param {string} base
+ * @param {{includeIgnored?: boolean, includeDirs?: boolean, limit?: number}} [opts]
+ */
+export async function walkFilesAsync(base, opts = {}) {
+  const { includeIgnored = false, includeDirs = false, limit = 1000 } = opts;
+  const baseAbs = path.resolve(base);
+  const found = [];
+  // A counter, not a timer: yielding on a chunk of FILES keeps the pause proportional to the work rather than to
+  // wall-clock, so a fast directory costs nothing and a slow one still yields regularly.
+  const state = { sinceYield: 0 };
+  await _walkAsync(baseAbs, '', [], found, { includeIgnored, includeDirs }, state);
+  found.sort((a, b) => b.mtime - a.mtime);
+  if (limit > 0 && found.length > limit) found.length = limit;
+  return found.filter((e) => includeDirs || e.isFile).map((e) => e.path);
+}
+
+const YIELD_EVERY = 200;
+
+async function _walkAsync(dir, relPrefix, parentPatterns, found, opts, state) {
+  const { includeIgnored, includeDirs } = opts;
+  let entries;
+  try { entries = await fs.promises.readdir(dir, { withFileTypes: true }); } catch { return; }
+  const acc = parentPatterns.concat(ignorePatternsFor(dir));
+  for (const ent of entries) {
+    const rel = relPrefix ? relPrefix + '/' + ent.name : ent.name;
+    const abs = path.join(dir, ent.name);
+    let isDir = !!ent.isDirectory();
+    if (isDir && (PRUNED_DIRS.has(ent.name)
+      || (!includeIgnored && PRUNED_UNLESS_IGNORED.has(ent.name)))) continue;
+    let ignored = false;
+    for (const pat of acc) {
+      if (matchPattern(pat, rel, isDir)) ignored = !pat.negate;
+    }
+    if (ignored && !includeIgnored) continue;
+
+    if (isDir) {
+      if (includeDirs) {
+        let mtime = 0;
+        try { mtime = (await fs.promises.stat(abs)).mtimeMs; } catch { /* keep 0 */ }
+        found.push({ path: abs, mtime, isFile: false });
+      }
+      await _walkAsync(abs, rel, acc, found, opts, state);
+    } else {
+      let mtime = 0;
+      try { mtime = (await fs.promises.stat(abs)).mtimeMs; } catch { /* keep 0 */ }
+      found.push({ path: abs, mtime, isFile: true });
+    }
+
+    state.sinceYield++;
+    if (state.sinceYield >= YIELD_EVERY) {
+      state.sinceYield = 0;
+      // Hand the loop a turn. `setImmediate` rather than `setTimeout(0)`: it keeps the walk's own ordering and
+      // does not add a timer per chunk.
+      await new Promise((r) => setImmediate(r));
+    }
+  }
+}

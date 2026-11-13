@@ -469,6 +469,91 @@ Write-Output ("ok=" + $ok)`);
   return { ok: /ok=True/.test(out) };
 }
 
+/**
+ * One window, in detail: state, process, class, and whether it is actually on screen.
+ *
+ * `ListWindows` answers "which windows exist" — often by scanning a list. Answering "what is THIS
+ * window doing" from that list means finding it again, and the list does not carry the state at all.
+ */
+export async function getWindowInfo(hwnd) {
+  if (!isWin) return unsupported('window details on Windows only');
+  const out = await ps(`Add-Type @"
+using System; using System.Runtime.InteropServices; using System.Text;
+public class CuI {
+  [DllImport("user32.dll")] public static extern bool IsWindow(IntPtr h);
+  [DllImport("user32.dll")] public static extern bool IsWindowVisible(IntPtr h);
+  [DllImport("user32.dll")] public static extern bool IsZoomed(IntPtr h);
+  [DllImport("user32.dll")] public static extern bool IsIconic(IntPtr h);
+  [DllImport("user32.dll")] public static extern bool GetWindowRect(IntPtr h, out RECT r);
+  [DllImport("user32.dll")] public static extern int GetWindowTextLength(IntPtr h);
+  [DllImport("user32.dll", CharSet=CharSet.Unicode)] public static extern int GetWindowText(IntPtr h, StringBuilder s, int n);
+  [DllImport("user32.dll", CharSet=CharSet.Unicode)] public static extern int GetClassName(IntPtr h, StringBuilder s, int n);
+  [DllImport("user32.dll")] public static extern uint GetWindowThreadProcessId(IntPtr h, out uint pid);
+  [DllImport("user32.dll")] public static extern IntPtr GetForegroundWindow();
+  [StructLayout(LayoutKind.Sequential)] public struct RECT { public int Left, Top, Right, Bottom; }
+}
+"@
+$h = [IntPtr]${hwnd}
+if (-not [CuI]::IsWindow($h)) { Write-Output '__CUERR__no such window' ; exit }
+$r = New-Object CuI+RECT
+[CuI]::GetWindowRect($h, [ref]$r) | Out-Null
+$tb = New-Object System.Text.StringBuilder 1024
+[CuI]::GetWindowText($h, $tb, 1024) | Out-Null
+$cb = New-Object System.Text.StringBuilder 256
+[CuI]::GetClassName($h, $cb, 256) | Out-Null
+$pid_ = 0
+[CuI]::GetWindowThreadProcessId($h, [ref]$pid_) | Out-Null
+Write-Output ("title=" + $tb.ToString())
+Write-Output ("class=" + $cb.ToString())
+Write-Output ("pid=" + $pid_)
+Write-Output ("rect=" + $r.Left + "," + $r.Top + "," + ($r.Right - $r.Left) + "," + ($r.Bottom - $r.Top))
+Write-Output ("visible=" + [CuI]::IsWindowVisible($h))
+Write-Output ("maximized=" + [CuI]::IsZoomed($h))
+Write-Output ("minimized=" + [CuI]::IsIconic($h))
+Write-Output ("foreground=" + ([CuI]::GetForegroundWindow() -eq $h))`);
+
+  const pick = (k) => {
+    const m = new RegExp(`^${k}=(.*)$`, 'm').exec(out);
+    return m ? m[1].trim() : '';
+  };
+  const rect = pick('rect').split(',').map(Number);
+  return {
+    hwnd: String(hwnd),
+    title: pick('title'),
+    className: pick('class'),
+    pid: Number(pick('pid')) || null,
+    x: rect[0] || 0, y: rect[1] || 0, width: rect[2] || 0, height: rect[3] || 0,
+    visible: pick('visible') === 'True',
+    maximized: pick('maximized') === 'True',
+    minimized: pick('minimized') === 'True',
+    foreground: pick('foreground') === 'True',
+  };
+}
+
+/**
+ * Maximize, minimize or restore a window.
+ *
+ * `resizeWindow` sets a rectangle, which is the wrong tool for "make it fill the screen" — the app has its
+ * own idea of what maximized means, and a hand-computed rectangle loses the maximize state (so the next
+ * restore puts it back somewhere arbitrary).
+ */
+export async function setWindowState(hwnd, cmd) {
+  if (!isWin) return unsupported('window state on Windows only');
+  const actions = { maximize: 3, minimize: 6, restore: 9 };
+  const code = actions[String(cmd || '').toLowerCase()];
+  if (!code) return { error: `unknown state "${cmd}": use maximize, minimize or restore` };
+  const out = await ps(`Add-Type @"
+using System; using System.Runtime.InteropServices;
+public class CuS {
+  [DllImport("user32.dll")] public static extern bool ShowWindow(IntPtr h, int cmd);
+}
+"@
+$ok = [CuS]::ShowWindow([IntPtr]${hwnd}, ${code})
+# ShowWindow's return says whether the window WAS visible, not whether the call worked.
+Write-Output "ok"`);
+  return { ok: /ok/.test(out), state: String(cmd).toLowerCase() };
+}
+
 /** Close a window by posting WM_CLOSE — a request, so the app can prompt to save. */
 export async function closeWindow(hwnd) {
   if (!isWin) return unsupported('window close on Windows only');
@@ -528,6 +613,53 @@ export async function launchApp(target, { waitMs = 1500 } = {}) {
   } catch { /* the launch already succeeded */ }
 
   return { ok: true, pid: pid ? Number(pid[1]) : null, launched: t, windows };
+}
+
+/**
+ * Wait for a window matching a title or class to appear (or disappear).
+ *
+ * `WaitForElement` watches the UI tree of a window that already exists. Starting a program and then
+ * needing ITS window is a different wait: there is no handle to walk yet, and polling `ListWindows` in a
+ * turn costs a full inference pass per attempt. The polling belongs here, where it costs nothing.
+ *
+ * It returns the matching window rather than a bare boolean, so the next call can address a real handle.
+ */
+export async function waitForWindow({ title, className, hwnd, state = 'appear', timeoutMs = 15000, pollMs = 250 } = {}) {
+  if (!isWin) return unsupported('waiting for windows on Windows only');
+  const until = Date.now() + Math.max(0, Number(timeoutMs) || 15000);
+  const wantGone = String(state).toLowerCase() === 'disappear';
+  const titleNeedle = String(title || '').toLowerCase();
+  const classNeedle = String(className || '').toLowerCase();
+
+  let last = null;
+  for (;;) {
+    let windows = [];
+    try { windows = await listWindows({ includeNoise: false }); } catch { windows = []; }
+    const hit = windows.find((w) => {
+      if (hwnd != null && String(w.hwnd) === String(hwnd)) return true;
+      if (hwnd != null) return false;
+      const byTitle = titleNeedle && String(w.title || '').toLowerCase().includes(titleNeedle);
+      const byClass = classNeedle && String(w.className || '').toLowerCase().includes(classNeedle);
+      // With no selector at all, any real window counts — used right after a launch.
+      return (!titleNeedle && !classNeedle) || byTitle || byClass;
+    });
+    last = hit || null;
+
+    if (wantGone ? !hit : !!hit) {
+      return { ok: true, found: wantGone ? null : hit, vanished: wantGone ? !hit : undefined, waitedMs: Date.now() - (until - Math.max(0, Number(timeoutMs) || 15000)) };
+    }
+    if (Date.now() >= until) {
+      return {
+        ok: false,
+        found: null,
+        error: wantGone
+          ? `the window was still there after ${timeoutMs}ms`
+          : `no window matching ${JSON.stringify(title || className || '(any)')} appeared within ${timeoutMs}ms`,
+        lastSeen: last,
+      };
+    }
+    await new Promise((r) => setTimeout(r, Math.max(50, Number(pollMs) || 250)));
+  }
 }
 
 /**

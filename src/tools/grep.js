@@ -6,7 +6,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import cp from 'node:child_process';
 import { isProbablyTextFile, truncateBuf, resolvePath } from './utils.js';
-import { walkFiles } from './ignore.js';
+import { walkFilesAsync } from './ignore.js';
 import { matchGlob } from './matchers.js';
 
 export const spec = {
@@ -40,7 +40,7 @@ export const spec = {
     try { base = resolvePath(args.path || '.', ctx); } catch (e) { return `Error: ${e.message}`; }
     if (!fs.existsSync(base)) return `Error: path does not exist: ${args.path}`;
     if (!args.multiline && hasRg()) return await grepRg(args, base, ctx);
-    return grepJs(args, base, ctx);
+    return await grepJs(args, base, ctx);
   },
 };
 
@@ -90,7 +90,7 @@ function grepRg(args, base, ctx) {
     try {
       child = cp.spawn('rg', buildRgArgs(args, base), { cwd: ctx.cwd || ctx.workspace });
     } catch {
-      resolve(grepJs(args, base, ctx));
+      grepJs(args, base, ctx).then((r) => resolve(r), (e) => resolve(`Error: ${e.message}`));
       return;
     }
     let stdout = '';
@@ -103,7 +103,7 @@ function grepRg(args, base, ctx) {
     child.stderr.on('data', (d) => { stderr += d; });
     // spawn failure (ENOENT, etc.): fall back to the JS walker rather than
     // reporting an empty result as "No matches found".
-    child.on('error', () => done(() => resolve(grepJs(args, base, ctx))));
+    child.on('error', () => done(() => grepJs(args, base, ctx).then((r) => resolve(r), (e) => resolve(`Error: ${e.message}`))));
     child.on('close', (code) => done(() => {
       if (code > 1 && stderr) resolve(`rg error: ${stderr.trim()}`);
       else if (!stdout.trim() && args.pattern.includes('$')) {
@@ -111,7 +111,7 @@ function grepRg(args, base, ctx) {
         // which rg cannot treat as line breaks at all. The JS walker handles every
         // ending, so it gets the final word — only for `$` patterns that found
         // nothing, so ordinary searches never pay for the extra pass.
-        resolve(grepJs(args, base, ctx));
+        grepJs(args, base, ctx).then((r) => resolve(r), (e) => resolve(`Error: ${e.message}`));
       }
       else resolve(paginate(stdout, args));
     }));
@@ -124,10 +124,12 @@ function grepRg(args, base, ctx) {
   });
 }
 
-function grepJs(args, base, ctx) {
+async function grepJs(args, base, ctx) {
   const flags = 'g' + (args['-i'] ? 'i' : '') + (args.multiline ? 's' : '');
   const re = new RegExp(args.pattern, flags);
-  const files = walkFiles(base, { includeIgnored: !!args.include_ignored, includeDirs: false, limit: 0 });
+  // ASYNC, for the same reason as Glob: a synchronous walk over a large tree freezes everything else that shares
+  // the process.
+  const files = await walkFilesAsync(base, { includeIgnored: !!args.include_ignored, includeDirs: false, limit: 0 });
   const filtered = files.filter((abs) => {
     if (args.glob) {
       const rel = path.relative(base, abs).split(path.sep).join('/');

@@ -2332,34 +2332,28 @@ export function formatToolLine(msg, workspace, spin, pulseStart, shimmerEdge, ex
 // Renders above the input box: a rule, a "Todo" heading, up to 5 rows, and a
 // "+N more · ctrl+t to expand" hint. Ctrl+T expands the full list.
 const TODO_MAX_VISIBLE = 5;
-export function selectVisibleTodos(todos) {
-  if (todos.length <= TODO_MAX_VISIBLE) return { rows: todos, hidden: 0, counts: {} };
-  const inProgress = [], pending = [], done = [];
-  todos.forEach((t, i) => {
-    if (t.status === 'in_progress') inProgress.push(i);
-    else if (t.status === 'pending') pending.push(i);
-    else done.push(i);
-  });
-  const picked = new Set(inProgress.slice(0, TODO_MAX_VISIBLE));
-  if (picked.size < TODO_MAX_VISIBLE) {
-    const doneC = [...done].reverse();
-    const pendC = pending;
-    const remaining = TODO_MAX_VISIBLE - picked.size;
-    let doneCount, pendCount;
-    if (!doneC.length) { doneCount = 0; pendCount = Math.min(remaining, pendC.length); }
-    else if (!pendC.length) { pendCount = 0; doneCount = Math.min(remaining, doneC.length); }
-    else {
-      doneCount = 1;
-      pendCount = Math.min(remaining - 1, pendC.length);
-      if (pendCount < remaining - 1) doneCount = Math.min(doneC.length, remaining - pendCount);
-    }
-    for (let i = 0; i < doneCount; i++) picked.add(doneC[i]);
-    for (let i = 0; i < pendCount; i++) picked.add(pendC[i]);
-  }
-  const idx = [...picked].sort((a, b) => a - b);
+
+/**
+ * The first `max` entries, in the order they were written.
+ *
+ * This used to RANK: in-progress first, then one done item, then pending. On a status change the panel therefore
+ * reshuffled — the item being worked on jumped to the top and a finished one followed it — and the list stopped
+ * describing the order the work was planned in. A task list is a sequence; a view that reorders it is showing
+ * something other than what was written.
+ *
+ * `counts` still reports what the window is hiding, so the "+N more" hint stays informative.
+ */
+export function selectVisibleTodos(todos, max = TODO_MAX_VISIBLE) {
+  const list = Array.isArray(todos) ? todos : [];
+  const limit = Number.isFinite(max) ? Math.max(0, Math.round(max)) : TODO_MAX_VISIBLE;
+  if (list.length <= limit) return { rows: list, hidden: 0, counts: {} };
+  const rows = list.slice(0, limit);
   const counts = { done: 0, in_progress: 0, pending: 0 };
-  todos.forEach((t, i) => { if (!picked.has(i)) counts[t.status] = (counts[t.status] || 0) + 1; });
-  return { rows: idx.map((i) => todos[i]), hidden: todos.length - idx.length, counts };
+  for (let i = limit; i < list.length; i++) {
+    const s = list[i] && list[i].status;
+    counts[s] = (counts[s] || 0) + 1;
+  }
+  return { rows, hidden: list.length - rows.length, counts };
 }
 
 function todoRow(todo, w) {
@@ -2386,16 +2380,16 @@ function renderTodoPanel(state, w, hoverTop, dragTop) {
   out.push(col('─'.repeat(w), ruleColor));
   out.push(col('  Todo', C.cyan + C.bold));
   const want = todoRowCount(state);
-  // Keep the automatic pick ORDER (so the in-progress item keeps its priority) and
-  // top it up from the remaining items until `want` rows are shown.
-  const ordered = [];
-  const seen = new Set();
-  for (const t of selectVisibleTodos(todos).rows) { ordered.push(t); seen.add(t); }
-  for (const t of todos) {
-    if (ordered.length >= want) break;
-    if (!seen.has(t)) { ordered.push(t); seen.add(t); }
-  }
-  const rows = ordered.slice(0, want);
+  // CREATION ORDER, ALWAYS.
+  //
+  // The panel used to draw `selectVisibleTodos` first — which ranks in-progress ahead of pending and pulls done
+  // items up — and then top up from the original list. The result read as a reshuffle on every status change: the
+  // item being worked on jumped to the top and a finished one followed it, so the list no longer described the
+  // order the work was planned in. A task list is a SEQUENCE; showing it in a different sequence than it was
+  // written in is what made it hard to follow.
+  //
+  // Which rows fit is still the panel's decision — it takes the first `want` in order.
+  const rows = todos.slice(0, want);
   for (const t of rows) out.push(todoRow(t, w));
   const hidden = todos.length - rows.length;
   if (hidden > 0) {
@@ -12988,7 +12982,7 @@ export async function dispatch(cmdRaw, arg, state, cfg, session, h, submit, stdo
       // The body is EXACTLY what the user typed. Nothing is appended — a report
       // the user did not write (an environment footer, a template) reads as noise
       // in the issue form and has to be deleted before submitting.
-      const url = 'https://github.com/NiceHello666/hncode/issues/new'
+      const url = 'https://github.com/NiceHello666/HNCode/issues/new'
         + `?title=${encodeURIComponent(title)}`
         + (body ? `&body=${encodeURIComponent(body)}` : '');
       sayPanel(`Open a GitHub issue:\n  ${url}`);
@@ -14191,6 +14185,16 @@ const agents = readAgentsMd(state.cwd || state.workspace || cfg.workspace, state
       // Tools that act ONLY inside the session: the roster, the mailbox, the task list, the memories.
       // `isInsideWorkspace` answers `false` for any tool it does not know, so without this they all asked for
       // approval in yolo — the one mode whose point is not asking.
+      // A PLUGIN'S TOOL ANSWERS FOR ITSELF.
+      //
+      // The list below covers the tools this program ships. A plugin's tools cannot be added to it from outside,
+      // and `isInsideWorkspace` does not know them — so every one of them asked for approval whatever it did. A
+      // spec declaring `autoApprove: true` now says so itself, which is the only place that knows whether the
+      // tool touches anything.
+      if (rule !== 'ask') {
+        const own = getTool(toolName);
+        if (own && own.autoApprove === true) return true;
+      }
       const safeTools = ['Read', 'Grep', 'Glob', 'FetchURL', 'WebSearch', 'TaskOutput', 'TaskList', 'TaskStop', 'TaskWait', 'TodoList', 'Goal', 'ActivateSkill', 'ProgrammaticToolCall', 'FileLines', 'AgentList', 'AgentMessage', 'AgentInterrupt', 'AgentClose', 'TaskInput', 'SendMessage', 'TeamTaskCreate', 'TeamTaskUpdate', 'TeamTaskList', 'ListTeammates', 'Memory', 'AskUserQuestion'];
       if (rule !== 'ask' && safeTools.includes(toolName)) return true;
       // A read-only SHELL COMMAND (ls/git status/rg/cat …) is as safe as a
@@ -14203,27 +14207,33 @@ const agents = readAgentsMd(state.cwd || state.workspace || cfg.workspace, state
       }
 
 
-      // Yolo: anything that stays INSIDE the workspace runs
-      // without asking — edits, writes and commands alike. Only work that touches
-      // a path OUTSIDE the workspace (or a command whose target we cannot prove is
-      // inside) needs the user.
+      // ASK: an ordinary action runs, anything with a consequence asks.
       //
-      // BASH is the exception: a shell command's paths cannot be proven either way
-      // (variables, pipes, subshells), so the old path heuristic flagged ordinary
-      // commands like `ls /tmp` and asked about them. In yolo the user has already
-      // said "run routine work", so Bash runs without the workspace test — only an
-      // obviously destructive command still asks.
+      // This is the only mode that gates FILE work, which is the point of it — the other two exist for people who
+      // have decided not to be asked.
+      if (cur === 'ask' && rule !== 'ask') {
+        // A read-only shell command is as safe as a read-only tool: there is no decision to make about `git log`.
+        if (toolName === 'Bash') {
+          const c = String((args && (args.command || args.cmd)) || '');
+          if (isReadOnlyCommand(c) && !isDestructiveCommand(c)) return true;
+        }
+      }
+
+      // YOLO: routine work runs. FILES ARE NOT A REASON TO ASK.
+      //
+      // A user in yolo has said they do not want to confirm edits, and a path outside the workspace is still just a
+      // path. What still asks is DESTRUCTION — a command that deletes, rewrites history or kills a process — because
+      // that is the one class of action nobody means to authorise wholesale.
       if (cur === 'yolo' && rule !== 'ask') {
         if (toolName === 'Bash') {
           const cmd = String((args && (args.command || args.cmd)) || '');
           if (!isDestructiveCommand(cmd)) return true;
-        } else if (isInsideWorkspace(state, toolName, args)) {
+        } else {
+          // Every non-shell tool: no path test. `isInsideWorkspace` was the thing asking about `/goal` and about a
+          // Read elsewhere, neither of which is a decision.
           return true;
         }
       }
-
-
-
       return new Promise((resolve) => {
         let desc = '';
         if (args && typeof args === 'object') {

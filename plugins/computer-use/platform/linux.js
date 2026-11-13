@@ -176,6 +176,117 @@ export async function closeWindow(hwnd) {
   return { ok: true };
 }
 
+/**
+ * One window, in detail — from `xdotool getwindowgeometry`, plus the list entry for title and class.
+ *
+ * The list already carries the title, so only the geometry and the state are asked for here. `getwindowgeometry`
+ * reports position and size; `getwindowfocus` is how "is this the active window" is answered, because X11 has no
+ * per-window query for it.
+ */
+export async function getWindowInfo(hwnd) {
+  if (!isLinux) return unsupported('window details on Linux only');
+  if (!(await have('xdotool'))) return unsupported('window details need xdotool (install: xdotool)');
+
+  let entry = null;
+  try {
+    entry = (await listWindows()).find((w) => String(w.hwnd) === String(hwnd)) || null;
+  } catch { /* the geometry below still works */ }
+
+  let geometry = null;
+  try {
+    const out = await run('xdotool', ['getwindowgeometry', '--shell', String(hwnd)], { timeoutMs: 10000 });
+    geometry = {};
+    for (const line of String(out).split('\n')) {
+      const m = /^(\w+)=(-?\d+)$/.exec(line.trim());
+      if (m) geometry[m[1]] = Number(m[2]);
+    }
+  } catch { /* a window that vanished between calls */ }
+
+  let foreground = false;
+  try {
+    const out = await run('xdotool', ['getwindowfocus'], { timeoutMs: 5000 });
+    foreground = String(out).trim() === String(hwnd);
+  } catch { /* no focus owner */ }
+
+  return {
+    hwnd: String(hwnd),
+    title: entry ? entry.title : '',
+    className: entry ? entry.className : '',
+    pid: entry ? entry.pid : null,
+    x: geometry && geometry.X != null ? geometry.X : 0,
+    y: geometry && geometry.Y != null ? geometry.Y : 0,
+    width: geometry && geometry.WIDTH != null ? geometry.WIDTH : 0,
+    height: geometry && geometry.HEIGHT != null ? geometry.HEIGHT : 0,
+    visible: !!entry,
+    maximized: !!(entry && entry.maximized),
+    minimized: false,   // X11 has no per-window iconified flag xdotool can read
+    foreground,
+  };
+}
+
+/** Maximize, minimize or restore, through the window manager's own EWMH actions. */
+export async function setWindowState(hwnd, cmd) {
+  if (!isLinux) return unsupported('window state on Linux only');
+  if (!(await have('xdotool'))) return unsupported('window state needs xdotool (install: xdotool)');
+  const action = {
+    maximize: 'add',
+    minimize: 'add',
+    restore: 'remove',
+  }[String(cmd || '').toLowerCase()];
+  const prop = {
+    maximize: '_NET_WM_STATE_MAXIMIZED_VERT',
+    minimize: '_NET_WM_STATE_HIDDEN',
+    restore: '_NET_WM_STATE_MAXIMIZED_VERT',
+  }[String(cmd || '').toLowerCase()];
+  if (!action) return { error: `unknown state "${cmd}": use maximize, minimize or restore` };
+  try {
+    await run('xdotool', ['windowstate', '--' + action, String(hwnd), prop], { timeoutMs: 10000 });
+    return { ok: true, state: String(cmd).toLowerCase() };
+  } catch (e) {
+    return { ok: false, error: String(e.message || e) };
+  }
+}
+
+/**
+ * Wait for a window matching a title or class to appear (or disappear).
+ *
+ * Polling belongs on this side: each attempt through a model turn is a full inference pass, and a window usually
+ * takes a second or two — so the wait costs the conversation nothing when it happens here.
+ */
+export async function waitForWindow({ title, className, hwnd, state = 'appear', timeoutMs = 15000, pollMs = 250 } = {}) {
+  if (!isLinux) return unsupported('waiting for windows on Linux only');
+  const until = Date.now() + Math.max(0, Number(timeoutMs) || 15000);
+  const wantGone = String(state).toLowerCase() === 'disappear';
+  const titleNeedle = String(title || '').toLowerCase();
+  const classNeedle = String(className || '').toLowerCase();
+
+  let last = null;
+  for (;;) {
+    let windows = [];
+    try { windows = await listWindows(); } catch { windows = []; }
+    const hit = windows.find((w) => {
+      if (hwnd != null) return String(w.hwnd) === String(hwnd);
+      const byTitle = titleNeedle && String(w.title || '').toLowerCase().includes(titleNeedle);
+      const byClass = classNeedle && String(w.className || '').toLowerCase().includes(classNeedle);
+      return (!titleNeedle && !classNeedle) || byTitle || byClass;
+    });
+    last = hit || null;
+
+    if (wantGone ? !hit : !!hit) return { ok: true, found: wantGone ? null : hit };
+    if (Date.now() >= until) {
+      return {
+        ok: false,
+        found: null,
+        error: wantGone
+          ? `the window was still there after ${timeoutMs}ms`
+          : `no window matching ${JSON.stringify(title || className || '(any)')} appeared within ${timeoutMs}ms`,
+        lastSeen: last,
+      };
+    }
+    await new Promise((r) => setTimeout(r, Math.max(50, Number(pollMs) || 250)));
+  }
+}
+
 export async function listDisplays() {
   if (!isLinux) return unsupported('display enumeration on Linux only');
   if (await have('xrandr')) {

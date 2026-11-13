@@ -60,7 +60,7 @@ async function tlsFetch(url, opts = {}) {
 }
 
 // The canonical source. Overridable so a fork (or a test) can point elsewhere.
-export const DEFAULT_REPO = process.env.HNCODE_REPO || 'NiceHello666/hncode';
+export const DEFAULT_REPO = process.env.HNCODE_REPO || 'NiceHello666/HNCode';
 export const DEFAULT_REF = process.env.HNCODE_REPO_REF || 'main';
 
 // Where remote plugins land. `plugin.js` loads *.js/*.mjs from this directory.

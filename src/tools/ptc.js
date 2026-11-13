@@ -13,7 +13,7 @@
  * and the code can only reach the ones on the allowlist. See src/ptc.js for that list, and ptc-worker.js for the
  * sandbox itself.
  */
-import { runProgrammatic, CALLABLE_TOOLS } from '../ptc.js';
+import { runProgrammatic, callableTools } from '../ptc.js';
 
 const DESCRIPTION = [
   'Orchestrate tools with JavaScript instead of calling them one at a time.',
@@ -41,13 +41,18 @@ const DESCRIPTION = [
   'print(hits.join(\'\\n\'));',
   '```',
   '',
-  `CALLABLE TOOLS: ${CALLABLE_TOOLS.join(', ')}.`,
-  'Anything else is refused — a shell or a write would escape the sandbox\'s purpose.',
-].join('\n');
+  // NOT a fixed list: a plugin can contribute tools at any time, and a description built once at import would
+  // name a set the model cannot call. `description` is a getter for that reason.
+];
+const BASE_DESCRIPTION = DESCRIPTION.join('\n');
 
 export const spec = {
   name: 'ProgrammaticToolCall',
-  description: DESCRIPTION,
+  // Built per read so a plugin that loaded after this module is named in the list the model is given.
+  get description() {
+    return BASE_DESCRIPTION + '\n\nCALLABLE TOOLS: ' + callableTools().join(', ') + '.'
+      + '\nAnything else is refused — a shell or a write would escape the sandbox\'s purpose.';
+  },
   parameters: {
     type: 'object',
     properties: {

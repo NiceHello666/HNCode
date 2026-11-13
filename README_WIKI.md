@@ -1,14 +1,15 @@
-# hncode Wiki
+![HNCode](imgs/HNCode.png)
 
-English | [简体中文](https://github.com/NiceHello666/hncode/blob/main/README_WIKI_CN.md) | [Back to README](https://github.com/NiceHello666/hncode/blob/main/README.md)
+---
 
-Complete documentation for hncode — an AI coding agent that runs as a terminal user interface (TUI).
+# HNCode Wiki
+Complete documentation for HNCode — an AI coding agent that runs as a terminal user interface (TUI).
 
 ---
 
 ## Table of Contents
 
-1. [What hncode is](#1-what-hncode-is)
+1. [What HNCode is](#1-what-HNCode-is)
 2. [Requirements](#2-requirements)
 3. [Installation](#3-installation)
 4. [First run](#4-first-run)
@@ -39,9 +40,9 @@ Complete documentation for hncode — an AI coding agent that runs as a terminal
 
 ---
 
-## 1. What hncode is
+## 1. What HNCode is
 
-hncode is a coding agent that lives in your terminal. You describe a task; it reads and edits files, runs shell commands, searches the codebase, fetches web pages, and keeps working until the task is done — subject to the permission mode you choose.
+HNCode is a coding agent that lives in your terminal. You describe a task; it reads and edits files, runs shell commands, searches the codebase, fetches web pages, and keeps working until the task is done — subject to the permission mode you choose.
 
 It is inspired by [Kimi Code](https://github.com/MoonshotAI/kimi-code) and takes a similar approach: a raw-terminal (not `blessed`) cyan-blue TUI, a tool loop driven by a model that may emit tool calls, and streaming responses from either an OpenAI-compatible endpoint or Anthropic.
 
@@ -93,7 +94,7 @@ Neither script executes your code or phones home; they only create local directo
 ### Manual install from source
 
 ```bash
-git clone https://github.com/NiceHello666/hncode.git
+git clone https://github.com/NiceHello666/HNCode.git
 cd hncode
 npm link          # exposes the `hncode` command globally
 ```
@@ -102,7 +103,7 @@ npm link          # exposes the `hncode` command globally
 
 ## 4. First run
 
-1. Launch `hncode`. On first run the install script has created `~/.hncode/config.toml`.
+1. Launch `HNCode`. On first run the install script has created `~/.hncode/config.toml`.
 2. Add a provider **from inside the TUI**: run `/provider`, pick a known provider (or add a custom one), and paste your API key. Models are registered automatically. (If you already set `HNCODE_API_KEY`, this is unnecessary.)
 3. Type your task and press **Enter**.
 
@@ -120,13 +121,13 @@ The TUI is split into:
 
 ## 5. Configuration
 
-hncode reads **only** `~/.hncode/config.toml` (plus `HNCODE_*` environment variables). It does not read any other product's config.
+HNCode reads **only** `~/.hncode/config.toml` (plus `HNCODE_*` environment variables). It does not read any other product's config.
 
 **You usually don't need to edit this file by hand.** Providers and models can be configured entirely from inside the TUI, and the resulting `config.toml` is written for you. Editing the TOML directly is an *advanced* option — useful for scripted setups, unusual endpoints, or settings the wizard does not expose.
 
 ### 5.1 Basic: configure everything from the TUI
 
-Run these slash commands while hncode is open:
+Run these slash commands while HNCode is open:
 
 | Command | What it does |
 |---------|--------------|
@@ -139,7 +140,7 @@ Run these slash commands while hncode is open:
 - pick a **known provider** from the [models.dev](https://models.dev) catalog — the base URL is pre-filled, or
 - add a **custom provider** — you supply the name, base URL, API key, and protocol (`OpenAI` or `Anthropic`).
 
-After you save it, hncode calls that provider's `/models` endpoint and **registers every model automatically**, recording each one's context window and thinking capability. You do not need to know any of that up front.
+After you save it, HNCode calls that provider's `/models` endpoint and **registers every model automatically**, recording each one's context window and thinking capability. You do not need to know any of that up front.
 
 **Editing a provider** (`/provider` → Enter on a provider) lets you change its name, base URL, API key, and protocol type.
 
@@ -167,7 +168,7 @@ model = "gpt-4o-mini"
 
 | Key | Meaning |
 |-----|---------|
-| `base_url` | Base URL. hncode appends `/chat/completions` (OpenAI) or `/messages` (Anthropic). |
+| `base_url` | Base URL. HNCode appends `/chat/completions` (OpenAI) or `/messages` (Anthropic). |
 | `api_key` | API key for this provider. |
 | `protocol` | `openai` (default) or `anthropic`. |
 
@@ -206,7 +207,7 @@ Every value below **overrides** its `config.toml` counterpart — handy for CI o
 | `HNCODE_SESSIONS_DIR` | Alternate directory for saved sessions. |
 | `HNCODE_PLUGINS` | Alternate plugin directory. |
 | `HNCODE_SKILLS_DIR` | Alternate skill directory. |
-| `HNCODE_REPO` | Repository for `/skills install` and `/plugins install` (`owner/name`, default `NiceHello666/hncode`). |
+| `HNCODE_REPO` | Repository for `/skills install` and `/plugins install` (`owner/name`, default `NiceHello666/HNCode`). |
 | `HNCODE_REPO_REF` | Branch or tag to pull from (default `main`). |
 
 ---
@@ -338,7 +339,7 @@ Unknown `/commands` are reported as errors and are **not** sent to the model.
 | `↑` (while queued) | Recall the last queued message for editing. |
 | `Ctrl-O` | Expand/collapse tool output and thinking. |
 | `Ctrl-T` | Expand/collapse the todo panel. |
-| `Ctrl-C` twice | Exit hncode. |
+| `Ctrl-C` twice | Exit HNCode. |
 
 ### Pasting
 
@@ -411,7 +412,7 @@ Plan mode (`/plan`) restricts tools to read-only. Focus mode (`/focus`) starts w
 
 ## 11. Context management & auto-compaction
 
-Every request carries the conversation so far. When the estimated size reaches **85%** of the model's context window, hncode **auto-compacts**:
+Every request carries the conversation so far. When the estimated size reaches **85%** of the model's context window, HNCode **auto-compacts**:
 
 1. It keeps the most recent **20%** of messages.
 2. It asks the model to **summarize** the older part (goals, decisions, files touched, current state).
@@ -434,7 +435,7 @@ A session records `id`, `title`, `workspace`, `model`, `messages`, `rounds`, `st
 
 - Stored under `~/.hncode/sessions/<id>.json`.
 - `/sessions` lists only sessions **from the current directory**.
-- `hncode --continue` resumes the most recent session **for the current directory**.
+- `HNCode --continue` resumes the most recent session **for the current directory**.
 - `/move <path>` relocates a session to another directory.
 - `/new` starts a fresh one (and clears the todo panel).
 - Mode flags (permission / plan / focus / effort) are persisted with the session.
@@ -449,7 +450,7 @@ manifest, no dependencies required. The file name is the plugin id.
 
 ### The smallest useful plugin
 
-Save this as `~/.hncode/plugins/echo.mjs`, restart hncode, and the model gains a new
+Save this as `~/.hncode/plugins/echo.mjs`, restart HNCode, and the model gains a new
 tool it can call:
 
 ```javascript
@@ -568,7 +569,7 @@ off();
 ### Reporting to the user
 
 Use `api.log`, not `console`. The TUI owns the screen, so a `console.log` from a plugin
-is written to a terminal the user cannot see while hncode is running. `api.log` puts the
+is written to a terminal the user cannot see while HNCode is running. `api.log` puts the
 message in the transcript, where they are already looking:
 
 ```javascript
@@ -584,7 +585,7 @@ export function install(api) {
  ! plugin: the legacy option is ignored
 ```
 
-hncode reports its own plugin events the same way — a successful load, a plugin whose
+HNCode reports its own plugin events the same way — a successful load, a plugin whose
 `install()` threw, and a file with no `install()` export all appear as lines in the chat,
 instead of only going to stderr. `api.log` still mirrors to the terminal, so a plugin
 author watching stderr sees it too.
@@ -677,7 +678,7 @@ whole file is the body and the name comes from the file name.
 
 ## 15. Installing skills and plugins from the repo
 
-hncode ships **no** skills or plugins in the npm package. They are fetched on demand from
+HNCode ships **no** skills or plugins in the npm package. They are fetched on demand from
 the project repository, which keeps the installed package small and lets a skill be
 updated without a release.
 
@@ -700,7 +701,7 @@ plugins/<name>/index.js     ->  ~/.hncode/plugins/<name>/index.js
  [Loaded (1)]  On disk (2)   Available (3)
 
  ❯ my-plugin/                     restart
-     not loaded — restart hncode to load it
+     not loaded — restart HNCode to load it
    secret-guard                   installed
      Catch credentials before they are written
 
@@ -740,7 +741,7 @@ pick up a newer version.
   uninstallable rather than producing a nameless skill.
 - Installing verifies the name first: anything with `/`, `\`, or a leading `.` is refused.
 - Set `HNCODE_REPO` / `HNCODE_REPO_REF` to point at a fork (defaults:
-  `NiceHello666/hncode` @ `main`).
+  `NiceHello666/HNCode` @ `main`).
 - **On GitHub rate limits**: the listing uses the unauthenticated GitHub API, which allows
   60 requests/hour per IP. Opening `/skills` costs one request plus one per skill (to read
   each description), so a very large repo can hit the limit — the panel then says so and
@@ -762,7 +763,7 @@ and the top-level docs.
 ### Project layout
 
 ```
-bin/            CLI entry points (hncode, .cmd, .ps1) + install hooks
+bin/            CLI entry points (HNCode, .cmd, .ps1) + install hooks
 src/
   index.js      argv parsing, subcommands, headless mode, TUI dispatch
   tui.js        the raw-TTY renderer, key handling, slash commands
@@ -801,20 +802,20 @@ There is no test runner wired up; keep `node --check <file>` clean and exercise 
 |---------|--------------------|
 | `hncode: interactive mode requires a TTY` | You are piping output. Use `hncode -p \"…\"` for non-interactive use. |
 | `no api_key configured` | Set `HNCODE_API_KEY`, or configure a provider (`/provider`). Run `hncode doctor config`. |
-| Commands look garbled on Windows | Use **[Windows Terminal](https://github.com/microsoft/terminal)**; legacy `cmd.exe` consoles render poorly. It is free on the Microsoft Store, and hncode's renderer is built for it. |
+| Commands look garbled on Windows | Use **[Windows Terminal](https://github.com/microsoft/terminal)**; legacy `cmd.exe` consoles render poorly. It is free on the Microsoft Store, and HNCode's renderer is built for it. |
 | Paste feels slow | It should be ~10 ms after the first paste (the clipboard helper is pre-warmed). A very slow first paste is the PowerShell cold start. |
 | `Edit rejected: you have not read the lines…` | `Read` the file (the relevant lines) first, then `Edit`. |
 | Context gauge near 100% | Run `/compact`, or let auto-compaction trigger at 85%. |
-| A plugin I wrote does not load | The reason is on **stderr**, not in the chat — the TUI owns the screen. Run hncode, quit, and read the terminal output. The name must be unique, and a directory plugin needs an `index.js`. |
+| A plugin I wrote does not load | The reason is on **stderr**, not in the chat — the TUI owns the screen. Run HNCode, quit, and read the terminal output. The name must be unique, and a directory plugin needs an `index.js`. |
 | `/plugins` says the list could not be fetched | GitHub was unreachable, or you hit the unauthenticated API rate limit (60/hour). The **Loaded** and **On disk** tabs are unaffected — they read the filesystem. |
-| An installed plugin is in **On disk** but not **Loaded** | Plugins load at startup only. Restart hncode. |
+| An installed plugin is in **On disk** but not **Loaded** | Plugins load at startup only. Restart HNCode. |
 | `/skills install` says there is no `SKILL.md` | The repo entry is malformed: every skill directory must contain `SKILL.md`. |
 
 ---
 
 ## 18. License
 
-[PolyForm Noncommercial License 1.0.0](https://github.com/NiceHello666/hncode/blob/main/LICENSE).
+[PolyForm Noncommercial License 1.0.0](https://github.com/NiceHello666/HNCode/blob/main/LICENSE).
 
 1. ✅ Free for noncommercial use — personal projects, learning, research, hobby work, and noncommercial organizations.
 2. ✅ You may modify and share it, provided you keep the license text and the noncommercial notice with any copy.
@@ -823,4 +824,4 @@ There is no test runner wired up; keep `node --check <file>` clean and exercise 
 
 ---
 
-[Back to README](https://github.com/NiceHello666/hncode/blob/main/README.md) · [简体中文 Wiki](https://github.com/NiceHello666/hncode/blob/main/README_WIKI_CN.md)
+[Back to README](https://github.com/NiceHello666/HNCode/blob/main/README.md) · [简体中文 Wiki](https://github.com/NiceHello666/HNCode/blob/main/README_WIKI_CN.md)

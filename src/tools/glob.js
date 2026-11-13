@@ -5,8 +5,25 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import { resolvePath } from './utils.js';
-import { walkFiles } from './ignore.js';
+import { walkFilesAsync } from './ignore.js';
 import { globToRegexSource, expandBraces } from './matchers.js';
+
+/**
+ * Entries directly inside `dir` — no recursion.
+ *
+ * This is what a pattern with no separator asks for, and answering it with a full tree walk is how a one-line
+ * lookup turned into a 43-second scan of a drive.
+ */
+function shallowEntries(dir, includeDirs) {
+  let entries;
+  try { entries = fs.readdirSync(dir, { withFileTypes: true }); } catch { return []; }
+  const out = [];
+  for (const ent of entries) {
+    if (!includeDirs && !ent.isFile()) continue;
+    out.push(path.join(dir, ent.name));
+  }
+  return out;
+}
 
 export const spec = {
   name: 'Glob',
@@ -46,13 +63,34 @@ const alts = expandBraces(args.pattern);
     const re = new RegExp('^(?:' + alts.map((a) => globToRegexSource(a)).join('|') + ')$');
 
 
-    const files = walkFiles(base, { includeIgnored: !!args.include_ignored, includeDirs: !!args.include_dirs });
+    // HOW DEEP TO WALK IS DECIDED BY THE PATTERN, not by the matcher.
+    //
+    // `*.java` contains no slash, so it describes entries DIRECTLY inside `path`. Matching it against every
+    // file's basename made it hit the whole subtree — which is why one call over a drive root took 43 seconds and
+    // still reported "no files matched", having walked hundreds of thousands of entries to reject them all.
+    //
+    // A pattern with a separator (`src/**/*.ts`, `**/*.java`) is asking to descend, and gets the full walk. A bare
+    // one is answered by a single readdir.
+    const wantsDeep = alts.some((a) => a.includes('/') || a.includes(path.sep));
+    let candidates;
+    if (wantsDeep) {
+      // ASYNC: a synchronous walk over a large tree freezes the loop it runs on — no paint, no keystroke, no
+      // timer, for as long as it takes.
+      candidates = await walkFilesAsync(base, {
+        includeIgnored: !!args.include_ignored,
+        includeDirs: !!args.include_dirs,
+      });
+    } else {
+      candidates = shallowEntries(base, !!args.include_dirs);
+    }
+
     const matches = [];
-    for (const abs of files) {
+    for (const abs of candidates) {
       const rel = path.relative(base, abs).split(path.sep).join('/');
-      const winRel = abs.replace(/\\/g, '/');
-      const base_ = path.basename(abs);
-      if (re.test(rel) || re.test(winRel) || re.test(base_)) matches.push(abs);
+      // Match the RELATIVE PATH only. The absolute path and the bare basename were both accepted before, and
+      // both were wrong: an absolute path lets `tmp/*.log` match a directory that merely appears in the middle of
+      // it, and the basename turns a pattern that names no directory into a recursive search.
+      if (re.test(rel)) matches.push(abs);
     }
     if (matches.length > 100) matches.length = 100;
     if (matches.length === 0) return `No files matched \`${args.pattern}\` in ${fromDir}`;

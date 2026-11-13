@@ -927,7 +927,6 @@ export function install(api) {
   });
   tool(api, {
     name: 'RightClickMenu',
-    name: 'RightClickMenu',
     description: [
       'Right-click at a point and report the menu that appeared.',
       '',
@@ -987,7 +986,6 @@ export function install(api) {
 
   tool(api, {
     name: 'MouseDrag',
-    name: 'MouseDrag',
     description: 'Press at one point, move to another, release.\n\n'
       + 'The path is interpolated rather than jumped: a single jump is a teleport, and anything that '
       + 'tracks the pointer while it moves — a sortable list, a slider, a file manager — never sees it.',
@@ -1034,7 +1032,6 @@ export function install(api) {
     },
   });
   tool(api, {
-    name: 'ClipboardWrite',
     name: 'ClipboardWrite',
     description: [
       'Put text on the clipboard.',
@@ -1187,6 +1184,106 @@ export function install(api) {
       if (h.error) return `Error: ${h.error}`;
       const r = await platform.call('closeWindow', h.hwnd);
       return present(r, () => `Close requested for window ${h.hwnd}. It may still prompt to save.`);
+    },
+  });
+  tool(api, {
+    name: 'GetWindowInfo',
+    description: [
+      'One window, in detail: title, class, process, rectangle, and whether it is visible, maximized,',
+      'minimized or the foreground window.',
+      '',
+      'Use it when you need the STATE of a window rather than the list of them. `ListWindows` answers "which',
+      'windows exist"; it does not say whether the one you found is maximized, and finding it again in that',
+      'list to read a title is work this tool has already done.',
+    ].join('\n'),
+    parameters: {
+      type: 'object',
+      properties: { hwnd: { type: 'string', description: 'Handle from ListWindows or ListApps.' } },
+      required: ['hwnd'],
+    },
+    async execute(args) {
+      const h = windowHandle(args.hwnd);
+      if (h.error) return `Error: ${h.error}`;
+      const r = await platform.call('getWindowInfo', h.hwnd);
+      return present(r, (w) => {
+        const flags = [w.visible ? 'visible' : 'hidden', w.maximized ? 'maximized' : '', w.minimized ? 'minimized' : '',
+          w.foreground ? 'foreground' : ''].filter(Boolean).join(', ');
+        return [
+          `Window ${w.hwnd}`,
+          `  title   ${JSON.stringify(w.title || '')}`,
+          `  class   ${w.className || '(none)'}`,
+          `  pid     ${w.pid == null ? '(unknown)' : w.pid}`,
+          `  rect    ${w.width}x${w.height} at ${w.x},${w.y}`,
+          `  state   ${flags || '(none)'}`,
+        ].join('\n');
+      });
+    },
+  });
+
+  tool(api, {
+    name: 'SetWindowState',
+    description: [
+      'Maximize, minimize, or restore a window.',
+      '',
+      'PREFER THIS over WindowResize for "make it fill the screen": the application has its own idea of what',
+      'maximized means, and a hand-computed rectangle loses the maximize state — so the next restore puts the',
+      'window back somewhere arbitrary.',
+    ].join('\n'),
+    parameters: {
+      type: 'object',
+      properties: {
+        hwnd: { type: 'string', description: 'Handle from ListWindows.' },
+        state: { type: 'string', enum: ['maximize', 'minimize', 'restore'], description: 'What to do to the window.' },
+      },
+      required: ['hwnd', 'state'],
+    },
+    async execute(args) {
+      const h = windowHandle(args.hwnd);
+      if (h.error) return `Error: ${h.error}`;
+      const state = String(args.state || '').toLowerCase();
+      if (!['maximize', 'minimize', 'restore'].includes(state)) {
+        return 'Error: state must be maximize, minimize or restore.';
+      }
+      const r = await platform.call('setWindowState', h.hwnd, state);
+      return present(r, (p) => `${p.state || state}: window ${h.hwnd}.`);
+    },
+  });
+
+  tool(api, {
+    name: 'WaitForWindow',
+    description: [
+      'Wait for a window matching a title or class to appear, or to disappear.',
+      '',
+      'USE IT AFTER LAUNCHING a program, or after an action that should open a dialog. `WaitForElement`',
+      'watches the UI tree of a window that already exists; this waits for the window ITSELF, which is a',
+      'different question and one that has no handle to walk yet.',
+      '',
+      'The wait happens here, not in your turn — polling with ListWindows yourself costs a full reasoning',
+      'round per attempt. It returns the matching window, so the next call can use a real handle.',
+    ].join('\n'),
+    parameters: {
+      type: 'object',
+      properties: {
+        title: { type: 'string', description: 'Part of the window title, case-insensitive.' },
+        className: { type: 'string', description: 'Part of the window class, case-insensitive.' },
+        hwnd: { type: 'string', description: 'Wait for one specific window instead of matching by name.' },
+        state: { type: 'string', enum: ['appear', 'disappear'], description: 'Wait for it to appear (default) or to go away.' },
+        timeoutMs: { type: 'number', description: 'Give up after this long. Default 15000.' },
+      },
+    },
+    async execute(args) {
+      const r = await platform.call('waitForWindow', {
+        title: args.title,
+        className: args.className,
+        hwnd: args.hwnd == null ? undefined : String(args.hwnd),
+        state: args.state || 'appear',
+        timeoutMs: intArg(args.timeoutMs, 15000, 100, 300000),
+      });
+      return present(r, (p) => {
+        const w = p.found;
+        if (!w) return 'The window is gone.';
+        return `${w.hwnd} "${w.title || ''}"${w.width ? ` ${w.width}x${w.height} at ${w.x},${w.y}` : ''}`;
+      });
     },
   });
 
