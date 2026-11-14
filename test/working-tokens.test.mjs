@@ -101,10 +101,20 @@ test('the count moves as output arrives, not only at the end', () => {
 });
 
 test('summing stream deltas does not inflate the count', () => {
-  // The regression, stated as arithmetic. `estimateTokens` rounds up, which is right for one
-  // finished body and wrong for a stream: `ceil(3 / 4)` is 1, so 3 characters billed a whole
-  // token, and a turn's worth of small deltas read about a third high.
-  return import('../src/term.js').then(({ estimateTokens, estimateTokensFloat }) => {
+  // The regression, stated as arithmetic. A per-chunk estimate that ROUNDS UP is right for one finished body
+  // and wrong for a stream: `ceil(3 / 4)` is 1, so three characters billed a whole token, and a turn's worth of
+  // small deltas read about a third high.
+  //
+  // THE TWO ESTIMATORS ARE DIFFERENT ON PURPOSE, and this is the property that matters:
+  //
+  //   `estimateTokensFloat` prices a FRAGMENT, with the character-class rule. It is state-free, so a fragment and
+  //     the whole text cost the same per character, and a chunked sum equals a one-shot measurement.
+  //   `estimateTokens` prices a WHOLE STRING, with the segment rule, which is what `o200k` does and which lands
+  //     within a few percent of the real tokenizer. It cannot be applied to a fragment: a delta starts and ends
+  //     mid-word, and a chunked sum of segment prices came out at 1.86x.
+  //
+  // So the sum is compared with the SAME rule applied once to the whole text.
+  return import('../src/term.js').then(({ estimateTokens, estimateTokensFloat, estimateTokensByClass }) => {
     const text = 'The quick brown fox jumps over the lazy dog and keeps running. '.repeat(20);
 
     let rounded = 0;
@@ -115,11 +125,11 @@ test('summing stream deltas does not inflate the count', () => {
     }
 
     // The unrounded sum matches the one-shot measurement of the same text...
-    assert.equal(Math.round(exact), estimateTokens(text),
+    assert.equal(Math.round(exact), Math.round(estimateTokensByClass(text)),
       'chunked accumulation must agree with measuring the whole string');
     // ...while the rounded one does not, by a wide margin.
-    assert.ok(rounded > estimateTokens(text) * 1.2,
-      `rounded chunks inflate the total: ${rounded} vs ${estimateTokens(text)}`);
+    assert.ok(rounded > estimateTokensByClass(text) * 1.2,
+      `rounded chunks inflate the total: ${rounded} vs ${estimateTokensByClass(text)}`);
   });
 });
 

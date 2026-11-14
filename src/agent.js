@@ -1312,10 +1312,10 @@ const filtered = (Array.isArray(cfg.toolFilter) && cfg.toolFilter.length
           });
           return;
         }
-        // The transcript keeps the full text; the MODEL may get a bounded version
-        // (a spill or a preview) so one huge read cannot inflate every subsequent
-        // request. See tool-result.js.
-        const rawForModel = out.editDiff ? out.result + formatEditDiffForModel(out.editDiff) : out.result;
+        // THE MODEL GETS THE TOOL'S OWN RESULT. It used to have the rendered DIFF appended as well, because an Edit
+        // reported only "replaced lines 5-7" and the model could not see what it had written. The Edit now quotes
+        // the file around the change itself, so appending the diff would show the same lines twice.
+        const rawForModel = out.result;
         const shaped = toolResultLimitsEnabled()
           ? shapeToolResult(rawForModel, { sessionId: this.cfg.sessionId, toolCallId: tc.id })
           : { content: rawForModel, spilled: false };
@@ -1327,7 +1327,12 @@ const filtered = (Array.isArray(cfg.toolFilter) && cfg.toolFilter.length
         // output the model was handed in the step it is about to reason about.
         this._lastToolResultIndex = this.messages.length - 1;
         this.onEvent({
-          type: 'tool_result', id: tc.id, name: tc.name, content: out.result,
+          type: 'tool_result', id: tc.id, name: tc.name,
+          // THE UI GETS THE SUMMARY, NOT THE QUOTED FILE. The context lines after an Edit exist for the MODEL, so
+          // it does not have to read the same region twice — the user reads the DIFF (`editDiff`) instead, which
+          // already shows what changed in place. Passing the whole result drew the same lines twice, once as a
+          // diff and once as a block of text.
+          content: out.editDiff ? String(out.result).split('\n\n')[0] : out.result,
           editDiff: out.editDiff, spilled: shaped.spilled,
         });
       };

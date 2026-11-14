@@ -47,7 +47,12 @@ number (Read prints '12' then a tab, then the indented code, so you send the lea
 COUNT FIRST: in line-range mode new_string must have exactly end_line - start_line + 1 lines, and every line
 you write must be one you are replacing. A line outside the range is not deleted and survives as a duplicate.
 
-Omitting new_string entirely is an error — pass "" to delete.`,
+Omitting new_string entirely is an error — pass "" to delete.
+
+AFTER A SUCCESSFUL EDIT, the result quotes the file around what you wrote — five lines either side, in the same
+numbered form Read uses. So editing a region you have just edited does NOT need another Read of it: the previous
+Edit already shows you those lines as they are on disk now. Read again when you need a part of the file the edit
+did not show, or when a different tool or the user has changed the file since.`,
   parameters: {
     type: 'object',
     properties: {
@@ -225,13 +230,13 @@ Omitting new_string entirely is an error — pass "" to delete.`,
         ensureDir(p);
         fs.writeFileSync(p, updated, 'utf8');
       } catch (e) { return `Error writing ${args.path}: ${e.message}`; }
-      // NO READ-SNAPSHOT REFRESH. The write changed the file, so every region the model was holding is now a
-      // record of text that no longer exists — including the span just written, whose current content the
-      // model has never seen. Regenerating trust from the arguments would let it edit again on top of a change
-      // it only THINKS it knows. It reads the file instead.
+      // The returned excerpt is read from disk after the write. Refresh the snapshot for precisely those returned
+      // lines, so a follow-up edit inside the excerpt needs no separate Read; regions outside it remain untrusted.
       const removed = end - start + 1;
-      if (ctx) ctx.lastEditDiff = buildEditDiff({ fileLines: lines, oldText: replacedText, newText: inserted.join('\n'), startLine: start });
-      return `Edited ${args.path}: replaced lines ${start}-${end} (${removed} line${removed === 1 ? '' : 's'}) with ${inserted.length} line${inserted.length === 1 ? '' : 's'}.`;
+      if (ctx) ctx.lastEditDiff = buildEditDiff({ fileLines: lines, oldText: replacedText, newText: inserted.join('\n'), startLine: start, filePath: p });
+      const written = Math.max(1, inserted.length);
+      const excerpt = readAfterEdit(p, start, written, ctx);
+      return `Edited ${args.path}: replaced lines ${start}-${end} (${removed} line${removed === 1 ? '' : 's'}) with ${inserted.length} line${inserted.length === 1 ? '' : 's'}.\n\n${excerpt}`.trimEnd();
     }
 
     // ---- SUBSTRING mode (old_string -> new_string) --------------------------
@@ -364,9 +369,8 @@ Omitting new_string entirely is an error — pass "" to delete.`,
       ensureDir(p);
       fs.writeFileSync(p, updated, 'utf8');
     } catch (e) { return `Error writing ${args.path}: ${e.message}`; }
-    // NO READ-SNAPSHOT REFRESH — see the note on the line-range path above. Whatever the model was holding is
-    // now a record of a file that no longer exists, so the next edit of these lines has to be preceded by a
-    // Read of them.
+    // Only the post-edit excerpt returned below refreshes the Read snapshot. An unrelated part of the file is not
+    // made trusted merely because this replacement succeeded.
     const occurrences = replace_all ? count : 1;
     // Publish the diff for the UI (same contract as the line-range path above).
     // `startLine` comes from the actual match offset, so a snippet that starts
@@ -379,9 +383,17 @@ Omitting new_string entirely is an error — pass "" to delete.`,
         oldText: old_string,
         newText: new_string,
         startLine,
+        filePath: p,
       });
     }
-    return `Edited ${args.path}: replaced ${occurrences} occurrence(s).`;
+    // Quote the result the same way the line-range path does, so neither mode leaves the model guessing.
+    const editedAt = matchAt >= 0 ? normContent.slice(0, matchAt).split('\n').length : 1;
+    // replace_all may change distant copies too. One excerpt cannot vouch for them, so do not authorize another
+    // edit based on an incomplete view; the caller must Read the desired region after a bulk replacement.
+    const writtenLines = normalizeText(new_string).split('\n').length;
+    const excerpt = readAfterEdit(p, editedAt, writtenLines, replace_all ? null : ctx);
+    if (replace_all && ctx && ctx.readPool) ctx.readPool.delete(p);
+    return `Edited ${args.path}: replaced ${occurrences} occurrence(s).\n\n${excerpt}`.trimEnd();
   },
 };
 
@@ -410,7 +422,43 @@ function leadingWs(s) {
  * `fileLines` is the content BEFORE the edit, for the replaced region's START LINE to be meaningful:
  * `startLine` is a line number in that same file.
  */
-function buildEditDiff({ fileLines, oldText, newText, startLine }) {
+/** How many lines of the file to show on each side of a freshly edited region. */
+const READ_AFTER_CONTEXT = 5;
+
+/**
+ * The file around the region an edit just wrote, in the same `N<TAB>text` form the Read tool uses.
+ *
+ * WHY THE EDIT RETURNS IT: the result used to be one sentence — "replaced lines 5-7" — which tells the model what
+ * it asked for but not what the file now says. Every follow-up edit therefore began with a Read of the same lines,
+ * a whole round trip whose only purpose was to learn something the edit already knew.
+ *
+ * The excerpt is read from disk after the write, then precisely that region is registered in the Read pool. This
+ * makes the advertised "no second Read" path real without trusting the edit arguments or any unseen file region.
+ *
+ * Returns '' when the post-write read fails, leaving the old snapshot unchanged.
+ */
+function readAfterEdit(filePath, firstLine, lineCount, ctx) {
+  let text;
+  try { text = fs.readFileSync(filePath, 'utf8'); } catch { return ''; }
+  const lines = normalizeText(text).split('\n');
+  if (lines.length > 1 && lines[lines.length - 1] === '') lines.pop();
+  const total = lines.length;
+  const start = Math.max(1, firstLine - READ_AFTER_CONTEXT);
+  const end = Math.min(total, firstLine + Math.max(1, lineCount) - 1 + READ_AFTER_CONTEXT);
+  if (ctx && ctx.readPool) {
+    // The file changed, so every older region for this path is invalid; only the lines actually returned below
+    // may authorize a follow-up edit. Keep the same normalized hashing convention as Read.
+    ctx.readPool.set(filePath, {
+      fileHash: hashStr(text), lines: total,
+      regions: [{ start, end, hash: hashLines(lines, start, end) }],
+    });
+  }
+  const out = [];
+  for (let i = start; i <= end; i++) out.push(`${i}\t${lines[i - 1]}`);
+  return out.join('\n');
+}
+
+function buildEditDiff({ fileLines, oldText, newText, startLine, filePath }) {
   const lines = Array.isArray(fileLines) ? fileLines : [];
   const before = [];
   const after = [];
@@ -442,6 +490,9 @@ function buildEditDiff({ fileLines, oldText, newText, startLine }) {
     old: normalizeText(oldText),
     new: normalizeText(newText),
     startLine,
+    // The file the change belongs to, so the viewer can pick a syntax highlighter from its extension. Without it
+    // the diff had no way to know whether it was looking at JavaScript or a Makefile.
+    path: filePath || '',
     context: { before, after },
   };
 }

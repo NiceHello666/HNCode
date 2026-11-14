@@ -59,7 +59,8 @@ const SCENARIOS = {
     expect(all, caps, term) {
       return [
         ['the probe was sent', term.answeredQuery()],
-        ['Kitty keyboard enabled when the terminal reports it', all.includes('\x1b[>1u')],
+        // `>3u` asks for disambiguation AND event types; `>1u` alone gave no repeat/release reporting.
+        ['Kitty keyboard enabled when the terminal reports it', all.includes('\x1b[>3u') || all.includes('\x1b[>1u')],
         ['synchronized output used when DECRPM knows the mode', all.includes('\x1b[?2026h')],
         ['DA1 was parsed', Array.isArray(caps.da1) && caps.da1[0] === 62],
         ['DA1 sixel capability recorded', caps.extensions.includes('sixel')],
@@ -105,7 +106,7 @@ const SCENARIOS = {
     expect(all, caps, term) {
       return [
         ['the probe was sent even so', term.answeredQuery()],
-        ['no answer keeps Kitty keyboard ON, as before', all.includes('\x1b[>1u')],
+        ['no answer keeps Kitty keyboard ON, as before', all.includes('\x1b[>3u')],
         ['no answer keeps synchronized output, as before', all.includes('\x1b[?2026h')],
         ['nothing was learned', !caps.kitty && !caps.sync && !caps.bg],
       ];

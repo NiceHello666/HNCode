@@ -7,7 +7,7 @@
 // space on the clipboard, on every line of a multi-paragraph answer.
 //
 // THE RULE IS ONE COLUMN, ALWAYS. An earlier attempt measured a per-row "indent width" and skipped all
-// of it: a tool row's ` ● ` bullet, a user box's `│ ❯ ` wall. That was wrong, and the tests below say so.
+// of it: a tool row's ` ● ` bullet, a user box's `│ > ` wall. That was wrong, and the tests below say so.
 // Those columns are part of what the row DRAWS, and a selection beginning on one of them is a selection
 // the user made deliberately. The margin is different only because it is not content at all — so the
 // rule is "column 0 is never selection", applied to every row whatever sits there.
@@ -118,8 +118,8 @@ test('ONE column is skipped, not the row\'s whole indent', () => {
 });
 
 test('a boxed row keeps its walls selectable', () => {
-  // Same reason: `│` and `❯` are drawn, not padding. Only the leading space is dropped.
-  const row = rowFor({ role: 'user', text: 'hi' }, /❯ hi/);
+  // Same reason: `│` and `>` are drawn, not padding. Only the leading space is dropped.
+  const row = rowFor({ role: 'user', text: 'hi' }, /> hi/);
   assert.ok(!row.cols.includes(0), 'the margin is not selection');
   assert.ok(row.cols.includes(1), 'the left wall is');
   assert.ok(row.cols.includes(2), 'and the prompt glyph');
@@ -148,7 +148,7 @@ test('column 0 is skipped on EVERY row type, not only replies', () => {
   const cases = [
     [{ role: 'assistant', text: 'a reply' }, /a reply/],
     [{ role: 'tool', toolName: 'Bash', toolArgs: { command: 'ls' }, pending: false }, /Used Bash/],
-    [{ role: 'user', text: 'hi' }, /❯ hi/],
+    [{ role: 'user', text: 'hi' }, /> hi/],
     [{ role: 'thinking', text: 'hmm', pending: false }, /hmm/],
   ];
   for (const [msg, re] of cases) {

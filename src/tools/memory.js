@@ -6,11 +6,11 @@
 // readMemory). The point is to stop rediscovering the same facts every session —
 // build quirks, a command that works here, a decision the user already made.
 
-import { appendMemory, readMemoryRaw, memoryFile } from '../config.js';
+import { appendMemory, removeMemory, readMemoryRaw, memoryFile } from '../config.js';
 
 export const spec = {
   name: 'Memory',
-  description: `Save a durable note for FUTURE sessions, or list what is saved.
+  description: `Save a durable note for FUTURE sessions, list what is saved, or remove one that is no longer true.
 
 Use it for something still true next week that you would otherwise rediscover: a build or test command that
 works here, a layout quirk, a convention the user asked for, a decision already made, a gotcha that cost a
@@ -20,6 +20,9 @@ Not for: what is already in AGENTS.md or the code (read it — that is the sourc
 progress (that is TodoList; this file outlives the task); secrets, tokens, credentials, or anything the user
 asked you to keep quiet; one-off details.
 
+Remove a note whose rule has stopped being true — a stale rule keeps steering later sessions and is worse than no
+rule at all. Pass enough of its text to identify it; every note containing that text is dropped.
+
 One short note per call, in the user's language. Prefer several small notes over one long entry.
 project (default) follows the repository; global applies to every workspace.`,
   parameters: {
@@ -27,12 +30,12 @@ project (default) follows the repository; global applies to every workspace.`,
     properties: {
       action: {
         type: 'string',
-        enum: ['add', 'list'],
-        description: 'add a note, or list what is stored. Defaults to add.',
+        enum: ['add', 'list', 'remove'],
+        description: 'add a note, list what is stored, or remove one. Defaults to add.',
       },
       note: {
         type: 'string',
-        description: 'The note to save (one or two sentences). Required when action is add.',
+        description: 'The note to save when adding; when removing, any text that identifies it.',
       },
       scope: {
         type: 'string',
@@ -60,8 +63,17 @@ project (default) follows the repository; global applies to every workspace.`,
       return out.join('\n');
     }
 
+    if (action === 'remove') {
+      // REMOVAL IS BY MATCHING TEXT, not by index: the caller knows what a note SAYS, and re-reading the file to
+      // find its line number is a step that can go stale between the read and the write.
+      const needle = String(args.note == null ? '' : args.note).trim();
+      if (!needle) return 'Error: `note` is required when action is "remove" — pass text from the note.';
+      const { removed, kept } = removeMemory(scope, workspace, needle);
+      if (!removed) return `No ${scope} note matched ${JSON.stringify(needle)}; nothing removed.`;
+      return `Removed ${removed} ${scope} note(s); ${kept} left standing.`;
+    }
     if (action !== 'add') {
-      return `Error: unknown action ${JSON.stringify(action)}; use "add" or "list".`;
+      return `Error: unknown action ${JSON.stringify(action)}; use "add", "list" or "remove".`;
     }
     const note = String(args.note == null ? '' : args.note).trim();
     if (!note) return 'Error: `note` is required when action is "add".';

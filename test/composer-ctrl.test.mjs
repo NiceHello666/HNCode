@@ -144,12 +144,12 @@ test('the chip under the pointer is drawn differently', () => {
   // Without this the chip looks like ordinary text and the gesture is undiscoverable — nothing says it
   // can be clicked at all, let alone with Ctrl.
   const chip = pasteMarker(1, 4);
-  const row = `❯ please look at ${chip} then`;
+  const row = `> please look at ${chip} then`;
   const plain = highlightPasteMarkers(row, null);
   const hover = highlightPasteMarkers(row, 1);
   assert.notEqual(plain, hover, 'the hovered chip renders differently');
   // Only the hovered one. A second chip in the same row must be untouched.
-  const two = `❯ ${pasteMarker(1, 4)} and ${pasteMarker(2, 2)}`;
+  const two = `> ${pasteMarker(1, 4)} and ${pasteMarker(2, 2)}`;
   const h1 = highlightPasteMarkers(two, 1);
   assert.match(h1, /1m/, 'the hovered chip takes the bright foreground');
   assert.notEqual(h1, highlightPasteMarkers(two, null));
@@ -159,7 +159,7 @@ test('the hovered chip keeps its background', () => {
   // `C.hover` is a FOREGROUND (bold + bright), not a background, so it goes alongside the chip's own
   // `selBg` rather than replacing it — the two would otherwise fight and the chip would lose its chip-ness.
   const chip = pasteMarker(1, 4);
-  const hover = highlightPasteMarkers(`❯ ${chip}`, 1);
+  const hover = highlightPasteMarkers(`> ${chip}`, 1);
   // The colour may be 256-colour (`48;5;n`) or truecolor (`48;2;r;g;b`) depending on the theme, so the pattern
   // takes either form. Pinning it to 256 colours made this fail on every truecolor theme while the behaviour was
   // correct — the chip kept its background exactly as intended.

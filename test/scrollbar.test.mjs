@@ -248,7 +248,7 @@ test('the rail is drawn in the visible window, wherever the window is', () => {
   // either form — pinning it to 256 colours made this test fail on every truecolor theme.
   const FG = '\\u001b\\[38;(?:5;\\d+|2;\\d+;\\d+;\\d+)m';
   const BG = '\\u001b\\[48;(?:5;\\d+|2;\\d+;\\d+;\\d+)m';
-  const barChars = (frame, bodyH) => frame.lines.slice(0, bodyH).map((line) => {
+  const barChars = (frame, bodyH, screenTop) => frame.lines.slice(screenTop, screenTop + bodyH).map((line) => {
     const m = new RegExp(FG + BG + '(.)').exec(String(line));
     return m ? m[1] : '';
   }).join('');
@@ -262,7 +262,7 @@ test('the rail is drawn in the visible window, wherever the window is', () => {
     const sb = st._sb;
     assert.ok(sb, 'the transcript is longer than the window, so there is a rail');
     const expected = Array.from({ length: st._bodyH }, (_, r) => scrollbarGlyph(sb, r)).join('');
-    const painted = barChars(frame, st._bodyH);
+    const painted = barChars(frame, st._bodyH, st._bodyScreenTop);
     assert.equal(painted, expected,
       `rail painted at scroll ${requested} (window starts at body row ${st._bodyTop})`);
     assert.equal(painted.indexOf('█'), sb.thumbStart, 'the thumb starts at its computed row');

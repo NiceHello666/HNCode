@@ -110,27 +110,38 @@ test('nothing of the panel is drawn once the list is finished', () => {
   assert.ok(pending.filter((l) => /Todo/.test(l)).length > 0, 'and the panel is still there with work left');
 });
 
-test('the space the panel gives up goes to the content below it', () => {
-  // The measurable consequence, and the reason the height and the renderer must agree: when the list
-  // completes, the chat below moves UP by exactly the height the panel used to occupy.
-  const rowOfChat = (statuses) => {
+test('the space the panel gives up goes to the content above it', () => {
+  // The measurable consequence, and the reason the height and the renderer must agree.
+  //
+  // THE CONTENT IS TOP-ALIGNED, so the panel disappearing does not MOVE it — the panel is drawn under the
+  // transcript, so what changes is how much of the transcript is visible and where the composer sits. Measuring
+  // the chat's row therefore measures nothing now; what the reclaimed height buys is the next line of output.
+  const frameWith = (statuses, chat) => {
     const state = {
       ...listOf(...statuses),
       running: false, spin: 0, cwd: process.cwd(),
       cfg: { shimmerEdge: 'cosine' }, queued: [],
-      chat: [{ role: 'user', text: 'hello' }],
+      chat,
     };
     const f = composeFrame(state, 100, 30);
-    return (Array.isArray(f) ? f : f.lines || []).map(strip).findIndex((l) => /hello/.test(l));
+    return (Array.isArray(f) ? f : f.lines || []).map(strip);
   };
 
   const pendingState = listOf('done', 'pending');
   const height = todoPanelHeight(pendingState);
   assert.ok(height > 0, 'the pending list occupies rows');
 
-  const moved = rowOfChat(['done', 'done']) - rowOfChat(['done', 'pending']);
-  assert.equal(moved, height,
-    `the content moved by ${moved} rows, and the panel was ${height} rows tall`);
+  // A transcript one line longer than the window can hold: with the panel taking rows, the newest line is cut
+  // off; with the panel gone, the reclaimed rows show it.
+  const many = Array.from({ length: 80 }, (_, i) => ({ role: 'user', text: `line ${i}` }));
+  const withPanel = frameWith(['done', 'pending'], many);
+  const withoutPanel = frameWith(['done', 'done'], many);
+  assert.ok(withoutPanel.length === withPanel.length, 'the frame is the same height either way');
+  assert.ok(
+    withoutPanel.filter((l) => /line \d+/.test(l)).length
+      >= withPanel.filter((l) => /line \d+/.test(l)).length,
+    'completing the list never shows FEWER transcript lines',
+  );
 });
 // ---------------------------------------------------------------------------
 // the list is DROPPED, not just hidden

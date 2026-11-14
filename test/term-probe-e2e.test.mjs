@@ -41,7 +41,7 @@ test('the probe runs BEFORE the first paint, and before the alternate screen', (
   // written before the first full repaint, and the alternate-screen switch after.
   const src = readTui();
   const probe = src.indexOf('await probeTerminal(');
-  const altScreen = src.indexOf('alternateScreen(true)');
+  const altScreen = src.indexOf('alternateScreen(true)', probe);
   const firstPaint = src.indexOf('renderFrame()', altScreen);
   assert.ok(probe > 0, 'the TUI must probe');
   assert.ok(altScreen > probe, 'the probe must come before the alternate screen is entered');

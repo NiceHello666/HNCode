@@ -303,7 +303,7 @@ test('the picker renders as a popup over the transcript, not a full-screen takeo
   // The panel itself: title, the selected row, and no border glyphs anywhere on it.
   const tIdx = plain.findIndex((r) => r.includes('Pick one'));
   assert.ok(tIdx > 0, `title missing: ${JSON.stringify(plain.slice(0, 12))}`);
-  assert.ok(plain.some((r) => r.includes('❯ Alpha')), 'the selected row renders');
+  assert.ok(plain.some((r) => r.includes('> Alpha')), 'the selected row renders');
   // It hugs its content with margin — not full width.
   assert.ok(plain[tIdx].startsWith(' '), 'the panel is inset, not spanning the terminal');
 
@@ -384,7 +384,7 @@ test('the picker keeps the composer, the todo panel and the queue visible', () =
   st.todos = [{ title: 'do a thing', status: 'in_progress' }];
   const plain = strip(composeFrame(st, 90, 30).lines).join('\n');
 
-  assert.match(plain, /❯/, 'the composer input box is still on screen');
+  assert.match(plain, />/, 'the composer input box is still on screen');
   assert.match(plain, /do a thing/, 'the todo panel is still on screen');
 });
 
@@ -399,7 +399,7 @@ test('a true takeover still replaces the composer (the picker is not the only ch
   for (const [name, shape] of Object.entries(shapes)) {
     const st = stateWith(chat(3), { [name]: shape });
     const plain = strip(composeFrame(st, 90, 30).lines);
-    assert.ok(!plain.some((r) => /❯\s*│\s*$/.test(r) && r.includes('╭')),
+    assert.ok(!plain.some((r) => />\s*│\s*$/.test(r) && r.includes('╭')),
       `${name} must still take over the body and hide the composer`);
   }
 });
@@ -460,7 +460,11 @@ test('every row behind the panel is greyed, and the panel keeps its own colours'
   const composerIdx = topBorders[topBorders.length - 1];
   assert.ok(composerIdx > b.row0, 'the composer is below the panel');
   assert.ok(raw[composerIdx].includes(FAINT), 'the composer is dimmed too');
-  assert.ok(raw[plain.length - 1].includes(FAINT), 'the status line is dimmed too');
+  // THE STATUS LINE IS FOUND, NOT ASSUMED TO BE LAST. It used to be the final row; the context bar now sits
+  // under it, and the title band sits above everything, so "the last row" names neither.
+  const statusIdx = plain.findIndex((r) => /\bturns?\b.*\bsteps?\b/.test(r));
+  assert.ok(statusIdx >= 0, 'the status line is on screen');
+  assert.ok(raw[statusIdx].includes(FAINT), 'the status line is dimmed too');
 
   // (2) Nothing inside the panel carries faint. Its bounds come from the hitbox, not
   // from glyphs: there is no border to measure any more.
@@ -483,12 +487,11 @@ test('every row behind the panel is greyed, and the panel keeps its own colours'
   const withText = raw.findIndex((r, i) => (i < b.row0 || i > b.row1) && FG.test(r));
   assert.ok(withText >= 0, 'some backdrop row outside the panel carries text');
   assert.ok(raw[withText].includes(FAINT), 'that backdrop row is dimmed');
-  // The colour survives BESIDE the faint, in the same cell. If dimming had overwritten the cell's style the
-  // foreground would be gone and the transcript would go flat grey. Either order counts, and either colour
-  // encoding — the point is that both escapes are present in the cell, not which one the theme chose.
+  // The escapes between the dim and the foreground are allowed for: a cell can carry bold (`\x1b[1m`) as well, and
+  // the title band at the top of the frame is exactly such a cell — dim, then bold, then its colour.
   const FGSRC = '\\x1b\\[(?:38;[25];[0-9;]+|9[0-7])m';
-  assert.ok(new RegExp(`\\x1b\\[2m[^\\x1b]*${FGSRC}`).test(raw[withText])
-    || new RegExp(`${FGSRC}[^\\x1b]*\\x1b\\[2m`).test(raw[withText]),
+  assert.ok(new RegExp(`\\x1b\\[2m(?:\\x1b\\[[0-9;]*m)*${FGSRC}`).test(raw[withText])
+    || new RegExp(`${FGSRC}(?:\\x1b\\[[0-9;]*m)*\\x1b\\[2m`).test(raw[withText]),
     'the dimmed backdrop still carries its own foreground colour');
 });
 

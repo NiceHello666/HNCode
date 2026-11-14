@@ -122,6 +122,32 @@ export function writeMemoryRaw(scope, workspace, text) {
   return file;
 }
 
+/**
+ * Drop every note whose text contains `needle`, case-insensitively.
+ *
+ * A NOTE IS ONE LINE starting with `- `, so removal is line-based: the whole line goes, not a substring of it. A
+ * rule that is no longer true is worse than no rule — it keeps steering later sessions — so this has to be able to
+ * delete, not only append.
+ *
+ * Returns `{ removed, kept }` so the caller can report what happened, and 0 when nothing matched: a note that was
+ * never there must not read as one that was deleted.
+ */
+export function removeMemory(scope, workspace, needle) {
+  const text = String(needle == null ? '' : needle).trim().toLowerCase();
+  if (!text) return { removed: 0, kept: 0 };
+  const lines = readMemoryRaw(scope, workspace).split('\n');
+  const keptLines = [];
+  let removed = 0;
+  for (const line of lines) {
+    if (line.startsWith('- ') && line.toLowerCase().includes(text)) { removed++; continue; }
+    keptLines.push(line);
+  }
+  if (!removed) return { removed: 0, kept: 0 };
+  const kept = keptLines.filter((l) => l.trim()).length;
+  writeMemoryRaw(scope, workspace, keptLines.join('\n'));
+  return { removed, kept };
+}
+
 // Append one note to a scope's memory, creating the file if needed. Appending
 // (rather than replacing) is what a memory tool needs: the agent records a single
 // learning and must not have to re-emit everything it knew before.
@@ -391,13 +417,25 @@ const b = baseUrl.replace(/\/+$/, '');
   const presencePenalty = samplingOn
     ? numOrNull(process.env.HNCODE_PRESENCE_PENALTY ?? root.presence_penalty, -2, 2)
     : null;
-  const reasoning = process.env.HNCODE_REASONING ? /^(1|true|yes)$/i.test(process.env.HNCODE_REASONING) : !!root.reasoning;
+  // THE THINKING GRADE, read back from config.toml.
+  //
+  // `/effort` wrote this key and nothing read it: `resolveConfig` had no `effort` field at all, so a grade chosen
+  // in one session was gone by the next launch — the setting persisted in the file and was simply never loaded.
+  // `effort = "off"` means "reasoning on, no grade", which is what the empty string means to the callers.
+  const effortRaw = process.env.HNCODE_EFFORT != null ? String(process.env.HNCODE_EFFORT) : root.effort;
+  const effort = effortRaw == null || String(effortRaw).toLowerCase() === 'off' ? '' : String(effortRaw);
+  // A GRADE IS A REASONING SETTING. `effort = "high"` in the file says the model should think, whether or not
+  // `reasoning` was also written — that is what `/effort high` means, and reading the two keys independently left a
+  // session with a grade but `reasoning` false, so nothing was ever requested.
+  const reasoning = process.env.HNCODE_REASONING
+    ? /^(1|true|yes)$/i.test(process.env.HNCODE_REASONING)
+    : (!!root.reasoning || !!effort);
   const allowExternal = process.env.HNCODE_ALLOW_EXTERNAL === '1' || !!root.tool_allow_external_paths;
 
   return {
     model, provider: providerName, innerModel,
     baseUrl: b, endpoint, apiKey, protocol,
-    maxContextTokens: maxContext, maxOutputTokens: maxOutput, reasoning,
+    maxContextTokens: maxContext, maxOutputTokens: maxOutput, reasoning, effort,
     // Sampling. `undefined`/null means "do not send it", which is what lets a provider apply its own
     // default — and what keeps a rejection from becoming a hard failure.
     temperature: temperature == null ? undefined : temperature,
@@ -535,6 +573,12 @@ const b = baseUrl.replace(/\/+$/, '');
     // because the two are a matter of taste and the cost is one branch.
     shimmerEdge: String(root.shimmer_edge || process.env.HNCODE_SHIMMER_EDGE || 'cosine').toLowerCase() === 'linear'
       ? 'linear' : 'cosine',
+    // TITLE DISPLAY (`title_display`): the band at the top of the screen. On by default — a session's name is
+    // how it is recognised in a list and on the window — so this is an opt-out for a terminal with very few rows.
+    titleDisplay: !(root.title_display === false || root.title_display === 'false'),
+    // AUTO TITLE (`auto_title`): whether the model names the session from its first message. Off means the name
+    // is only ever what `/title` (or the title band) sets.
+    autoTitle: !(root.auto_title === false || root.auto_title === 'false'),
     // WEB SEARCH KEYS (`web_search_api_key`).
     //
     // Keyless mode is rate-limited BY IP, so a shared or busy address gets refusals that look like "search is

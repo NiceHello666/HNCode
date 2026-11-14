@@ -11,7 +11,7 @@
 //
 //    [Installed (1)]  Available (3)
 //
-//    ❯ demo                          installed
+//    > demo                          installed
 //        A demo skill
 //      review-pr                     install
 //        Review a pull request for bugs

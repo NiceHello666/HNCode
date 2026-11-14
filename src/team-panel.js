@@ -340,7 +340,7 @@ export function renderTeamPanel(panel, cols, rows) {
   for (let i = 0; i < roster.length && out.length < rows - composerRows - trafficRoom - 2; i++) {
     const m = roster[i];
     const sel = i === panel.selectedIndex;
-    const ptr = sel ? `${C.cyan}❯${C.reset} ` : '  ';
+    const ptr = sel ? `${C.cyan}>${C.reset} ` : '  ';
     const name = (m.isLead ? `${m.name} (lead)` : m.name).padEnd(20);
     // The states a member can be in, each with its own colour: green is a tool actually running,
     // cyan is blocked on the model, grey is waiting for work, yellow is an agent that has not
