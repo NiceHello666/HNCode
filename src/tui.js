@@ -1543,7 +1543,9 @@ function paintCode(text, lang, bg, inComment = false) {
   // whole body inside one token, so it drew with no wash at all while the code below it was washed, and the block
   // looked striped. Seeding the background at the front covers that first run; the replacement covers every run
   // after it, because each token closes with a reset that would otherwise drop back to the page background.
-  return { text: bg + raw.replace(/\x1b\[0m/g, `\x1b[0m${bg}`) + C.reset, inComment: result.inComment };
+  // ESC[39m, NOT ESC[0m: a bare reset clears the background too, and the row's wash must survive past the last
+  // token. The final glyph is still inside the coloured run, so nothing is left over to clear.
+  return { text: bg + raw.replace(/\x1b\[0m/g, `\x1b[0m${bg}`) + '\x1b[39m', inComment: result.inComment };
 }
 
 /**
@@ -3007,7 +3009,9 @@ function messageLines(msg, width, workspace, expanded, spin, pulseStart, rawMode
         inComment = painted.inComment;
         const used = visualCol(`${no} ${mark} `) + visualCol(painted.text);
         const pad = ' '.repeat(Math.max(0, bodyW - used));
-        diffRows.push({ text: lead + painted.text + col(pad, lineBg), ind: cont, raw: true });
+        // The padding is INSIDE the wash, so it must not end with a bare reset: `col()` closes with ESC[0m, which
+        // would drop the background on the last column and leave a strip of page colour at the right edge.
+        diffRows.push({ text: lead + painted.text + lineBg + pad + '\x1b[39m', ind: cont, raw: true });
         emitted++;
       }
       if (total > emitted) {
@@ -5308,25 +5312,45 @@ function applySelectionToRow(lines, idx, sel, w) {
  */
 function highlightAnsiRange(row, c0, c1, w) {
   const s = String(row);
+  const cells = parseCells(s);
+  // The SGR for the background each column was drawn with, or '' when the row has none there.
+  const ownBg = cells.map((_, c) => {
+    const rgb = cellBg(cells, c);
+    return rgb ? `\x1b[48;2;${rgb[0]};${rgb[1]};${rgb[2]}m` : '';
+  });
+  // The theme's selection colour, read from the SGR rather than hardcoded: a light theme has a pale one.
+  const m = /48;2;(\d+);(\d+);(\d+)/.exec(C.selBg);
+  const selRgb = m ? [Number(m[1]), Number(m[2]), Number(m[3])] : null;
+  // The SELECTION WINS. A hint of the row's own wash stays in the mix so a selected deletion still reads as a
+  // deletion, but nine parts selection to one part row — an earlier three-parts-row blend left the diff colour
+  // dominating and the selected range looked like an unselected diff with a tint.
+  const selectedBg = (col) => {
+    const rgb = cellBg(cells, col);
+    if (!rgb || !selRgb) return C.selBg;
+    const mix = (a, b) => Math.round(a * 0.9 + b * 0.1);
+    return `\x1b[48;2;${mix(selRgb[0], rgb[0])};${mix(selRgb[1], rgb[1])};${mix(selRgb[2], rgb[2])}m`;
+  };
+  const lo = Math.max(c0, 1);
   let out = '';
   let col = 0;
   let i = 0;
   let inSel = false;
-  // A range that begins at the margin starts one column later.
-  const lo = Math.max(c0, 1);
 
   while (i < s.length) {
     if (s[i] === '\x1b') {
-      // Emit the escape, then RE-ASSERT the selection background if we are
-      // inside the range. The row embeds its own resets (a markdown bold or
-      // inline-code span ends in ESC[0m), and a bare ESC[0m cancels the
-      // background too — so without re-asserting, everything after the first
-      // coloured run inside the selection lost its highlight.
-      const m = /^\x1b\[[0-9;?]*[a-zA-Z]/.exec(s.slice(i)) || /^\x1b\[[0-9;?]* [a-zA-Z]/.exec(s.slice(i));
-      if (m) {
-        out += m[0];
-        if (inSel) out += C.selBg;
-        i += m[0].length;
+      // Emit the escape, then RE-ASSERT the background for the column it was emitted at: the row embeds its own
+      // resets (a markdown span ends in ESC[0m), and a bare reset clears the background too.
+      const esc = /^\x1b\[[0-9;?]*[a-zA-Z]/.exec(s.slice(i)) || /^\x1b\[[0-9;?]* [a-zA-Z]/.exec(s.slice(i));
+      if (esc) {
+        out += esc[0];
+        // The row writes its OWN background back after every syntax token — `paintCode` re-asserts the diff wash
+        // after each `ESC[0m`. Those SGRs arrive here as ordinary escapes, not resets, so leaving them untouched
+        // let the diff colour overwrite the selection mid-run. Inside the selection, ANY background escape that
+        // follows is replaced by the selected one; outside it, only a reset needs the row's own wash restored.
+        const isBg = /^\x1b\[48;/.test(esc[0]);
+        if (inSel && (isBg || esc[0] === '\x1b[0m' || esc[0] === '\x1b[m')) out += selectedBg(col);
+        else if (!inSel && (esc[0] === '\x1b[0m' || esc[0] === '\x1b[m')) out += ownBg[col] || '';
+        i += esc[0].length;
         continue;
       }
     }
@@ -5336,28 +5360,21 @@ function highlightAnsiRange(row, c0, c1, w) {
     const cw = visualWidth(ch);
     const want = col >= lo && col < c1;
 
-    if (want && !inSel) {
-      // Selection changes only the BACKGROUND; the foreground (documented colour)
-      // is left intact so a cyan/teal markdown span stays its colour inside the
-      // highlight.
-      out += C.selBg;
-      inSel = true;
-    } else if (!want && inSel) {
-      // Leave the selection: reset just the background (ESC[49m), keeping the
-      // row's foreground. A bare reset would also clear the foreground.
-      out += C.bgReset;
+    if (want && !inSel) { out += selectedBg(col); inSel = true; }
+    else if (!want && inSel) {
+      // RESTORE the row's own background, not ESC[49m: a diff row is red or green all the way to the right edge,
+      // and clearing the background there left a strip of page colour in the middle of the wash.
+      out += ownBg[col] || C.bgReset;
       inSel = false;
     }
 
     out += ch;
     col += cw;
     i += cp > 0xffff ? 2 : 1;
-
     if (col >= w) break;
   }
 
   if (inSel) out += C.reset;
-
   return out;
 }
 
