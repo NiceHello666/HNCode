@@ -214,7 +214,28 @@ export const C = {
   muted: '\x1b[90m',
   teal: TEAL,
   cyan: CYAN,
-  blue: BLUE,
+  // The mark's shadow: the same cyan at 40% brightness. `dim` (SGR 2) is applied by the TERMINAL and most render
+  // it barely darker; `teal` is only ~15% off `cyan`. Neither reads as a shadow behind the letters.
+  cyanDeep: rgb(0, 86, 102),
+  // The startup heading: the grey the annotations use, lifted towards white. The wordmark above it owns the cyan,
+  // so the name under it is a lighter neutral rather than a second colour competing with the mark.
+  heading: rgb(200, 210, 220),
+  // DIFF COLOURS ARE DERIVED FROM THE THEME, not fixed.
+  //
+  // A diff paints two layers: the whole changed LINE gets a wash, and the words that actually differ get a
+  // stronger one. Those have to sit on THIS theme's background — the Islands Dark tints read as a warm grey on
+  // gruvbox and as nothing at all on `light`. `setTheme` recomputes all four from the theme's own `green`, `red`
+  // and `bg`, so switching themes recolours the diff with everything else. The values here are the dark defaults,
+  // used before any theme is applied.
+  diffAddBg: brgb(34, 58, 38),
+  diffAddWordBg: brgb(52, 96, 58),
+  diffDelBg: brgb(74, 32, 34),
+  diffDelWordBg: brgb(112, 44, 48),
+  diffAddFg: rgb(133, 208, 143),
+  diffDelFg: rgb(255, 176, 168),
+  // A code comment. `setTheme` mixes it from the palette's foreground towards its background, so it is quiet without
+  // disappearing — `C.gray` is tuned for the page and vanishes on a diff wash in several themes.
+  comment: '\x1b[90m',
   fg: FG,
   bg: BG,
   bgTeal: brgb(0, 184, 219),
@@ -426,6 +447,34 @@ export function setTheme(name) {
   } else {
     C.branch = TRUECOLOR ? rgb(255, 219, 110) : '\x1b[38;5;222m';
   }
+  // DIFF TINTS, mixed from this theme's own green/red towards its background.
+  //
+  // A line wash is a WEAK mix and a word wash a STRONGER one of the same pair: weak enough that ordinary text on it
+  // still reads as text, strong enough that the block is visible without reading it. Mixing towards `t.bg` rather
+  // than towards black is what makes a light theme work — a dark red wash on white is a black bar with letters in
+  // it, while a pale red is a highlighter mark.
+  const mix = (a, b, k) => a.map((v, i) => Math.round(v * k + b[i] * (1 - k)));
+  const green = t.green || [120, 200, 120];
+  const red = t.red || [230, 80, 80];
+  // ABOUT HALF. Lower mixes disappear into a dark page — the wash has to be obvious without being read, and at
+  // 16% an added block looked like ordinary text with a faint tint. Light backgrounds need slightly more still,
+  // because the same distance in RGB is a smaller difference next to white.
+  const isLight = t.bg && t.bg[0] > 128;
+  const line = isLight ? 0.52 : 0.46;
+  const word = isLight ? 0.68 : 0.62;
+  C.diffAddBg = brgb(...mix(green, t.bg, line));
+  C.diffAddWordBg = brgb(...mix(green, t.bg, word));
+  C.diffDelBg = brgb(...mix(red, t.bg, line));
+  C.diffDelWordBg = brgb(...mix(red, t.bg, word));
+  // The sign and the text of a changed line are the same hue as its wash, pulled towards the theme's own foreground
+  // so they read ON that wash — not the theme's plain green/red, which is tuned for the page background.
+  C.diffAddFg = rgb(...mix(green, t.fg, 0.55));
+  C.diffDelFg = rgb(...mix(red, t.fg, 0.55));
+
+  // A comment: the palette's foreground, pulled most of the way towards its background so it reads as quiet. A dark
+  // page can afford a looser mix; a light one cannot — solar's foreground is already a muted blue-grey, and at the
+  // dark theme's ratio its comments came within 8 of the removal wash.
+  C.comment = rgb(...mix(t.fg, t.bg, isLight ? 0.86 : 0.72));
 
   return true;
 }

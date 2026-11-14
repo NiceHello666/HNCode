@@ -15,6 +15,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { setTerminalCaps } from '../src/term-caps.js';
+import { placementRows } from '../src/screen-diff.js';
 import {
   composeFrame, makeState, paintCellFrame, resetCellFrame, resetShownImages,
 } from '../src/tui.js';
@@ -190,13 +191,16 @@ test('a picture straddling the top is cropped by the right number of BANDS', () 
     st.scroll = scroll;
     st._anchorPin = null;
     const frame = composeFrame(st, 90, 20);
-    const straddler = frame.images.find((img) => img.row < 0 && img.row + img.rows > 0);
+    // The title band owns the top rows now. A picture straddles the TRANSCRIPT boundary, not necessarily screen
+    // row zero, and its payload is placed at the first visible row inside that boundary.
+    const straddler = frame.images.find((img) => img.row < img.clipTop && img.row + img.rows > img.clipTop);
     if (!straddler) continue;
     const out = paintCellFrame(frame, false);
 
     // Find the payload drawn AT the straddler's first visible row, not merely the first one in the write: a
     // frame can carry several pictures and the earlier ones may be fully on screen.
-    const marker = `\x1b[1;${(straddler.col || 0) + 1}H\x1b[0m\x1bP0;`;
+    const top = placementRows(straddler, frame.height).from;
+    const marker = `\x1b[${top + 1};${(straddler.col || 0) + 1}H\x1b[0m\x1bP0;`;
     const at = out.indexOf(marker);
     if (at < 0) continue;
     const start = at + marker.length - 4;
@@ -205,7 +209,7 @@ test('a picture straddling the top is cropped by the right number of BANDS', () 
 
     const bands = payload[1].split('-').length;
     const originalBands = (straddler.seq.match(/-/g) || []).length + 1;
-    const hidden = -straddler.row;
+    const hidden = top - straddler.row;
     const expected = originalBands - Math.floor((hidden * CELL.h) / 6);
 
     assert.equal(bands, expected,

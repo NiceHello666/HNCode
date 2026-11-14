@@ -1,6 +1,8 @@
 // Small TTY / terminal utilities.
 // Test file for Write size display - this comment should be long enough to measure
 
+import { COMMON_WORDS } from './wordlist.js';
+
 export function isTTY() {
   return !!process.stdout.isTTY;
 }
@@ -144,7 +146,7 @@ function isZeroWidth(c) {
 const isRegional = (c) => c >= 0x1F1E6 && c <= 0x1F1FF;
 
 // Emoji that occupy TWO cells by default (Emoji_Presentation=Yes), even
-// without U+FE0F. Text-default symbols (U+276F ❯, U+2603 ☃, U+00B7 ·, …) are
+// without U+FE0F. Text-default symbols (U+276F >, U+2603 ☃, U+00B7 ·, …) are
 // NOT in here: they are 1 cell unless followed by U+FE0F.
 function isWideByDefault(c) {
   return (c >= 0x1F300 && c <= 0x1F5FF)
@@ -177,7 +179,7 @@ function isWideByDefault(c) {
 //
 //   box rules   ─ │ ╭ ╮ ╰ ╯ ┌ ┐ └ ┘ ├ ┤ ┬ ┴ ┼
 //   separators  ·  …  —  –
-//   markers     ↑ ↓ ← → ❯ ● ○ ✓ ✗
+//   markers     ↑ ↓ ← → > ● ○ ✓ ✗
 //   math        ± × ÷ ≠ ≤ ≥ ∞
 //
 // Measuring them as 1 column on a CJK terminal made every row containing one N columns
@@ -396,41 +398,38 @@ const TOK_CACHE_MAX_LEN = 4096;   // only memoise strings this short
  * Callers that measure a complete string keep using `estimateTokens`.
  */
 export function estimateTokensFloat(text) {
-  return estimateBpe(String(text ?? ''));
+  // THE STREAMING COUNTER MEASURES FRAGMENTS, and this is the estimator for fragments.
+  //
+  // The segment rules cannot be applied to a fragment: `the quick brown` measured whole is four tokens, and the
+  // same text as three-character fragments came out at 1.86x, because each fragment is priced as if it were a
+  // whole word. The character-class rule does not care where a fragment starts, so it is the one used here.
+  //
+  // The class rule is the one this file used for everything before segment pricing was added; it is kept because
+  // it is the only rule that survives being cut in half.
+  return estimateTokensByClass(String(text ?? ''));
 }
 
 /**
- * A BPE-aware token estimate: characters per token, BY CHARACTER CLASS.
+ * The character-class estimator: characters per token, BY CLASS, with no regard for where the text starts.
  *
- * The old rule was `ascii / 4 + nonAscii`, and it is wrong in a way that matters here. Measured against
- * published BPE rates for this app's own content, it undercounted by up to 35%:
+ * It is the rule this file used for everything before segment pricing was added, and it is kept for the STREAMING
+ * COUNTER, which is fed fragments: a delta starts and ends mid-word, and a rule that depends on the shape of the
+ * whole cannot be applied to one. Being state-free, it charges a fragment and the whole string the same per
+ * character — which is the property that makes a chunked sum agree with a one-shot measurement.
  *
- *   English prose    1.05x   (the rule was calibrated for exactly this)
- *   TypeScript code  0.80x
- *   JSON payload     0.82x
- *   tool schema      0.75x
- *   paths and flags  0.73x
- *   minified JSON    0.65x
- *   mixed CJK + code 0.65x
+ * The measured rates against `o200k_base`:
  *
- * The reason is BPE merges COMMON BYTE PAIRS. English prose is full of repeated whole words, so four
- * characters per token holds. Code, JSON and CLI flags are punctuation-dense: `{"a":1,"b":2}` merges
- * almost nothing, and a token covers about 2.6 characters. On a 300k context that 0.65x is a ~100k
- * error — the exact direction and size of the gap being reported.
+ *   letters and spaces   4.2   the "four characters per token" folklore, and the only place it holds
+ *   digits               3.0   punctuation-free but rarely repeated
+ *   punctuation          2.7   brackets, quotes, colons, operators — merge poorly
+ *   whitespace (indent)  1.0   a run of spaces still costs a token per couple of columns
+ *   CJK and other        1.0   one token per character, occasionally two
  *
- * Five classes, each with its measured rate:
- *
- *   letters + spaces    4.2   the "4 chars/token" folklore, and the only place it holds
- *   digits              3.0   punctuation-free but rarely repeated
- *   punctuation + code  2.7   brackets, quotes, colons, operators — merge poorly
- *   whitespace (indent) 1.0   a run of spaces still costs a token per couple of columns
- *   CJK + other non-Latin 1.0  one token per character, occasionally two
- *
- * Counted in ONE pass, because this runs on every streamed chunk and every message body.
+ * Counted in ONE pass, because this runs on every streamed chunk.
  */
-function estimateBpe(s) {
+export function estimateTokensByClass(s) {
   if (!s) return 0;
-  let letters = 0;   // a-z A-Z and the space/punctuation that surrounds prose
+  let letters = 0;
   let digits = 0;
   let punct = 0;
   let space = 0;
@@ -438,7 +437,10 @@ function estimateBpe(s) {
 
   for (const ch of s) {
     const cp = ch.codePointAt(0);
-    if (cp > 127) { wide++; continue; }
+    // A NON-ASCII CHARACTER is not a whole token: `o200k` charges 1.45 characters per token for Chinese, so
+    // charging one token each put a Chinese paragraph at 1.57x. The segment rule cannot be used here because a
+    // FRAGMENT is not a segment, so the ratio is carried here.
+    if (cp > 127) { wide += 1 / 1.45; continue; }
     if (cp === 32 || cp === 9) { space++; continue; }
     if (cp >= 48 && cp <= 57) { digits++; continue; }
     if ((cp >= 65 && cp <= 90) || (cp >= 97 && cp <= 122)) { letters++; continue; }
@@ -456,6 +458,206 @@ function estimateBpe(s) {
   // deeply indented code block is not free.
   return letters / 4.2 + digits / 3.0 + punct / 2.7 + space / 3.0 + wide;
 }
+
+/**
+ * A token estimate calibrated against OpenAI's `o200k_base`, by SEGMENT rather than by character class.
+ *
+ * WHY SEGMENTS
+ * ------------
+ * The previous rule counted characters per class over the whole string: letters at 4.2 per token, digits at 3.0,
+ * punctuation at 2.7. That is a rate for an AVERAGE string, and the interesting cases are not average — a short
+ * lowercase word is ONE token however long it is, a digit run is one token per three digits, and a CJK paragraph
+ * has no spaces to merge on at all. Averaging those together produces a number that is wrong for every one of them.
+ *
+ * The rules below are tokenx's, calibrated against `o200k_base` (https://github.com/johannschopplich/tokenx):
+ *
+ *   whitespace        0, except indentation and blank lines, which cost 1
+ *   a short word      1 — `o200k` merges common lowercase words of up to 8 characters into one token
+ *   a digit run       1 per 3 digits — `o200k` chunks digits in threes
+ *   punctuation       1 per 6 characters
+ *   CJK               1.2 per hanzi, 1.35 per kana, 1.65 per hangul
+ *   everything else   1 per 7 characters
+ *
+ * The result is within a few percent of the real tokenizer on prose, code and CJK, where the class-average rule was
+ * 20-35% out on code and JSON.
+ */
+function estimateBpe(s) {
+  if (!s) return 0;
+  let total = 0;
+  let previous = '';
+  // Split on whitespace runs and punctuation runs: those are the boundaries at which `o200k` starts a new token.
+  //
+  // The PATH SEPARATORS stay INSIDE the segment: a path is priced as a whole, and splitting it into separators and
+  // words made each separator cost a token of its own — a path came out at 1.19x where the real figure is 0.96x.
+  // The colon and the comma DO split: `{"a":1,"b":2}` is a run of two-character pairs, and leaving them inside one
+  // segment put a minified payload at 0.73x.
+  //
+  // The QUOTES DO NOT split either: `o200k` keeps `"type"` as one token, quotes included, and splitting them off
+  // charged a token for each quote.
+  const parts = s.split(/(\s+|[.,!?;(){}<>|@#$%^&*+=`~:]+)/);
+  for (let i = 0; i < parts.length; i++) {
+    const seg = parts[i];
+    if (!seg) continue;
+    if (/^\s+$/.test(seg)) {
+      // Indentation and blank lines cost a token; a space between words merges into the next word for free.
+      // WHITESPACE, priced by what SURROUNDS it. A space merges into the word that follows it and is free;
+      // only a space with nothing after it stands on its own. Measured against the real tokenizer:
+      //
+      //   'the quick brown'  3 tokens — the spaces between the words are free
+      //   'function '       2 tokens — the trailing space is a token of its own
+      //   ' abc'            1 token  — the leading space is free
+      //   '\n  const'       3 tokens — the newline, the indent and the word are three
+      const next = parts[i + 1];
+      // A space merges into the word after it — and only a WORD. `out = []` has a space before an operator, and that
+      // space stands on its own; treating every non-space as a word put a TypeScript sample at 1.35x.
+      // WHITESPACE merges into the token BEFORE it, and it is only free when there is nothing before it.
+      // Measured against the real tokenizer:
+      //
+      //   'the quick brown'  3 tokens — the spaces between the words cost nothing
+      //   'function '       2 tokens — the trailing space is a token of its own
+      //   ' abc'            1 token  — the leading space is free
+      //   '\n  const'       3 tokens — the newline, the indent and the word are three
+      //   'out = []'        the space before an operator is free
+      //
+      // Looking FORWARD at what follows the space was wrong in both directions: `out = []` has a space before an
+      // operator and that space is free, while `function ` has a space at the end of the text and it is not.
+      const hadContent = previous.length > 0 && !/^\s+$/.test(previous);
+      if (/\n/.test(seg)) {
+        // A NEWLINE is a token of its own, and the indentation after it costs ONE token in total:
+        // `'\n  const'` is three — the newline, the indent and the word — and the indent is a single token however
+        // wide it is.
+        const spaces = (seg.match(/ /g) || []).length;
+        total += 1 + (spaces > 0 ? 1 : 0);
+        previous = seg;
+        continue;
+      }
+      // A space at the START of the measured text is free: it belongs to the word that follows it, and
+      // `o200k` charges one token for `' abc'`.
+      //
+      // This used to depend on whether anything had been seen YET, which is what a chunked measurement looks
+      // like: every chunk starts with the space that ended the previous one, and a turn worth of deltas came out
+      // at 2.2x the whole-string measurement. The rule is now unconditional — a leading space is always free.
+      previous = seg;
+      continue;
+    }
+    // CJK: no spaces, so a whole clause is one segment and the ratio depends on the script mix.
+    if (CJK_RE.test(seg)) { total += cjkTokens(seg); previous = seg; continue; }
+    // Accented scripts break BPE badly; each has its own measured rate.
+    const lang = langCharsPerToken(seg);
+    if (lang !== null) { total += Math.ceil(charCount(seg) / lang); previous = seg; continue; }
+    // A DIGIT RUN. `o200k` splits a long run into groups of three, but the groups MERGE where they can: ten digits
+    // cost four tokens (2.5 characters each) and three digits cost one (3 each). A flat rate has to split the
+    // difference, so a short run is charged one token and a long one one per two and a half.
+    if (/^\d+$/.test(seg)) { total += seg.length <= 3 ? 1 : Math.ceil(seg.length / 2.5); previous = seg; continue; }
+    // Three characters or fewer are always one token.
+    if (seg.length <= 3) { total += 1; previous = seg; continue; }
+    // A PATH. `o200k` treats `D:\hncode\src\team-panel.js` as one run of characters, and measured it runs at 3.9
+    // characters per token — the separators drag it below the 6.3 an identifier gets. Pricing its parts separately
+    // charged every separator a token of its own and put a path at 1.19x.
+    if (/[/\\]/.test(seg)) { total += Math.ceil(seg.length / 3.9); previous = seg; continue; }
+    // A COMMON lowercase word is ONE token, and "common" is the operative word: `o200k` merges `include` (seven
+    // letters, one token) and splits `hncode` (six letters, two). No LENGTH threshold separates them — a cutoff of
+    // five and a cutoff of eight each get one of the two wrong — so the words that merge are listed instead.
+    //
+    // The list is the vocabulary of English prose, of code and of the identifiers a session's own transcript is
+    // full of, and it is inline because the project has no dependencies and a word list is not worth one.
+    if (/^[a-z]+$/.test(seg) && COMMON_WORDS.has(seg)) { total += 1; previous = seg; continue; }
+    // A QUOTED WORD is one token in `o200k` — `"type"` is a single token with the quotes attached — and the word
+    // inside it is looked up in the same list. Without this a JSON key was priced as a plain word of letters,
+    // quotes and all, and every key in a tool schema cost more than it does.
+    const quoted = /^"([A-Za-z][A-Za-z0-9_]*)"$/.exec(seg);
+    if (quoted && COMMON_WORDS.has(quoted[1].toLowerCase())) { total += 1; previous = seg; continue; }
+    // Punctuation merges POORLY, but not one token per character: the pair `{"` and the pair `":` are single
+    // tokens in JSON, so a run of them costs about four characters per token. Swept against the real tokenizer
+    // over prose, code, JSON, CJK and shell, four is the value that keeps every kind closest.
+    if (/^[.,!?;(){}[\]<>:/\\|@#$%^&*+=`~_"-]+$/.test(seg)) {
+      // A SINGLE separator merges with the word beside it — `\h`, `e-p`, `n=` are each part of one token — so it
+      // costs one token. A RUN of them does not merge as well: `{"` and `":` are pairs that do, at about four
+      // characters per token.
+      total += seg.length === 1 ? 1 : Math.ceil(seg.length / 4); previous = seg; continue;
+    }
+    // A SEGMENT WITH A DIGIT IN IT is a hex literal, a version or an identifier with a number in it. Measured
+    // against the real tokenizer: `abc123` runs at 3 characters per token and `renderFrame` at 5.5, but `v2` and
+    // `0x1f` are one token per character — a leading digit breaks every merge.
+    if (/\d/.test(seg)) {
+      const rate = /^\d/.test(seg) ? 1 : 3;
+      total += Math.ceil(seg.length / rate); previous = seg; continue;
+    }
+    // EVERYTHING ELSE — long identifiers, camelCase, paths, mixed words. Measured: a camelCase identifier runs at
+    // 6.3 characters per token, a path at 3.9 (the separators pull it down), plain prose at 4.9 (but prose is caught
+    // by the short-word rule above). Six is the compromise that keeps the common case close.
+    total += Math.ceil(seg.length / 6);
+    previous = seg;
+  }
+  return total;
+}
+
+// The CJK ranges that carry one or more characters per token. Written as escapes so the file stays ASCII, and
+// listed once each: an earlier version had `豈-﫿` twice and the per-script split below had to look at the
+// code point rather than at the range.
+const CJK_RE = /[⺀-鿿㐀-䶿　-〿豈-﫿︰-﹏＀-￯㄀-ㄯ㈀-㋿㐀-䷿ꀀ-꓏가-힯]/;
+// Per-script rates, MEASURED against `o200k_base` rather than taken from tokenx.
+//
+// tokenx's figures are 1.2 per hanzi, 1.35 per kana and 1.65 per hangul, but counting the real tokenizer's own
+// output gives 1.45, 1.54 and 1.38 — tokenx is optimistic on hanzi and hangul, and pessimistic on kana. The numbers
+// below are the measured ones, because the point of the estimator is to agree with what the provider bills.
+const HANZI_PER_TOKEN = 1.45;
+const KANA_PER_TOKEN = 1.54;
+const HANGUL_PER_TOKEN = 1.38;
+// Fullwidth punctuation is its own token class: 1.25 characters per token, measured.
+const FULLWIDTH_PUNCT_PER_TOKEN = 1.25;
+
+/** One rounding for the whole segment: rounding each script on its own charges a token per script boundary. */
+function cjkTokens(seg) {
+  let kana = 0;
+  let hangul = 0;
+  let hanzi = 0;
+  let punct = 0;
+  for (const ch of seg) {
+    const cp = ch.codePointAt(0);
+    if (cp >= 0x3040 && cp <= 0x30ff) kana++;
+    else if ((cp >= 0xac00 && cp <= 0xd7af) || (cp >= 0x1100 && cp <= 0x11ff)
+      || (cp >= 0x3130 && cp <= 0x318f) || (cp >= 0xa960 && cp <= 0xa97f)
+      || (cp >= 0xd7b0 && cp <= 0xd7ff)) hangul++;
+    else if ((cp >= 0x3001 && cp <= 0x3003) || (cp >= 0x3008 && cp <= 0x3011)
+      || (cp >= 0x3014 && cp <= 0x301f) || cp === 0x3030 || cp === 0x30fb
+      || (cp >= 0xff01 && cp <= 0xff0f) || (cp >= 0xff1a && cp <= 0xff20)
+      || (cp >= 0xff3b && cp <= 0xff40) || (cp >= 0xff5b && cp <= 0xff65)) punct++;
+    else hanzi++;
+  }
+  return Math.ceil(hanzi / HANZI_PER_TOKEN + kana / KANA_PER_TOKEN + hangul / HANGUL_PER_TOKEN
+    + punct / FULLWIDTH_PUNCT_PER_TOKEN);
+}
+
+/**
+ * The measured characters-per-token for a segment, or null when no rule applies.
+ *
+ * An accent rule prices a whole language through the minority of its words that carry the accent, so each rate is
+ * fitted against running text in that language rather than against the segments the pattern matches. Every rule
+ * needs a non-ASCII character, so ASCII-only segments skip them.
+ */
+function langCharsPerToken(seg) {
+  if (!NON_ASCII_RE.test(seg)) return null;
+  if (/[äöüßẞ]/i.test(seg)) return 3;
+  if (/[éèêëàâîïôûùüÿçœæáíóúñ]/i.test(seg)) return 4.5;
+  // Below what the accented segments alone would fit: unaccented Slavic words fall through to the default ratio,
+  // and this compensates the shortfall.
+  if (/[ąćęłńóśźżěščřžýůúďťň]/i.test(seg)) return 2.5;
+  if (/[Ѐ-яё]/i.test(seg)) return 6;
+  if (/[Ό-ώ]/i.test(seg)) return 3;
+  if (/^\p{Extended_Pictographic}[\p{Extended_Pictographic}\p{Emoji_Component}]*$/u.test(seg)) return 0.9;
+  return null;
+}
+
+const NON_ASCII_RE = /[-￿]/;
+
+/** Code points, not UTF-16 units: an emoji is one character, not two. */
+function charCount(s) {
+  let n = 0;
+  for (const _ of s) n++;
+  return n;
+}
+
 export function estimateTokens(text) {
   const s = String(text ?? '');
   if (s.length <= TOK_CACHE_MAX_LEN) {
@@ -486,8 +688,13 @@ export function estimateTokens(text) {
 // number. Callers that want the whole request add it themselves via
 // estimateRequestOverhead().
 export function estimateMessagesTokens(messages, cfg) {
+  // THROUGH `messageTokens`, NOT `estimateMessageTokens`. Same arithmetic — the memoised path calls the same
+  // estimator — but the raw one re-measures EVERY message on EVERY call, and its callers are the hot ones: the
+  // context gauge at each step, and the estimate a request is priced against. On a long session that is a full
+  // walk of the history, Read results included, which is what made sending a message pause. `messageTokens` keeps
+  // a per-message WeakMap keyed on the object, so an append-only history costs one measurement for what is new.
   let total = 0;
-  for (const m of messages || []) total += estimateMessageTokens(m, cfg);
+  for (const m of messages || []) total += messageTokens(m, cfg);
   return total;
 }
 

@@ -78,7 +78,9 @@ test('the title is set at STARTUP, so a resumed session adopts its name', () => 
   // assertion passes with the startup write deleted.
   const start = lines.findIndex((l) => /^export async function startTUI\(/.test(l));
   assert.ok(start > 0, 'startTUI is module level');
-  const alt = lines.findIndex((l, i) => i > start && /alternateScreen\(true\)/.test(l));
+  // `/vim` re-enters the alternate screen too. Find the startup write by its own call site, not by whichever
+  // `alternateScreen(true)` happens to be first: the external editor's restore path is a different place entirely.
+  const alt = lines.findIndex((l, i) => i > start && /stdout\.write\(alternateScreen\(true\)\)/.test(l));
   assert.ok(alt > 0, 'the alternate screen is entered');
   const window = lines.slice(alt, alt + 20);
   const set = window.findIndex((l) => /writeWindowTitle\(session, stdout\)/.test(l));

@@ -22,6 +22,7 @@ import {
 } from './colors.js';
 import { copyText, readText, warmClipboard, readClipboardContentAsync, readClipboardTextOnly, imageUrlFromClipboardText, cleanupPastedImages, stopClipboardHelper } from './clipboard.js';
 import { visualWidth, estimateTokens, estimateTokensFloat, estimateMessagesTokens, estimateMessageTokens, messageTokens, expandTabs } from './term.js';
+import { highlightLine, langForPath } from './highlight.js';
 // The picker is composited onto the frame as a cell layer rather than assigned over
 // it (see src/cell-buffer.js), so the transcript BESIDE the card survives.
 import { parseCells, renderCells, drawFrameBuffer } from './cell-buffer.js';
@@ -58,6 +59,7 @@ import { pluginCommands, renderWidgets, runHooks, runPatch, runPatchSync, runKey
 import { OTHER_LABEL, SUPPLEMENT_LABEL } from './tools/ask-user-question.js';
 import { render as renderTodos } from './tools/todo.js';
 import { renderLatex } from './latex.js';
+import { bannerLines } from './banner.js';
 import { measureTex, encodeTexImage, TEX_MAX_ROWS } from './tex/index.js';
 import { isImageRow, imageBytes, parseImageRow, encodeImageRow as encodeImageRowHelper } from './image-row.js';
 import { createScreen, pools as screenPools } from './screen.js';
@@ -210,14 +212,17 @@ export const COMMANDS = [
   { name: 'goal', aliases: ['objective'], desc: 'Start or manage an autonomous goal', priority: 80, argumentHint: '[status|pause|resume|cancel|replace <text>] | <objective>' },
   { name: 'init', desc: 'Generate or update AGENTS.md from the codebase', priority: 70, argumentHint: '[instructions]' },
   { name: 'fork', desc: 'Fork the current session into a copy without switching to it', priority: 80 },
-  { name: 'undo', desc: 'Withdraw the last prompt: transcript + files it changed', priority: 80, argumentHint: '[count]' },
+  // `/rewind` is the name this is usually looked for by; the behaviour is the same picker either way.
+  { name: 'undo', aliases: ['rewind'], desc: 'Rewind to an earlier prompt: the transcript truncates and the files those turns changed are restored', priority: 80, argumentHint: '[count]' },
   { name: 'trim', desc: 'Trim old tool results now, down to the keep ratio (manual)', priority: 40, argumentHint: '[keep-ratio]' },
   { name: 'auto-trim', aliases: ['autotrim'], desc: 'Auto tool-result trimming: the threshold is a share of the WINDOW, `keep` a share of the tool-result TEXT', priority: 40, argumentHint: '[on|off | threshold <n> | keep <n>]' },
   { name: 'title', aliases: ['rename'], desc: 'Set or show session title (also sets window title)', priority: 60, argumentHint: '<title>' },
+  { name: 'auto-title', desc: 'Let the model name the session from its first message (persisted)', priority: 60, argumentHint: '[on|off]' },
   { name: 'status', desc: 'Show current session and runtime status', priority: 60 },
   { name: 'doctor', desc: 'Diagnose the environment: config, store, MCP, hooks, disk, git, terminal', priority: 60, argumentHint: '[--all] [--probe]' },
   { name: 'memory-profile', aliases: ['memprof'], desc: 'Where this session’s memory goes: text vs tool results vs tool arguments', priority: 60, argumentHint: '[--verbose]' },
   { name: 'usage', desc: 'Show real token totals (provider-reported) + context window', priority: 60 },
+  { name: 'stats', aliases: ['summary'], desc: 'What this session has done: turns, tools, files touched, time and tokens', priority: 59 },
   { name: 'cost', desc: 'Show what this session has spent, in USD or CNY', priority: 60, argumentHint: '[usd|cny]' },
   { name: 'context', aliases: ['ctx'], desc: 'Break down what fills the context window', priority: 60 },
   { name: 'raw', desc: 'Show assistant replies verbatim: no Markdown, no wrapping', priority:50, argumentHint: '[on|off]' },
@@ -254,7 +259,8 @@ export const COMMANDS = [
   { name: 'web', desc: 'Serve this session to a browser (token-protected; loopback by default)', priority: 60, argumentHint: '[bindIp] [port] | off' },
   { name: 'calm-mode', desc: 'Terse replies: stop the model narrating what it will do and why unless asked', priority: 60, argumentHint: '[on|off]' },
   { name: 'add-dir', desc: 'Add or list an additional workspace directory', priority: 60, argumentHint: '[list] | <path>' },
-  { name: 'move', desc: 'Move current session to another directory (must exist)', priority: 60, argumentHint: '<path>' },
+  { name: 'move', aliases: ['cd'], desc: 'Move current session to another directory (must exist)', priority: 60, argumentHint: '<path>' },
+  { name: 'vim', aliases: ['nvim'], desc: 'Edit the composer in $EDITOR (vim by default); on save it comes back into the composer', priority: 60 },
   { name: 'reload', desc: 'Reload config and plugins without restart', priority: 60 },
   { name: 'reload-config', desc: 'Reload config.toml settings only', priority: 60 },
   { name: 'plugins', desc: 'Open the plugin manager (installed + available in the repo)', priority: 60, argumentHint: '[install <name> | remove <name> | reload]' },
@@ -268,6 +274,7 @@ export const COMMANDS = [
   { name: 'pr', desc: 'Show the URL to open a pull request for the current branch', priority: 60, argumentHint: '[base]' },
   { name: 'add', aliases: ['stage'], desc: 'Stage changes (all by default, or given paths)', priority: 62, argumentHint: '[<path> ...]' },
   { name: 'diff', desc: 'Show uncommitted changes', priority: 62, argumentHint: '[--staged|--cached] [<path>]' },
+  { name: 'review', desc: 'Have the agent review the uncommitted changes and report real problems', priority: 62, argumentHint: '[--staged|--cached] [<path>]' },
   { name: 'log', desc: 'Show recent commits', priority: 62, argumentHint: '[count] [<path>]' },
   { name: 'push', desc: 'Push the current branch (asks first)', priority: 62, argumentHint: '[branch] [-f]' },
   { name: 'stash', desc: 'Stash changes: list / push / pop', priority: 60, argumentHint: '[list | push [msg] | pop]' },
@@ -1511,6 +1518,34 @@ export function extractJsonString(json, key) {
 // or two `}` a couple of rows apart, look the same inside a three-row window — and the rows just
 // past the window are exactly what a reader uses to tell one site from another.
 const DIFF_CONTEXT_LINES = 5;
+
+// Syntax foreground is applied inside the row's diff background. Every token reset must restore that background,
+// otherwise the first run of each coloured line paints on the page instead of the change wash.
+/**
+ * Syntax-colour a line, inside a background, and report whether the row ended inside a comment.
+ *
+ * The comment state is carried across rows: a block comment that opens on one row and closes on the next left the
+ * second row looking like ordinary code, and `extends` and `const` inside a comment were coloured as keywords.
+ *
+ * @param {string} text The row.
+ * @param {object} lang The language entry, or null.
+ * @param {string} bg The background colour, or '' for none.
+ * @param {boolean} [inComment] Whether the previous row ended inside a block comment.
+ * @returns {{text: string, inComment: boolean}}
+ */
+function paintCode(text, lang, bg, inComment = false) {
+  const result = lang ? highlightLine(text, lang, inComment) : { text: String(text), inComment: false };
+  const raw = result.text;
+  if (!bg) return result;
+  // THE BACKGROUND GOES ON BEFORE ANY TOKEN COLOUR AND COMES BACK AFTER EVERY RESET.
+  //
+  // Prefixing only after `\x1b[0m` left the run of text BEFORE the first token uncoloured — a comment line has its
+  // whole body inside one token, so it drew with no wash at all while the code below it was washed, and the block
+  // looked striped. Seeding the background at the front covers that first run; the replacement covers every run
+  // after it, because each token closes with a reset that would otherwise drop back to the page background.
+  return { text: bg + raw.replace(/\x1b\[0m/g, `\x1b[0m${bg}`) + C.reset, inComment: result.inComment };
+}
+
 /**
  * Rows for an Edit, from the tool's own diff payload.
  *
@@ -1550,12 +1585,19 @@ export function editDiffRows(diff) {
   for (const c of before) out.push({ type: 'ctx', text: String(c.text), no: c.n });
   let oldNo = startLine;
   let newNo = startLine;
-  for (const step of alignLines(oldLines, newLines)) {
-    if (step.op === 'same') { out.push({ type: 'ctx', text: oldLines[step.a], no: newNo }); oldNo++; newNo++; }
-    else if (step.op === 'del') { out.push({ type: 'del', text: oldLines[step.a], no: oldNo++ }); }
-    else { out.push({ type: 'add', text: newLines[step.b], no: newNo++ }); }
+  const steps = alignLines(oldLines, newLines);
+  for (let k = 0; k < steps.length; k++) {
+    const step = steps[k];
+    if (step.op === 'same') { out.push({ type: 'ctx', text: oldLines[step.a], no: newNo }); oldNo++; newNo++; continue; }
+    if (step.op === 'del') { out.push({ type: 'del', text: oldLines[step.a], no: oldNo++ }); continue; }
+    out.push({ type: 'add', text: newLines[step.b], no: newNo++ });
   }
   for (const c of after) out.push({ type: 'ctx', text: String(c.text), no: c.n });
+  // THE LANGUAGE TRAVELS WITH THE ROWS. The renderer draws a diff several layers away from the tool call, with no
+  // path of its own, so resolving the highlighter here — from the diff's own `path` — is the only place that still
+  // knows what file this is.
+  const lang = diff.path ? langForPath(diff.path) : null;
+  if (lang) for (const r of out) r.lang = lang;
   return elideContext(out);
 }
 
@@ -1737,7 +1779,7 @@ function wrapWithOffsets(text, width) {
 
 // The composer is ONLY for messages to the model. Dialogs (pickers, forms) do
 // not use it — they render their own inputs (search box, form fields).
-// The prompt glyph matches the transcript's user marker (`❯`) so the composer
+// The prompt glyph matches the transcript's user marker (`>`) so the composer
 // reads as "the same kind of thing" as a sent user message.
 //
 // SHELL MODE (`!`) — modelled on kimi-code's editor. Typing `!` on an EMPTY
@@ -1749,7 +1791,7 @@ function wrapWithOffsets(text, width) {
 // The mode ends on Esc/Backspace while the buffer is empty, or on submit.
 export function composerInput(state) {
   const shell = state.inputMode === 'bash';
-  return { text: state.input || '', caret: state.caret || 0, prefix: shell ? '! ' : '❯ ' };
+  return { text: state.input || '', caret: state.caret || 0, prefix: shell ? '! ' : '> ' };
 }
 
 // Marker text for a collapsed paste. Only a multi-line TEXT paste collapses; an
@@ -2366,8 +2408,123 @@ function todoRow(todo, w) {
   return '  ' + mark + ' ' + fitAnsi(title, Math.max(1, w - 4));
 }
 
+// The unselected completion row, and its match. Fixed light greys rather than theme entries: the theme grey is
+// tuned to sit quiet against the page, and at menu size it read as disabled rather than as a list to choose from.
+const MATCH_BASE = '\x1b[38;2;153;153;153m';             // #999999
+const MATCH_HIT = '\x1b[38;2;173;173;173m\x1b[1m';    // #adadad, bold
+
+/**
+ * A completion row with every occurrence of the typed text picked out.
+ *
+ * THE MATCH IS POSITIONAL, NOT A PREFIX. `/he` lights the `he` in `/help`, the `he` in `/theme` and every `he` in
+ * either description, because a user typing `he` is looking for those LETTERS — a command must not be excluded from
+ * the highlight just because it does not begin with them.
+ *
+ * THE BASE COLOUR CARRIES THE SELECTION STATE, and the match is that same colour in BOLD:
+ *
+ *   selected      theme cyan   +  bold cyan match
+ *   unselected    #999999      +  #adadad bold match
+ *
+ * The hue never changes, so a row's identity does not move when the cursor leaves it — only the weight does. A
+ * separate colour for the match made an unselected row's highlight the brightest thing in the menu, which pulled
+ * the eye to rows the cursor was not on.
+ *
+ * @param {string} text The command name or description.
+ * @param {string} query What the user has typed, lower-case, without the leading slash.
+ * @param {boolean} selected Whether this is the cursor row.
+ * @returns {string} The text with ANSI codes inserted.
+ */
+function highlightMatches(text, query, selected) {
+  const src = String(text);
+  // The unselected pair is a fixed light grey rather than the theme grey, which is too dark to read comfortably at
+  // this size: #999999 for the row and #adadad for its match are two steps a reader can tell apart, without either
+  // being brighter than the selected row.
+  const base = selected ? C.cyan : MATCH_BASE;
+  if (!query) return col(src, base);
+  const q = query.toLowerCase();
+  const lower = src.toLowerCase();
+  // The match is the SAME hue, in bold: the colour identifies the row and the weight identifies the match, so a
+  // row does not change colour when the cursor leaves it.
+  const hit = selected ? (C.cyan + C.bold) : MATCH_HIT;
+  let out = '';
+  let at = 0;
+  let found = lower.indexOf(q, at);
+  if (found < 0) return col(src, base);
+  while (found >= 0) {
+    if (found > at) out += col(src.slice(at, found), base);
+    out += col(src.slice(found, found + q.length), hit);
+    at = found + q.length;
+    found = lower.indexOf(q, at);
+  }
+  if (at < src.length) out += col(src.slice(at), base);
+  return out;
+}
+
 // `hoverTop` / `dragTop` drive the top rule's hover and press colours: that rule
 // is a drag handle for resizing the panel.
+/**
+ * The title strip along the top of the screen.
+ *
+ * `maxRows` is how many rows of name to show. A name that fits on one row uses one; a longer one WRAPS, and the
+ * rows it needs are reserved for it — a terminal is narrow, and cutting a session name to its first forty
+ * characters loses the part that told them apart. The last visible row ends in `…` when the name continues below.
+ *
+ * `state.titleRows` is the height the user dragged the rule to. `0` or unset means "as many as the name needs,
+ * up to the room available", which is what a fresh session wants.
+ *
+ * The rule is always the LAST row, so it is always in the same place to grab.
+ */
+function renderTitleBar(state, w, hover, maxRows) {
+  const title = String(state.sessionTitle || '').trim();
+  // A NAMELESS SESSION IS NOT A BLANK BAND. `Untitled` says the strip is there and can be clicked; an empty row
+  // reads as a rendering gap.
+  const label = title || 'Untitled';
+  const out = [];
+  // ONE LEADING SPACE, matching the transcript's own left margin so the name lines up with the messages below.
+  const PAD = ' ';
+  const room = Math.max(1, w - PAD.length);
+  const rows = Math.max(1, Math.round(maxRows) || 1);
+  // Wrap the name to the width, keeping ANSI out of it — the colour is applied per row below.
+  const wrapped = wrapWords(label, room);
+  const shownRows = wrapped.slice(0, rows);
+  // A name with more rows than the band can show ends in `…` on its last visible row.
+  const more = wrapped.length > shownRows.length;
+  // THE PLACEHOLDER IS THE SAME COLOUR AS A REAL NAME. It used to be `C.muted`, which made a fresh session's band
+  // look disabled — as if the strip were not there to be clicked. The word already says the session has no name;
+  // dimming it as well says something different and wrong.
+  const textColor = hover ? C.heading : C.cyan;
+  const ruleColor = hover ? C.cyan : C.border;
+  for (let i = 0; i < shownRows.length; i++) {
+    let line = shownRows[i];
+    if (i === shownRows.length - 1 && more) {
+      // Trim one column so the ellipsis fits inside the width instead of pushing the row over.
+      line = fitAnsi(line, room - 1).trimEnd() + '…';
+    }
+    out.push(fitAnsi(PAD + col(line, textColor + C.bold), w));
+  }
+  out.push(col('─'.repeat(w), ruleColor));
+  return out;
+}
+
+/** How many rows the title needs at this width, ignoring any drag. */
+function titleRowsNeeded(state, w) {
+  const title = String(state.sessionTitle || '').trim() || 'Untitled';
+  const room = Math.max(1, w - 1);
+  return Math.max(1, wrapWords(title, room).length);
+}
+
+/**
+ * Name rows currently shown: the dragged height when set, otherwise as many as the name needs.
+ *
+ * The band is `titleRowCount` name rows plus the rule. Reading it from `state.titleRows` rather than from the
+ * frame keeps the drag arithmetic independent of what was last painted.
+ */
+function titleRowCount(state) {
+  const need = titleRowsNeeded(state, state.cols || process.stdout.columns || 80);
+  const set = Math.round(Number(state.titleRows) || 0);
+  return set > 0 ? Math.min(set, need) : need;
+}
+
 function renderTodoPanel(state, w, hoverTop, dragTop) {
   const todos = state.todos || [];
   if (!todos.length) return [];
@@ -2424,7 +2581,7 @@ function renderQueuePanel(state, w, hoverTop, dragTop) {
   for (const text of rows) {
     // Collapse to a single line, like kimi's queue pane does.
     const single = String(text).replace(/\s+/g, ' ').trim();
-    out.push(col('  ', C.cyan) + col('❯ ', C.cyan) + col(fitAnsi(single, Math.max(1, w - 6)), C.white));
+    out.push(col('  ', C.cyan) + col('> ', C.cyan) + col(fitAnsi(single, Math.max(1, w - 6)), C.white));
   }
   
   const hidden = queued.length - rows.length;
@@ -2651,8 +2808,27 @@ function messageLines(msg, width, workspace, expanded, spin, pulseStart, rawMode
       // prefix, so counting it would understate a large file's size.
       const totalLines = expanded ? lines.length : (msg._streamLineCount || lines.length);
       const wNum = String(totalLines).length;
+      // THE FILE'S OWN SYNTAX, from its own path. The path is on the tool row, which is the only place that
+      // still knows it — the result message does not carry it.
+      const writeLang = msg.toolArgs && (msg.toolArgs.path || msg.toolArgs.file_path)
+        ? langForPath(msg.toolArgs.path || msg.toolArgs.file_path)
+        : null;
+      // The comment state travels between the rows, so a block comment that opens on one line and closes on
+      // the next stays grey all the way down.
+      let writeInComment = false;
       lines.slice(0, MAX).forEach((ln, i) => {
-        out.push({ text: col(`${String(i + 1).padStart(wNum)} ${ln}`, C.gray), ind: i === 0 ? '↳ ' : indent, raw: true });
+        const num = String(i + 1).padStart(wNum);
+        // A LINE LONGER THAN THE PANEL IS CUT, not wrapped. `raw: true` means the renderer does not wrap it for us,
+        // and letting it through at full width made the terminal wrap it itself — which pushes every later row down
+        // by one and desynchronises the frame, so the screen scrolled while the file was still arriving.
+        const room = Math.max(1, width - visualCol(indent) - num.length - 1);
+        if (!writeLang) {
+          out.push({ text: col(`${num} ${fitAnsi(ln, room)}`, C.gray), ind: i === 0 ? '↳ ' : indent, raw: true });
+          return;
+        }
+        const painted = paintCode(ln, writeLang, '', writeInComment);
+        writeInComment = painted.inComment;
+        out.push({ text: col(num + ' ', C.gray) + fitAnsi(painted.text, room), ind: i === 0 ? '↳ ' : indent, raw: true });
       });
       const shown = Math.min(lines.length, MAX);
       if (totalLines > shown) out.push({ text: col(`… ${totalLines - shown} more lines, ctrl+o to expand`, C.gray), ind: indent, raw: true });
@@ -2792,6 +2968,9 @@ function messageLines(msg, width, workspace, expanded, spin, pulseStart, rawMode
       // where unchanged lines were elided.
       const total = msg.diff.length;
       const wNo = Math.max(1, ...msg.diff.map((d) => String(d.no || 0).length));
+      // THE COMMENT STATE TRAVELS BETWEEN THE ROWS of one diff, so a block comment that opens on a context row and
+      // closes on a changed one stays grey across both.
+      let inComment = false;
       let emitted = 0;
       for (const d of msg.diff) {
         if (emitted >= MAX) break;
@@ -2802,12 +2981,33 @@ function messageLines(msg, width, workspace, expanded, spin, pulseStart, rawMode
         }
         const no = String(d.no || 0).padStart(wNo);
         const mark = d.type === 'add' ? '+' : d.type === 'del' ? '-' : ' ';
-        // Unchanged context lines are WHITE (they are real file content); the
-        // added/removed lines carry the green/red. Grey made the context recede
-        // so far the diff read as two disconnected change blocks.
-        const color = d.type === 'add' ? C.green : d.type === 'del' ? C.red : C.white;
-        // Diff lines are FILE content and can carry escapes; show them as `^[`.
-        diffRows.push({ text: col(`${no} ${mark} ${sanitizeText(d.text)}`, color), ind: cont, raw: true });
+        const text = sanitizeText(d.text);
+
+        // The sign, line number and content share the line's addition/deletion background; syntax highlighting
+        // changes only the foreground. The wash runs to the right edge so adjacent changed rows read as one block.
+        const isAdd = d.type === 'add';
+        const isDel = d.type === 'del';
+        const lineBg = isAdd ? C.diffAddBg : isDel ? C.diffDelBg : '';
+        const fg = isAdd ? C.diffAddFg : isDel ? C.diffDelFg : C.white;
+        const lead = col(`${no} ${mark} `, lineBg ? fg + lineBg : fg);
+
+        if (!lineBg) {
+          // CONTEXT LINES ARE CODE TOO. They are the most of a diff and the part a reader scans to place the
+          // change, so they get the same highlighter with no background.
+          const ctxPainted = paintCode(text, d.lang, '', inComment);
+          inComment = ctxPainted.inComment;
+          diffRows.push({ text: lead + ctxPainted.text, ind: cont, raw: true });
+          emitted++;
+          continue;
+        }
+
+        // Keep only the line-level addition/deletion wash and syntax foreground. Positional word pairing can
+        // highlight the wrong token when lines are reordered or punctuation changes, so no word tint is applied.
+        const painted = paintCode(text, d.lang, lineBg, inComment);
+        inComment = painted.inComment;
+        const used = visualCol(`${no} ${mark} `) + visualCol(painted.text);
+        const pad = ' '.repeat(Math.max(0, bodyW - used));
+        diffRows.push({ text: lead + painted.text + col(pad, lineBg), ind: cont, raw: true });
         emitted++;
       }
       if (total > emitted) {
@@ -2826,20 +3026,45 @@ function messageLines(msg, width, workspace, expanded, spin, pulseStart, rawMode
       }
     } else {
       // No diff: the tool's own output is the body.
+      //
+      // A READ RESULT IS SOURCE CODE, so its numbered lines are syntax-coloured — the file's own language, carried
+      // on the message by the tool_result handler, which is the last place that still knows the path. The header
+      // and any error keep the plain grey: those are the tool's own words, not the file's.
+      //
+      // The comment state travels between the rows, so a block comment that opens on one line and closes on the
+      // next stays grey all the way down.
+      const readLang = msg.readPath ? langForPath(msg.readPath) : null;
+      let inComment = false;
       shown.forEach((ln, idx) => {
         const isErr = /^\[error:/.test(ln.trim());
         // A failed run is red throughout so it cannot be skimmed past.
         const color = isErr ? C.red : (failed ? C.red : C.gray);
+        // `N<TAB>text` is the Read tool's own line format; only those rows are file content.
+        const numbered = readLang && !isErr ? /^(\d+)\t([\s\S]*)$/.exec(ln) : null;
+        if (numbered) {
+          // `wrapAnsiWords` measures VISIBLE columns, so the colour codes do not count towards the wrap.
+          const painted = paintCode(numbered[2], readLang, '', inComment);
+          inComment = painted.inComment;
+          // THE SEPARATOR IS A TAB, AND `visualCol` COUNTS A TAB AS ZERO COLUMNS. A terminal advances it to the
+          // next stop, so the row was measured several columns short, the terminal wrapped it itself, and the tail
+          // landed on the next row as a fragment — `921d` under a `920`-numbered row is exactly that. A fixed
+          // two-space gap is what the width maths needs and what reads better.
+          const text = `${numbered[1]}  ${painted.text}`;
+          const wrapped = wrapAnsiWords(text, bodyW);
+          wrapped.forEach((t, i) => {
+            diffRows.push({ text: t, ind: idx === 0 && i === 0 ? pre : cont, raw: true });
+          });
+          return;
+        }
         const wrapped = ln === '' ? [''] : wrapWords(ln, bodyW);
         wrapped.forEach((t, i) => {
           diffRows.push({ text: t, ind: idx === 0 && i === 0 ? pre : cont, color });
         });
       });
       if (visible.length > MAX_RESULT_LINES) {
-        // The hint says HOW to see the rest. It used to read only "… N more lines", so a truncated
-        // result gave the user no way to know Ctrl+O would reveal it — the key existed and was
-        // undiscoverable from the one place that needed it. Only reachable while collapsed: expanded,
-        // `MAX_RESULT_LINES` is Infinity and this cannot fire.
+        // The hint says HOW to see the rest. It used to read only "… N more lines", so a truncated result gave
+        // the user no way to know Ctrl+O would reveal it — the key existed and was undiscoverable from the one
+        // place that needed it. Only reachable while COLLAPSED: expanded, `MAX_RESULT_LINES` is Infinity.
         diffRows.push({
           text: `… ${visible.length - MAX_RESULT_LINES} more lines, ctrl+o to expand`,
           ind: cont,
@@ -2978,14 +3203,14 @@ function messageLines(msg, width, workspace, expanded, spin, pulseStart, rawMode
   let icon = '';
   switch (msg.role) {
     case 'system': icon = ''; break;
-    case 'user': icon = '❯'; break;
+    case 'user': icon = '>'; break;
     case 'bash': icon = '!'; break;   // shell-mode echo
     case 'warn': icon = '⚑'; break;   // ⚑ unfinished-turn warning
     // `queued` keeps the SAME marker as a user message: it is a user message, just
     // not sent yet. Its pending state is shown by the colour (gray) and the queue
     // pane below, not by a different glyph.
-    case 'queued': icon = '❯'; break;
-    case 'steer': icon = '❯'; break;
+    case 'queued': icon = '>'; break;
+    case 'steer': icon = '>'; break;
     // A skill activation is its own kind of row, not a user message: kimi prints
     // `▶ Activated skill: <name>` with the user's args dim underneath, and that is
     // what makes it clear a SKILL ran rather than the user having typed a slash
@@ -3087,8 +3312,8 @@ function messageLines(msg, width, workspace, expanded, spin, pulseStart, rawMode
     const c = msg._mdCache;
     let headWrapped = c && c.headWrapped;
     if (!headWrapped || c.headWrappedCut !== headCut || c.headWrappedVersion !== MD_RENDER_VERSION) {
-      // ONLY the first row of the whole message carries the `❯` marker; every later
-      // row uses the continuation pad. Using `prefix` for every head row put a `❯`
+      // ONLY the first row of the whole message carries the `>` marker; every later
+      // row uses the continuation pad. Using `prefix` for every head row put a `>`
       // on each line of the message.
       headWrapped = headRows.map((ml, i) => ({ text: ml, ind: i === 0 ? prefix : contPad, raw: true }));
       if (c) {
@@ -3111,7 +3336,7 @@ function messageLines(msg, width, workspace, expanded, spin, pulseStart, rawMode
       else {
         for (const ln of wrapWords(raw, bodyW)) {
           // The marker is emitted only for the message's FIRST row. Using a
-          // per-source-line index repeated `❯` on every line of a multi-line
+          // per-source-line index repeated `>` on every line of a multi-line
           // message.
           const firstRow = lines.length === 0;
           lines.push({ text: ln, ind: firstRow ? prefix : contPad, color: bodyFg, indColor: firstRow ? indColor : undefined });
@@ -3467,10 +3692,14 @@ function markdownLineToRows(line, width, fg, codeFg, isContinuation) {
     return out;
   }
   // Blockquote
+  //
+  // THE RULE AND THE TEXT ARE DIFFERENT COLOURS. The rule takes the theme colour, so a quote reads as a distinct
+  // block in the transcript; the text takes the comment grey, so quoted material is visibly not the reply's own
+  // voice. Colouring both the same made a quote indistinguishable from an indented paragraph.
   if (/^\s*>\s?/.test(t)) {
     const content = t.replace(/^\s*>\s?/, '');
     for (const w of wrapWords(content, Math.max(1, width - 2))) {
-      out.push(col('▍' + w, C.gray));
+      out.push(col('▍ ', C.cyan) + col(w, C.comment));
     }
     return out;
   }
@@ -3721,7 +3950,7 @@ function rowToLine(r) {
   const body = r.text || '';
   // If raw, text already has ANSI codes; otherwise apply color.
   // `indColor` colours only the indent/marker, so a user row can show a cyan
-  // `❯` with white message text.
+  // `>` with white message text.
   if (r.raw) return ind + body;
   if (r.indColor && ind) {
     const tail = r.color ? (r.color + body + C.reset) : body;
@@ -5070,7 +5299,7 @@ function applySelectionToRow(lines, idx, sel, w) {
  * whole rule.
  *
  * It is one column and no more, and applied to every row regardless of what sits there. Measuring a
- * per-row "indent width" instead — a tool row's ` ● ` bullet, a user box's `│ ❯ ` wall — was the first
+ * per-row "indent width" instead — a tool row's ` ● ` bullet, a user box's `│ > ` wall — was the first
  * attempt and it was wrong: those columns are part of what the row DRAWS, and a selection that begins on
  * one of them is a selection the user made deliberately. The margin is different only because it is not
  * the content at all.
@@ -5640,9 +5869,68 @@ function editorSelectionOnLine(ed, idx) {
   const to = idx === bot.row ? bot.col : lineLen;
 
   return { from: Math.min(from, to), to: Math.max(from, to) };
-
 }
 
+/**
+ * The transcript a NEW session opens with.
+ *
+ * THE MARK GOES FIRST, as an ordinary entry. It could have been drawn by the frame composer on the condition
+ * "the chat is empty", and that is what the first attempt did — which meant it vanished the moment anything else
+ * was added, and the padding that keeps a short conversation over the composer had to be special-cased for it.
+ * As a transcript row there is no empty-session state at all: the mark is row zero, it scrolls away with the
+ * conversation, and every layout rule already applies to it.
+ *
+ * `rich` renders text verbatim — no icon prefix, no Markdown pass. A wordmark is made of block characters that a
+ * Markdown renderer would treat as emphasis markers.
+ *
+ * Returns `[]` when the terminal is too narrow for the mark: a clipped wordmark reads as a rendering bug, and the
+ * session works fine without it.
+ */
+export function startupChat(width, opts = {}) {
+  let w = 0;
+  try { w = Number(width) || process.stdout.columns || 80; } catch { w = 80; }
+  // THE COLOUR IS PAINTED HERE, into the text. `rich` is the role that passes text through untouched, which is
+  // what keeps a wordmark's block characters out of the Markdown renderer — and it also means nothing else
+  // applies an accent colour to it.
+  // THE SHADOW IS THE SAME HUE AT 40% BRIGHTNESS. `C.dim` (SGR 2) is applied by the TERMINAL and most render it
+  // barely darker than the ink; `C.teal` is only about 15% off `C.cyan`. Neither reads as a shadow — the letters
+  // just looked slightly uneven. `C.cyanDeep` is a fixed dark cyan, the same family, unmistakably behind.
+  const art = bannerLines(
+    w,
+    (s) => C.cyan + s + C.reset,
+    (s) => C.cyanDeep + s + C.reset,
+  ).join('\n');
+  if (!stripAnsi(art).trim()) return [];
+  // A blank line above the wordmark, so it does not touch the top edge of the terminal.
+  const rows = ['', art];
+
+  // THE NAME, AND WHAT THIS SESSION IS: version, model, directory.
+  //
+  // Read from the LIVE config rather than captured at import: `/model` changes `cfg` in place, and a session
+  // opened afterwards should say what it is actually using.
+  const cfg = opts.cfg || {};
+  const name = 'HNCode';
+  const version = opts.version || VERSION;
+  // A blank row between the mark and the name, so the wordmark reads as artwork and the name as its caption.
+  rows.push('');
+  // THE THREE LINES SHARE A RULE, the way a Markdown blockquote does: the bar takes the theme colour and the text
+  // stays quiet, so the block reads as one annotation about the session rather than as three unrelated lines.
+  const line = (text) => C.cyan + '▍ ' + C.reset + text;
+  // A LIGHT GREY, bold — the annotations below are `C.gray`, so this is one step brighter than them and reads as
+  // the heading of that block. Not cyan: the wordmark above already owns the colour, and a second cyan line made
+  // the two compete.
+  rows.push(line(C.bold + C.heading + name + C.reset + ' ' + C.gray + 'v' + version + C.reset));
+
+  const model = modelLabel(cfg) || '(no model)';
+  // The effort is only meaningful when the model reasons; showing "off" for a model that never thinks is noise.
+  const effort = cfg.reasoning && cfg.effort && cfg.effort !== 'off' ? ` (${cfg.effort})` : '';
+  rows.push(line(C.gray + 'Model: ' + model + effort + C.reset));
+
+  const dir = opts.workspace || cfg.workspace || '';
+  if (dir) rows.push(line(C.gray + dir + C.reset));
+  rows.push('');
+  return [{ role: 'rich', text: rows.join('\n') }];
+}
 
 export function composeFrame(state, cols, rows) {
   const w = Math.max(20, cols | 0);
@@ -5776,7 +6064,22 @@ const queueH = takeover ? 0 : queuePanelHeight(state);
     ? Math.min(questionBoxHeight(state, insideW), Math.max(1, h - chromeH - 1))
     : 0;
   const bottomH = chromeH + questionH;
-  const bodyH = Math.max(1, h - bottomH);
+  // THE TITLE BAND IS AS TALL AS ITS NAME, plus the rule.
+  //
+  // A long name WRAPS, so the band is not always two rows: reserving a fixed two would clip a wrapped name, and
+  // reserving the wrapped height always would leave a gap under a short one. `state.titleRows` is the height the
+  // user dragged the rule to — when set it wins, so the band can be made shorter than the name and the last row
+  // ends in `…`.
+  //
+  // Clamped to what is left after the chrome: a title must never take the whole screen and starve the transcript.
+  const titleRoom = takeover ? 0 : Math.max(1, wrapWords(String(state.sessionTitle || '').trim() || 'Untitled', Math.max(1, w - 1)).length);
+  const titleMax = takeover ? 0 : Math.max(1, Math.min(titleRoom + 1, h - bottomH - 1));
+  // `title_display` off means the band takes NO rows: reserving them and drawing nothing would leave a blank
+  // strip at the top of every frame, and the transcript is what should have that space.
+  const topH = takeover || state.titleDisplay === false
+    ? 0
+    : Math.max(2, Math.min(titleMax, (state.titleRows || titleRoom) + 1));
+  const bodyH = Math.max(1, h - bottomH - topH);
 
   const lines = [];
   const body = [];    // the whole transcript; `lines` receives the window onto it
@@ -5786,6 +6089,22 @@ const queueH = takeover ? 0 : queuePanelHeight(state);
   let questionCaret = null;
   const hits = [];
   const addHit = (row, col0, col1, hit) => hits.push({ row, col0, col1, ...hit });
+  // THE TITLE BAND GOES FIRST — before the transcript, so it sits at the very top and takes no part in the top trim.
+  // TWO CONTROLS, ONE ROW EACH:
+  //
+  //   the NAME rows (0..n-1)   click renames
+  //   the RULE (last row)      press starts a resize drag
+  //
+  // Covering the whole band with one `titleBar` hit made grabbing the rule open the rename form instead, which is
+  // the opposite of what the rule is for. A name that wraps makes the name SEVERAL rows, so the rule is the LAST
+  // row rather than row 1.
+  if (topH && !state.editor && !state.panel) {
+    const band = renderTitleBar(state, w, state.titleHover, topH - 1);
+    const titleTop = lines.length;
+    for (let r = 0; r < band.length - 1; r++) addHit(titleTop + r, 0, w - 1, { kind: 'titleBar' });
+    addHit(titleTop + band.length - 1, 0, w - 1, { kind: 'titleResize' });
+    for (const l of band) lines.push(l);
+  }
   // Built by the picker branch below and PAINTED after the chat body, so the
   // picker floats over the transcript instead of replacing it (see the picker
   // popup step). Rows/columns stay body-relative until that step positions it.
@@ -5954,14 +6273,14 @@ const queueH = takeover ? 0 : queuePanelHeight(state);
       const labelW = visualCol(`${f.typeLabel}:`.padEnd(f.labelW + 1));
       let colCursor = labelW;
       typeOpts = types.map((t) => {
-        const brick = (typeActive ? '❯ ' : '  ') + t;
+        const brick = (typeActive ? '> ' : '  ') + t;
         const cw = visualCol(brick);
         const rec = { opt: t, colStart: colCursor, colEnd: colCursor + cw };
         colCursor += cw + 2;
         return rec;
       });
       const typeStr = types.map((t) => t === f.type
-        ? col((typeActive ? '❯ ' : '  ') + t, typeActive ? (C.cyan + C.bold) : C.cyan)
+        ? col((typeActive ? '> ' : '  ') + t, typeActive ? (C.cyan + C.bold) : C.cyan)
         : col('  ' + t, C.gray)).join('  ');
       const typeLabel = col(`${f.typeLabel}:`.padEnd(f.labelW + 1), typeActive ? C.cyan : C.gray);
       const typeHint = f.type ? '' : col('  ← choose', C.yellow);
@@ -6064,7 +6383,7 @@ const queueH = takeover ? 0 : queuePanelHeight(state);
     shown.forEach((item, j) => {
       const idx = first + j;
       const isSel = idx === selIdx;
-      const ptr = isSel ? col('❯ ', C.cyan) : '  ';
+      const ptr = isSel ? col('> ', C.cyan) : '  ';
       const label = col(String(item.label), isSel ? (C.cyan + C.bold) : C.white);
       const sub = item.sub != null && item.sub !== '' ? col('  ' + String(item.sub), C.gray) : '';
       // The "current" marker sits right after the name (not right-aligned at the far
@@ -6163,7 +6482,13 @@ const queueH = takeover ? 0 : queuePanelHeight(state);
     const total = chat.length;
     const maxScroll = Math.max(0, total - bodyH);
     const scroll = Math.min(maxScroll, Math.max(0, state.scroll || 0));
-    const start = total <= bodyH ? -(bodyH - total) : total - bodyH - scroll;
+    // EVERY TRANSCRIPT STARTS AT THE TOP.
+    //
+    // The offset used to go NEGATIVE when the content was shorter than the window, which padded the front and
+    // pushed a few messages down against the composer. That reads well for a conversation read bottom-up, but it
+    // means the first thing in a new session — the mark, or the first message — sits at the BOTTOM of an empty
+    // screen. Content grows downward from a fixed origin instead; the composer stays where it is.
+    const start = total <= bodyH ? 0 : total - bodyH - scroll;
     const showBar = total > bodyH && w > 4;
     const sb = showBar ? scrollbarGeometry({ total, bodyH, scroll }) : null;
 
@@ -6267,22 +6592,12 @@ const queueH = takeover ? 0 : queuePanelHeight(state);
     // `+ topPad - topTrim` correction (see the end of this function) and the mouse
     // mapping did not, which is what made a drag copy the wrong lines.
 
-    // Pad the front when the transcript is shorter than the window: the blank rows belong ABOVE the first
-    // message, so the content sits directly over the composer. Without this the composer followed the last
-    // message and the padding pass pushed the whole body to the top of the screen.
-    // A SHORT TRANSCRIPT SITS AT THE BOTTOM, ABOVE THE COMPOSER.
-    //
-    // When the content is shorter than the window, `start` is negative and the loop emits only the rows
-    // that exist — so `lines` held five rows where the window has forty, the composer was appended
-    // directly after them, and the padding pass then pushed the whole body to the TOP of the screen.
-    // The blank rows belong at the FRONT: above the first message.
-    const missing = bodyH - lines.length;
-    if (missing > 0) for (let pad = 0; pad < missing; pad++) lines.unshift('');
-    state._bodyScreenTop = lines.length - bodyH;
-    // How many blank padding rows precede the first body row on screen. When
-    // the transcript is shorter than the body, `start` is negative and those
-    // rows are padding; a click there must NOT map to a transcript line.
-    state._bodyPadTop = Math.max(0, -start);
+
+    // No leading padding: short transcripts grow down from the title rather than sinking towards the composer.
+    // `bodyScreenTop` was captured before the body loop; deriving it from the current line count assumes the
+    // loop filled `bodyH`, which is false for a short transcript.
+    state._bodyScreenTop = bodyScreenTop;
+    state._bodyPadTop = 0;
   }
 
   // ---- popup card ------------------------------------------------------------
@@ -6613,7 +6928,7 @@ const queueH = takeover ? 0 : queuePanelHeight(state);
           const typed = qs.editing === 'other' ? String(qs.editingText || '') : (qs.otherText || '');
           const caretAt = Math.max(0, Math.min(typed.length, qs.editingCaret == null ? typed.length : qs.editingCaret));
           // The marker plus the padding on each side is what the text cannot use.
-          const bodyW = Math.max(1, innerW - 2 - visualCol('❯ '));
+          const bodyW = Math.max(1, innerW - 2 - visualCol('> '));
           // A PLACEHOLDER SITS INSIDE THE FIELD, grey, and vanishes on the first keystroke.
           const empty = typed === '';
           const shown = empty ? 'type your answer, then Enter' : typed;
@@ -6646,7 +6961,7 @@ const queueH = takeover ? 0 : queuePanelHeight(state);
                 caretCol = visualCol(seg.text.slice(0, caretAt - seg.start));
               }
               // The first row carries the prompt glyph; the rest are indented to match it.
-              const marker = si === 0 ? col('❯ ', C.cyan) : '  ';
+              const marker = si === 0 ? col('> ', C.cyan) : '  ';
               // Padded to the full body width: a short row would leave the right wall short and the next row would appear
               // to run into it.
               const body = col(seg.text, paint) + ' '.repeat(Math.max(0, bodyW - visualCol(seg.text)));
@@ -7048,7 +7363,7 @@ const queueH = takeover ? 0 : queuePanelHeight(state);
     for (let ri = 0; ri < composer.rows.length; ri++) {
       addHit(lines.length, 2, cInner, { kind: 'composerRow', rowIdx: ri });
       // Colour the prompt glyph like the transcript's user marker (cyan) and keep
-      // the typed TEXT white. The prefix is the first `❯ ` of the row (the
+      // the typed TEXT white. The prefix is the first `> ` of the row (the
       // continuation rows are padded with spaces instead).
       const rawRow = composer.rows[ri];
       // Which chip the pointer is over, if any. `state.pasteHover` is the paste NUMBER, set by the
@@ -7070,13 +7385,13 @@ const queueH = takeover ? 0 : queuePanelHeight(state);
           ? highlightSelection(textPart, textStart, sel.anchor, sel.head)
           : textPart;
         // The `!` (shell mode) prefix is BOLD: it is a mode marker, not punctuation,
-        // and it should out-weigh the `❯` prompt glyph at a glance.
+        // and it should out-weigh the `>` prompt glyph at a glance.
         const preCol = state.inputMode === 'bash' ? (C.shellMode + C.bold) : C.cyan;
         rowAnsi = ' ' + col(pre, preCol) + C.white +
           fitAnsi(highlighted, Math.max(1, textW - visualCol(pre))) + ' ';
       } else {
         // THE INDENT IS NOT TEXT. A continuation row arrives as `cont + text` — two spaces standing in for
-        // `❯ ` — and `rowMeta.start` is the offset of the TEXT, not of the row. Handing the whole row to
+        // `> ` — and `rowMeta.start` is the offset of the TEXT, not of the row. Handing the whole row to
         // `highlightSelection` therefore shifted the selection by the prefix's width: the two blank columns lit
         // up and the highlight ran two characters early, which is the offset seen on every wrapped line.
         //
@@ -7113,15 +7428,24 @@ const queueH = takeover ? 0 : queuePanelHeight(state);
     const isArgLevel = shown.some((c) => c._argWord);
     shown.forEach((cmd, j) => {
       const selected = off + j === state.menuSel;
-      const mark = selected ? col('❯ ', C.cyan) : '  ';
+      const mark = selected ? col('> ', C.cyan) : '  ';
       const label = isArgLevel && cmd._argWord
         ? (cmd._argPrefix || '') + cmd.name
         : cmd.name;
-      const nameField = col(label, selected ? (C.cyan + C.bold) : C.gray);
+      // The query is compared against the row as the user typed it, minus the leading slash. At the ARGUMENT level
+      // the rows are completion SUFFIXES and the typed text is already in the composer, so there is nothing to
+      // pick out.
+      const typed = (!isArgLevel && state.input && state.input.startsWith('/'))
+        ? state.input.slice(1).toLowerCase()
+        : '';
+      // BOTH THE NAME AND THE DESCRIPTION carry the highlight: the query is compared against the whole row, so a
+      // command that merely CONTAINS the letters is lit in its own name as well as in its text.
+      const nameField = highlightMatches(label, typed, selected);
       const hint = cmd.argumentHint ? col(' ' + cmd.argumentHint, C.gray) : '';
       const pad = Math.max(2, 18 - visualCol(label) - visualCol(hint));
       // `description` for a skill completion, `desc` for a command: both spellings exist, so accept either.
-      const desc = col(cmd.desc || cmd.description || '', C.gray);
+      const descText = cmd.desc || cmd.description || '';
+      const desc = highlightMatches(descText, typed, selected);
       addHit(lines.length, 2, mInner, { kind: 'menuItem', index: off + j });
       lines.push(menuRow(mark + nameField + hint + ' '.repeat(pad) + desc));
     });
@@ -7146,7 +7470,7 @@ const queueH = takeover ? 0 : queuePanelHeight(state);
     shown.forEach((it, j) => {
       const globalIndex = off + j;
       const selected = globalIndex === state.mentionSel;
-      const mark = selected ? col('❯ ', C.cyan) : '  ';
+      const mark = selected ? col('> ', C.cyan) : '  ';
       const rel = String(it.rel || it.label || '');
       const isDir = !!it.isDir;
       // The SELECTED row highlights its WHOLE path; unselected rows use the dim
@@ -8013,6 +8337,9 @@ export function makeState({ cfg, session, opts }) {
     // CLI flags win; otherwise resume whatever the session was left in.
     mode: opts.auto ? 'auto' : opts.yolo ? 'yolo' : ((session && session.mode) || 'ask'),
     reasoning: effort !== 'off',
+    // The grade itself, so `/effort` and the status line agree from the first frame instead of only after the
+    // picker has been opened once.
+    effort: effort === 'on' ? 'on' : effort,
     seenThinking: false,
     expanded: false,
     // A finished list is not restored. A session saved BEFORE this rule existed can still carry one,
@@ -8564,11 +8891,35 @@ export function refreshMenu(state) {
   // matches skill names directly).
   const cmdList = skillIntent
     ? []
-    : allCommands().filter((c) => c.name.startsWith(prefix));
+    : rankByMatch(allCommands(), prefix);
   state.menuList = [...cmdList, ...filteredSkills];
   state.menuSel = Math.min(state.menuSel, Math.max(0, state.menuList.length - 1));
   state.menuOpen = state.menuList.length > 0;
   ensureMenuVisible(state);
+}
+
+/**
+ * The commands whose name CONTAINS `prefix`, the ones that START with it first.
+ *
+ * A prefix test alone hid every command that merely contains the query — `/he` offered `help` and never `theme` —
+ * and the highlight exists to point at exactly those letters, so they have to be in the list. The ordering keeps
+ * the obvious reading: a command that begins with what was typed is the likelier intent, and the matches inside
+ * a name follow it.
+ *
+ * A bare `/` lists everything, in declaration order: every name "contains" the empty string, and ranking by it
+ * would shuffle the list on a keystroke that asked for no filter at all.
+ */
+function rankByMatch(commands, prefix) {
+  if (!prefix) return commands.slice();
+  const q = prefix.toLowerCase();
+  const starts = [];
+  const inside = [];
+  for (const c of commands) {
+    const name = String(c.name || '').toLowerCase();
+    if (name.startsWith(q)) starts.push(c);
+    else if (name.includes(q)) inside.push(c);
+  }
+  return [...starts, ...inside];
 }
 
 // Scroll a fixed-height selection window so the selected row stays visible.
@@ -8681,6 +9032,8 @@ export async function dispatch(cmdRaw, arg, state, cfg, session, h, submit, stdo
       if (key === 'auto_trim') cfg.autoTrim = v;
       if (key === 'auto_update') cfg.autoUpdate = v;
       if (key === 'calm_mode') cfg.calmMode = v;
+      if (key === 'title_display') cfg.titleDisplay = v;
+      if (key === 'auto_title') cfg.autoTitle = v;
       if (key === 'swarm_mode') cfg.swarm = v;
       if (key === 'tool_allow_external_paths') cfg.allowExternal = v;
       if (key === 'sampling' && !v) {
@@ -8735,7 +9088,6 @@ export async function dispatch(cmdRaw, arg, state, cfg, session, h, submit, stdo
     if (key === 'focus_instructions') cfg.focusInstructions = raw;
     if (key === 'swarm_instructions') cfg.swarmInstructions = raw;
     if (typeof renderFrameArg === 'function') renderFrameArg();
-    return true;
     return true;
   }
 
@@ -9525,7 +9877,8 @@ export async function dispatch(cmdRaw, arg, state, cfg, session, h, submit, stdo
         saveSession(session);
       }
       
-      state.chat = [];
+      // A NEW SESSION OPENS THE SAME WAY STARTUP DOES — with the mark, first.
+      state.chat = startupChat(undefined, { cfg, workspace: state.workspace || cfg.workspace });
       Object.assign(session, { id: sess.newId(), title: '', messages: [], createdAt: Date.now(), rounds: 0, steps: 0, lastTurnMs: 0 });
       // A NEW SESSION HAS NO HISTORY. The list is per session now, so leaving the previous one in place would
       // offer prompts from the conversation that was just abandoned.
@@ -9808,7 +10161,11 @@ export async function dispatch(cmdRaw, arg, state, cfg, session, h, submit, stdo
       // argument keeps the old "go back N prompts" behaviour, so scripts and muscle
       // memory are unaffected.
       const argStr = String(raw || '').trim();
-      if (!argStr || !/^\d+$/.test(argStr)) {
+      if (argStr && (!/^\d+$/.test(argStr) || Number(argStr) < 1 || Number(argStr) > promptIdx.length)) {
+        appErr(`Usage: /rewind [1-${promptIdx.length}]`);
+        return;
+      }
+      if (!argStr) {
         if (!promptIdx.length) { app('Nothing to undo.'); return; }
         const items = promptIdx.map((mi, k) => {
           const text = String(msgs[mi].content == null ? '' : msgs[mi].content).replace(/\s+/g, ' ').trim();
@@ -9868,19 +10225,15 @@ export async function dispatch(cmdRaw, arg, state, cfg, session, h, submit, stdo
           ci = j;
         }
         if (ci >= cur.length) { app('Nothing to undo.'); return; }
-        const removed = cur.slice(ci);
-        // TRUNCATE THE MODEL'S CONTEXT, not just the transcript on screen.
-        //
-        // `state.chat` is what the user sees; `session.messages` is what the model is sent. This used to
-        // shorten only the former, so /undo looked complete while the withdrawn prompt stayed in the
-        // request — and the model kept acting on text the user believed they had removed. Measured: after
-        // undoing a prompt that deleted a block of words, the next request still carried the deletion.
-        //
-        // `session.messages` is the array the agent sends, so it is the one that has to be cut. The
-        // `_ledger` is rebuilt from it on the next turn (see sync), and the cached prefix is dropped so a
-        // stale token count cannot describe a shorter history.
+        // Truncate the model's context AND rebuild the displayed transcript from that point. The two have different
+        // row counts because the transcript also contains receipts, notices and shell commands; slicing it by the
+        // number of removed model messages leaves rows from the discarded turn on screen.
         session.messages = cur.slice(0, ci);
-        state.chat = state.chat.slice(0, Math.max(0, state.chat.length - removed.length));
+        // Transcript-only rows and tool receipts do not correspond one-to-one with model messages. Reconstruct
+        // from the truncated session rather than dropping a guessed number of painted rows from its tail.
+        session.transcript = (session.transcript || []).filter((ev) => Number(ev.anchor) < ci);
+        session.shellHistory = (session.shellHistory || []).filter((ev) => Number(ev.anchor) < ci);
+        state.chat = reconstructChat(session);
         if (state.agent && state.agent._ledger) {
           try { state.agent._ledger.reset(); } catch { /* best-effort */ }
         }
@@ -9906,6 +10259,21 @@ export async function dispatch(cmdRaw, arg, state, cfg, session, h, submit, stdo
         renderFrame();
       };
       confirmUndo(count, `the last ${count} prompt(s)`, () => doUndo(count));
+      return;
+    }
+    case 'auto-title': {
+      const a = raw.trim().toLowerCase();
+      let want;
+      if (a === 'on') want = true;
+      else if (a === 'off') want = false;
+      else if (a === '') { app(`Auto title: ${cfg.autoTitle === false ? 'off' : 'on'}. /auto-title [on|off]`); return; }
+      else { appErr('Usage: /auto-title [on|off]'); return; }
+      cfg.autoTitle = want;
+      try { setConfigString('auto_title', want ? 'true' : 'false'); }
+      catch (e) { appErr(`Could not save this setting: ${e.message} — it applies to this session only.`); }
+      app(want
+        ? 'Auto title: ON — the first message names the session.'
+        : 'Auto title: OFF — the name comes only from /title.');
       return;
     }
     case 'title': {
@@ -10719,6 +11087,78 @@ export async function dispatch(cmdRaw, arg, state, cfg, session, h, submit, stdo
       sayRich(lines.join('\n'));
       return;
     }
+    case 'stats': {
+      // WHAT THE SESSION HAS DONE, not what it has cost.
+      //
+      // `/usage` answers "how many tokens", `/cost` answers "how much money", `/context` answers "what fills the
+      // window". None of them answers the question someone actually asks at the end of a long run — how much work
+      // happened, and where. That is this: turns, tool calls by name, the files that were touched, and the time.
+      const msgs = session.messages || [];
+      const g = C.gray, w = C.white, b = C.bold;
+
+      // USER PROMPTS, by the same test `/undo` uses — the harness injects `role: 'user'` notes that are not prompts.
+      const prompts = msgs.filter((m) => isRealUserPrompt(m)).length;
+      const assistants = msgs.filter((m) => m && m.role === 'assistant').length;
+
+      // TOOL CALLS BY NAME. Only file tools count towards "files touched": a Read path is not a file the session
+      // changed, while an Edit, Write or NotebookEdit path is. Shell commands may change files too, but cannot be
+      // inferred reliably from the command string, so this count makes no claim about them.
+      const byTool = new Map();
+      const files = new Set();
+      for (const m of msgs) {
+        if (!m || !Array.isArray(m.toolCalls)) continue;
+        for (const tc of m.toolCalls) {
+          const name = tc && tc.name ? String(tc.name) : '(unknown)';
+          byTool.set(name, (byTool.get(name) || 0) + 1);
+          if (['Edit', 'Write', 'NotebookEdit'].includes(name)) {
+            const p = tc && tc.args && (tc.args.path || tc.args.file_path || tc.args.notebook_path);
+            if (typeof p === 'string' && p) files.add(p);
+          }
+        }
+      }
+      const toolTotal = [...byTool.values()].reduce((a, n) => a + n, 0);
+
+      const lines = [w + b + 'Session summary' + C.reset];
+      const row = (label, value, note) => {
+        lines.push('  ' + g + label.padEnd(15) + C.reset + w + value + C.reset
+          + (note ? g + '  ' + note + C.reset : ''));
+      };
+      row('title', String(session.title || '(untitled)'));
+      row('started', session.createdAt ? new Date(session.createdAt).toLocaleString() : '(unknown)');
+      row('prompts', fmtCount(prompts), `${fmtCount(assistants)} assistant repl${assistants === 1 ? 'y' : 'ies'}`);
+      row('turns', fmtCount(state.rounds || 0), `${fmtCount(state.steps || 0)} step(s)`);
+      row('tool calls', fmtCount(toolTotal), `${byTool.size} distinct tool(s)`);
+      if (state.lastTurnMs) row('last turn', `${(state.lastTurnMs / 1000).toFixed(1)}s`);
+
+      if (byTool.size) {
+        lines.push('');
+        lines.push(w + b + 'Tools used' + C.reset);
+        // MOST-USED FIRST: a list in call order is a history of the session, which the transcript already is.
+        for (const [name, n] of [...byTool.entries()].sort((a, c) => c[1] - a[1])) {
+          row(name, fmtCount(n));
+        }
+      }
+
+      if (files.size) {
+        lines.push('');
+        lines.push(w + b + 'Files touched' + C.reset + g + `  (${files.size})` + C.reset);
+        // SORTED, because the set is built from calls that can repeat a path; the count is what matters, not order.
+        for (const f of [...files].sort()) lines.push('  ' + w + f + C.reset);
+      }
+
+      const u = state.usage || {};
+      if (u.calls) {
+        lines.push('');
+        lines.push(w + b + 'Spend' + C.reset);
+        row('requests', fmtCount(u.calls));
+        row('tokens', fmtCount((u.input || 0) + (u.output || 0)),
+          `${fmtCount(u.input || 0)} in · ${fmtCount(u.output || 0)} out`);
+        row('est. cost', formatCost(usageCost(u, modelCost(cfg))));
+      }
+      sayRich(lines.join('\n'));
+      return;
+    }
+
     case 'cost': {
       // What this session has spent, at the CURRENT model's rates. The token totals
       // come from the provider's own accounting (`usage` events); the prices come
@@ -12432,6 +12872,22 @@ export async function dispatch(cmdRaw, arg, state, cfg, session, h, submit, stdo
       return;
     }
 
+    case 'vim': {
+      // An external editor needs the actual terminal, not the TUI's alternate screen. The host owns the TTY and
+      // restores its mouse/keyboard modes afterwards; dispatch only transfers the composer text.
+      if (!h.editComposerExternal) { appErr('External editor is unavailable in this session.'); return; }
+      // The command itself is consumed by submit before dispatch; the editor starts from an empty buffer and
+      // creates its file only when the user writes it.
+      const result = h.editComposerExternal('');
+      if (result.saved) {
+        state.input = result.text;
+        state.caret = state.input.length;
+      }
+      if (!result.ok) appErr(result.error);
+      renderFrame();
+      return;
+    }
+
     case 'reload': {
       try {
         // Full reload: re-read config AND re-load plugins, without restarting the process.
@@ -12759,6 +13215,33 @@ export async function dispatch(cmdRaw, arg, state, cfg, session, h, submit, stdo
       });
       return;
     }
+    case 'review': {
+      // Ask the model to inspect the repository rather than handing it a truncated snapshot: Git's patch omits
+      // untracked files, and a fixed character limit can silently exclude the change that matters.
+      const cwd = state.cwd || cfg.workspace || process.cwd();
+      if (!gitmod.isRepo(cwd)) { appErr(`Not a git repository: ${cwd}`); return; }
+      const stagedOnly = /--staged|--cached/.test(raw);
+      const target = String(raw || '').replace(/--staged|--cached/g, '').trim();
+      const status = gitmod.status(cwd);
+      if (!status.ok) { appErr(`git status failed: ${status.error}`); return; }
+      const relevant = target ? status.entries.filter((e) => e.path === target || e.path.startsWith(target + '/')) : status.entries;
+      if (!relevant.length) { app('No uncommitted changes to review.'); return; }
+      if (stagedOnly && !relevant.some((e) => e.x !== ' ' && e.x !== '?')) {
+        app('No staged changes to review.'); return;
+      }
+      const scope = stagedOnly ? 'staged changes' : 'working tree changes, including staged and untracked files';
+      const pathHint = target ? `Limit the review to ${JSON.stringify(target)}. ` : '';
+      const statusLines = relevant.map((e) => `${e.x}${e.y} ${e.path}`).join('\n');
+      await submit(
+        `Review the ${scope} in ${cwd}. ${pathHint}Run git status and inspect the complete relevant diffs, `
+        + `then read surrounding code where needed. Inspect untracked files directly because git diff omits them. `
+        + `Status:\n${statusLines}\n\n`
+        + `Report only real bugs, broken edge cases and security issues, with file and line. Do not list style `
+        + `preferences or restate the diff. If the changes are sound, say so in one line. Do not modify files.`,
+      );
+      return;
+    }
+
     case 'commit': {
       const cwd = state.cwd || cfg.workspace || process.cwd();
       if (!gitmod.isRepo(cwd)) { appErr(`Not a git repository: ${cwd}`); return; }
@@ -13353,6 +13836,12 @@ function setEffort(state, cfg, value) {
   state.effort = value;
   state.reasoning = !!value && value !== 'off';
   cfg.effort = state.reasoning ? value : '';
+  // WRITE IT DOWN, or the choice dies with the process.
+  //
+  // `/effort` used to change only `state` and `cfg`, so the next launch re-read `effort` from config.toml and got
+  // the old value — the picker showed the old grade and the model ran at it. `/settings` writes through
+  // `applySetting`, which persists; the command has to do the same.
+  try { setConfigString('effort', cfg.effort || 'off'); } catch { /* read-only config: the in-memory value still applies */ }
 }
 
 function registerProvider(state, cfg, h, name, baseUrl, apiKey, protocol, typeLabel, known, catalogId) {
@@ -13607,38 +14096,53 @@ export function tokenize(str) {
       continue;
     }
     if (c === ESC) {
-      const ku = /^\x1b\[(\d+)(?:;(\d+))?(?::\d+)?u/.exec(str.slice(i));
+      // `CSI code;modifiers:event-type u` — the event type is 1 press, 2 repeat, 3 release. Terminals that do not
+      // send it omit the `:n`, which is why it is optional.
+      const ku = /^\x1b\[(\d+)(?:;(\d+))?(?::(\d+))?u/.exec(str.slice(i));
       if (ku) {
         const cp = parseInt(ku[1], 10);
         const mod = ku[2] ? parseInt(ku[2], 10) - 1 : 0;
         const shift = (mod & 1) !== 0, alt = (mod & 2) !== 0, ctrl = (mod & 4) !== 0;
-        if ((cp === 13 || cp === 10) && shift) { out.push({ key: 'newline' }); i += ku[0].length; continue; }
-        if (cp === 13 || cp === 10) { out.push({ key: 'enter' }); i += ku[0].length; continue; }
+        // A RELEASE AND A HELD-DOWN REPEAT ARE NOT THE SAME PRESS.
+        //
+        // Without this, a key that arrives twice quickly — two taps — looks exactly like one held key, and the
+        // movement speeds up as if the user were holding it. The event type says which it is: `repeat` marks the
+        // terminal's own auto-repeat, `release` means the key came back up, `press` is a real hit.
+        const eventType = ku[3] ? parseInt(ku[3], 10) : 1;
+        if (eventType === 3) { i += ku[0].length; continue; }
+        // `held` is true only for the terminal's auto-repeat. A caller that accelerates on a held key uses it; two
+        // quick taps arrive as two presses and stay two steps.
+        const held = eventType === 2;
+        // BOTH MODIFIERS MEAN "NEW LINE, NOT SEND". Shift+Enter is the habit from most editors and Ctrl+Enter the
+        // one from chat clients; on a terminal that swallows Shift+Enter into a plain CR, Ctrl still arrives
+        // distinct, so offering both costs nothing and rescues that case.
+        if ((cp === 13 || cp === 10) && (shift || ctrl)) {
+          out.push(held ? { key: 'newline', held: true } : { key: 'newline' });
+          i += ku[0].length; continue;
+        }
+        if (cp === 13 || cp === 10) {
+          out.push(held ? { key: 'enter', held: true } : { key: 'enter' });
+          i += ku[0].length; continue;
+        }
         if (cp === 9) { out.push({ key: shift ? 'shift-tab' : 'tab' }); i += ku[0].length; continue; }
         if (cp === 27) { out.push({ key: 'escape' }); i += ku[0].length; continue; }
+        // MODIFIER EVENTS ARE NOT CHARACTERS.
+        //
+        // The terminal reports Shift/Alt/Ctrl being pressed or released on their own, as code points 0xE061-0xE06C
+        // (left/right shift, alt, ctrl, super, hyper, meta). They arrive only because the event-type bit was asked
+        // for. Treating them as keyboard input is what made a long press produce ESC: the report was fed back into
+        // the parser as if it were a fresh key.
+        if (cp >= 0xE05F && cp <= 0xE06D) { i += ku[0].length; continue; }
+        // NOTHING ELSE IN THE PRIVATE USE AREA IS A KEY.
+        //
+        // Arrows, Home and End do NOT come through here: the protocol encodes them as `CSI 1;mods A|B|C|D|H|F`, which
+        // the legacy `csiName` branch above already handles. An earlier attempt guessed Private-Use code points for
+        // them (0xE000-0xE015) and mapped Home to the wrong one, so pressing Home produced Escape.
         if (!ctrl && !alt && cp >= 32) {
-          out.push({ ch: String.fromCodePoint(cp) });
+          out.push(held ? { ch: String.fromCodePoint(cp), held: true } : { ch: String.fromCodePoint(cp) });
           i += ku[0].length; continue;
         }
-        // Shift+Arrow / Shift+Home / Shift+End: the caret MOVES while extending a
-        // selection. Emitted as their own tokens so the composer can tell them
-        // apart from the plain arrows (which scroll the transcript).
-        if (shift && !ctrl && !alt && cp >= 0xE000 && cp < 0xE100) {
-          const arrows = { 0xE000: 'up', 0xE001: 'down', 0xE003: 'left', 0xE002: 'right' };
-          const a = arrows[cp];
-          if (a) { out.push({ key: 'shift-' + a }); i += ku[0].length; continue; }
-        }
-        // Ctrl+Arrow (CSI-u form) -> c-up / c-down / c-left / c-right, matching the
-        // legacy CSI path above so both encodings behave the same.
-        if (ctrl && !shift && !alt && cp >= 0xE000 && cp < 0xE100) {
-          const arrows = { 0xE000: 'up', 0xE001: 'down', 0xE003: 'left', 0xE002: 'right' };
-          const a = arrows[cp];
-          if (a) { out.push({ key: 'c-' + a }); i += ku[0].length; continue; }
-        }
-        if (shift && !ctrl && !alt && (cp === 0xE014 || cp === 0xE015)) {
-          out.push({ key: cp === 0xE014 ? 'shift-home' : 'shift-end' });
-          i += ku[0].length; continue;
-        }
+        // Ctrl+Arrow comes as `CSI 1;5A|B|C|D` and is handled by `csiName` above, like the plain arrows.
         // Fall back for terminals that send the legacy CSI form with a `2` modifier
         // (handled in csiName) — nothing to do here.
         if (ctrl && shift && !alt) {
@@ -13698,13 +14202,13 @@ export function tokenize(str) {
           continue;
         }
         let j = i + 2;
-        // Scan the whole parameter run: digits, `;` separators, and a leading `?`
-        // (private mode). It used to scan DIGITS ONLY, so `1;5A` (Ctrl+Up) stopped
-        // at the `;`, `fin` became `;`, and the `!/[A-Za-z~]/` guard below aborted
-        // the sequence — Ctrl+Arrow/Shift+Arrow sent in the legacy CSI form were
-        // silently DROPPED. The `;`-parameter parsing further down was unreachable.
-        while (j < str.length && (str[j] >= '0' && str[j] <= '9' || str[j] === ';')) j++;
-        if (str[j] === '?') { j++; while (j < str.length && (str[j] >= '0' && str[j] <= '9' || str[j] === ';')) j++; }
+        // THE SCAN MUST STOP AT THE FINAL BYTE, NOT AT A `:`.
+        //
+        // With event types enabled the parameter run is `1;1:2` followed by the final byte, so a scan for digits
+        // and `;` only stopped on the `:`, `fin` became `:` and the guard below aborted the sequence — every arrow
+        // that carried an event type was silently dropped.
+        while (j < str.length && (str[j] >= '0' && str[j] <= '9' || str[j] === ';' || str[j] === ':')) j++;
+        if (str[j] === '?') { j++; while (j < str.length && (str[j] >= '0' && str[j] <= '9' || str[j] === ';' || str[j] === ':')) j++; }
         const fin = str[j];
         if (fin === undefined || !/[A-Za-z~]/.test(fin)) break;
         const rawParams = str.slice(i + 2, j);
@@ -13716,8 +14220,22 @@ export function tokenize(str) {
         const mod = modStr ? parseInt(modStr, 10) - 1 : 0;
         const shift = (mod & 1) !== 0, ctrl = (mod & 4) !== 0;
         const base = csiName(params, fin);
+        // THREE STATES, NOT A BOOLEAN. `undefined` means the terminal did not report an event type at all — a
+        // legacy terminal — so the caller keeps its time-gap guess. `3` is a release and produces no key. Anything
+        // else produces a key, marked `held` only for the terminal's own auto-repeat (`2`).
+        //
+        // Collapsing this to a boolean was the bug: press (1) and release (3) both came out false, so a real
+        // press was dropped as if the key had come back up.
+        const evStr = (rawParams.match(/:(\d+)/) || [])[1];
+        const eventType = evStr ? parseInt(evStr, 10) : undefined;
+        const modTag = (key) => {
+          if (eventType === 3) return null;
+          if (eventType === undefined) return { key };
+          return eventType === 2 ? { key, held: true } : { key };
+        };
         if (shift && !ctrl && ['up', 'down', 'left', 'right', 'home', 'end'].includes(base)) {
-          out.push({ key: 'shift-' + base });
+          const tok = modTag('shift-' + base);
+          if (tok) out.push(tok);
           i = j + 1;
           continue;
         }
@@ -13726,11 +14244,13 @@ export function tokenize(str) {
         // own token so the key handler can give it a distinct action (scroll the
         // output area).
         if (ctrl && !shift && ['up', 'down', 'left', 'right', 'home', 'end'].includes(base)) {
-          out.push({ key: 'c-' + base });
+          const tok = modTag('c-' + base);
+          if (tok) out.push(tok);
           i = j + 1;
           continue;
         }
-        out.push({ key: base });
+        const plain = modTag(base);
+        if (plain) out.push(plain);
         i = j + 1;
       } else if (str[i + 1] === 'O') {
         // SS3: the application-cursor form of the arrows and function keys.
@@ -13836,7 +14356,7 @@ async function runTurn(deps, text, opts = {}, viewArg) {
     // `bubbleText` overrides the row drawn in the transcript. A SKILL activation has
     // already drawn its own card (see dispatch), so it passes the user's args here
     // only to feed the MODEL — with no args that is '', and a user bubble for an
-    // empty string would show a blank `❯` row under the card.
+    // empty string would show a blank `>` row under the card.
     const bubble = opts.bubbleText != null ? opts.bubbleText : text;
     if (!asSystem && String(bubble).trim()) viewCur.addChat({ role: 'user', text: bubble, _conv: true });
     // Fresh buffer for this turn's plan-tag split (see appendAssistant).
@@ -13860,7 +14380,8 @@ async function runTurn(deps, text, opts = {}, viewArg) {
     // request on every turn of a session the user never wanted named.
     const TITLE_ATTEMPT_LIMIT = 3;
     if (state.titleAttempts == null) state.titleAttempts = 0;
-    const needsTitle = !!session && !session.title && state.titleAttempts < TITLE_ATTEMPT_LIMIT;
+    const needsTitle = !!session && cfg.autoTitle !== false
+      && !session.title && state.titleAttempts < TITLE_ATTEMPT_LIMIT;
     state.titleAttempts++;
     state.running = true;
     // Pick the Working… wording ONCE for this turn, so it does not change while
@@ -14800,6 +15321,17 @@ const agents = readAgentsMd(state.cwd || state.workspace || cfg.workspace, state
             //     ↳ File written: a.txt (1372 bytes)
             // with two markers for one body.
             bodyOnToolRow: e.name === 'Write' && !!(entry && entry.streamContent),
+            // The path a Read result came from, so the renderer can pick a syntax highlighter for its numbered
+            // lines. Read is the one tool whose output IS a file's contents; everything else stays plain.
+            //
+            // The path is on the TOOL row, not on this one: the renderer sees the result message and the tool
+            // message separately, and the tool message is where the arguments live.
+            readPath: e.name === 'Read' && entry && entry.toolArgs
+              ? (entry.toolArgs.path || entry.toolArgs.file_path || '')
+              : '',
+            // The tool's NAME, so the renderer can tell a Read from a Bash without looking at the arguments. The
+            // result message did not carry it, which is why the Read rows were drawn uncoloured.
+            toolName: e.name,
             _conv: true,
 });
           if (entry && !isSwarm) {
@@ -15351,6 +15883,9 @@ export async function startTUI(opts) {
   // empty `messages` and was restored as a blank screen.
   if (session && ((session.messages && session.messages.length) || (session.shellHistory || []).length)) {
     state.chat = reconstructChat(session);
+  } else {
+    // THE STARTUP MARK goes FIRST — see `startupChat`.
+    state.chat = startupChat(undefined, { cfg, workspace: cfg.workspace });
   }
 
 
@@ -15875,7 +16410,74 @@ export async function startTUI(opts) {
     // captured once that frame is on the terminal, not before it.
     state._frameTickAt = getTerminalFlushTick();
   }
-  function renderFrame() { paintNow(); }
+  // The session's name, mirrored onto `state` for the frame composer.
+  //
+  // `composeFrame` is a module-level function and has no session to read the title from, so the one place that
+  // owns the session copies it across before each frame. Doing it here rather than at every mutation means a title
+  // changed by `/rename`, by the auto-namer or by loading a session all show up without each having to know.
+  function renderFrame() {
+    state.sessionTitle = (session && session.title) || '';
+    // `title_display` is read here for the same reason: the composer is module-level, and the band is drawn from
+    // `state` alone. Off means the two rows go back to the transcript rather than being drawn as an empty strip.
+    state.titleDisplay = cfg.titleDisplay !== false;
+    paintNow();
+  }
+  function editComposerExternal(text) {
+    // Vim creates the file only when the buffer is written. Opening a path that does NOT exist gives the user a
+    // genuinely empty buffer, and the file's appearance afterwards IS the save signal: no pre-created file can
+    // carry the typed "/vim" command into the editor, and there is no swap-file prompt from an earlier run.
+    const editor = String(process.env.VISUAL || process.env.EDITOR || '').trim();
+    const candidates = editor ? [editor] : ['vim', 'nvim', 'vi'];
+    const chosen = candidates.find((name) => {
+      if (/\s/.test(name)) return true;
+      return cp.spawnSync(process.platform === 'win32' ? 'where' : 'which', [name], { stdio: 'ignore' }).status === 0;
+    });
+    if (!chosen) return { ok: false, error: 'No editor found. Set $EDITOR or install vim.' };
+    const dir = os.tmpdir();
+    const base = `hncode-compose-${process.pid}-${Date.now()}-${Math.random().toString(36).slice(2)}.md`;
+    const tmp = path.join(dir, base);
+    const swp = path.join(dir, `.${base}.swp`);
+
+    let result;
+    try {
+      // Vim inherits a cooked terminal. Leaving stdin raw makes its own line discipline and escape handling fail.
+      try { if (wasRaw) stdin.setRawMode(false); } catch { /* best effort */ }
+      stdout.write('\x1b[<u\x1b[?2004l\x1b[?1006l\x1b[?1003l\x1b[?1002l\x1b[?1000l');
+      stdout.write(alternateScreen(false) + showCursor());
+      const child = cp.spawnSync(chosen, [tmp], { stdio: 'inherit', shell: /\s/.test(chosen) });
+      if (child.error || child.status !== 0) {
+        result = { ok: false, error: child.error?.message || `Editor exited with status ${child.status}.` };
+      } else if (fs.existsSync(tmp)) {
+        // The path did not exist when Vim started, so its existence means the buffer was written.
+        const edited = fs.readFileSync(tmp, 'utf8').replace(/\r\n/g, '\n').replace(/\n$/, '');
+        result = { ok: true, saved: true, text: edited };
+      } else {
+        // :q with no write — keep the composer exactly as it was.
+        result = { ok: true, saved: false, text: String(text || '') };
+      }
+    } catch (e) {
+      result = { ok: false, error: `Editor failed: ${e.message}` };
+    } finally {
+      try { fs.unlinkSync(tmp); } catch { /* temporary file */ }
+      try { fs.unlinkSync(swp); } catch { /* Vim removes its own swap file on a clean exit */ }
+      try { if (wasRaw) stdin.setRawMode(true); } catch { /* best effort */ }
+      stdout.write('\x1b[?1049h');
+      stdout.write(clearScreen());
+      stdout.write('\x1b[?2004h');
+      if (wants('click', caps.mouseClick) || wants('drag', caps.mouseDrag)) {
+        stdout.write('\x1b[?1006h');
+        if (wants('click', caps.mouseClick)) stdout.write('\x1b[?1000h');
+        if (wants('drag', caps.mouseDrag)) stdout.write('\x1b[?1002h');
+      }
+      if (wants('hover', caps.mouseHover)) stdout.write('\x1b[?1003h');
+      if (process.env.HNCODE_NO_KITTY_KEYS !== '1' && kittyKeysUsable()) stdout.write('\x1b[>3u');
+      stdout.write(hideCursor());
+      resetCellFrame();
+      resetShownImages();
+      state._forceRepaint = true;
+    }
+    return result;
+  }
   // Paint the pending frame NOW, if there is one.
   //
   // The mouse handlers read geometry that `composeFrame` produced — `_bodyScreenTop` for
@@ -16096,6 +16698,37 @@ export async function startTUI(opts) {
     state.mentionSel = 0;
     renderFrame();
     return true;
+  }
+
+  /**
+   * Rename the session from the title band.
+   *
+   * A one-field form through the same popup path every other editor uses: the title bar is chrome, and typing into it
+   * in place would mean a second input mode with its own caret, Escape handling and hitboxes. The form has all three.
+   *
+   * Saving writes `session.title` — the field the session file and the auto-namer both use — so there is one name,
+   * not a copy that could drift.
+   */
+  function openTitleEditor() {
+    if (!session) return;
+    openForm({
+      title: 'Session title',
+      fields: [{ key: 'title', label: 'Title', value: session.title || '' }],
+      type: null,
+      hideType: true,
+      labelW: 8,
+      hint: 'Enter save · Esc cancel · empty clears the name',
+      onSubmit: (values) => {
+        session.title = String((values && values.title) || '').slice(0, 200);
+        state.sessionTitle = session.title;
+        try { saveSession(session); } catch { /* the next save carries it */ }
+        // The terminal's title belongs to the session, so renaming here has to reach it too — otherwise the tab
+        // keeps the old name until something else happens to write it.
+        try { writeWindowTitle(session, stdout); } catch { /* the title is decoration */ }
+        renderFrame();
+      },
+    });
+    renderFrame();
   }
 
   function openForm(spec) {
@@ -17113,12 +17746,16 @@ export async function startTUI(opts) {
   // looked like the name had been lost. The write has to come after the alternate screen is
   // entered: a window title set before it belongs to the previous screen's frame.
   writeWindowTitle(session, stdout);
-  // Kitty keyboard protocol. Great when supported (finer key reporting), but a
-  // terminal that does not implement `>1u` reacts badly to it (dropped/mangled
-  // input) — so it is enabled only when the probe heard the terminal speak it.
-  // `caps.kitty === null` (nothing answered) keeps the old default of ON, so a
-  // terminal that simply says nothing is treated exactly as before.
-  if (process.env.HNCODE_NO_KITTY_KEYS !== '1' && kittyKeysUsable()) stdout.write('\x1b[>1u');
+  // `>3u` = DISAMBIGUATE (1) + REPORT EVENT TYPES (2).
+  //
+  //   0b1      disambiguate: Shift+Enter arrives as CSI 13;2u instead of a bare CR
+  //   0b10     report repeat and release, so a held key is distinguishable from two quick taps
+  //
+  // BIT 0b1000 IS DELIBERATELY NOT REQUESTED. It makes the terminal report EVERY key as an escape code, including
+  // plain text — and a terminal that does that stops sending the character and sends the key position plus
+  // modifiers instead. Without a full layout-aware decoder here, `?` came back as `/` (the same physical key
+  // without Shift) and Backspace as a space. Text must keep arriving as text.
+  if (process.env.HNCODE_NO_KITTY_KEYS !== '1' && kittyKeysUsable()) stdout.write('\x1b[>3u');
   // Mouse modes, enabled per mode and only when the terminal said it KNOWS that mode.
   //
   // THE PROBE IS THE POINT. These sequences were written unconditionally, so a terminal that does not
@@ -17633,8 +18270,8 @@ export async function startTUI(opts) {
         const t = state._lastMouse;
         const clickCol = t ? (t.col || 1) - 1 : 1;
         // The column is measured from the row's PREFIX, because `composerTextIndexAt`
-        // subtracts `preWidth` itself. The row is ` |❯ text`: 0-based 0 is CPAD, 1 the wall,
-        // 2-3 the `❯ ` prefix, and the text starts at 5. For text[i] the terminal column is
+        // subtracts `preWidth` itself. The row is ` |> text`: 0-based 0 is CPAD, 1 the wall,
+        // 2-3 the `> ` prefix, and the text starts at 5. For text[i] the terminal column is
         // 6 + i (1-based), so `clickCol` is 5 + i and this must pass 2 + i — an offset of 3.
         const colInContent = Math.max(0, clickCol - 3);
         const idx = composerTextIndexAt(layout, hb.rowIdx, colInContent);
@@ -17921,10 +18558,26 @@ export async function startTUI(opts) {
         scrollFromThumb(rowInBody);
         return;
       }
-      // The todo panel's top rule is a resize handle: pressing it starts a drag,
-      // and the panel height follows the pointer (clamped to 1..all todos). This
-      // must come before the transcript-selection arming below, otherwise the
-      // press would start a text selection instead.
+      // THE TITLE BAND HAS TWO CONTROLS, and they must not share a hitbox.
+      //
+      //   the NAME (row 0)   click renames
+      //   the RULE (row 1)   press starts a resize drag
+      //
+      // Both are handled before the panels below and before selection arming, because the band sits above the
+      // transcript: a press there must not start a text selection.
+      const hitTitle = hitAt(t);
+      if (hitTitle && hitTitle.kind === 'titleBar') {
+        openTitleEditor();
+        return;
+      }
+      if (hitTitle && hitTitle.kind === 'titleResize') {
+        state.titleResizeDrag = true;
+        state.titleResizeStart = { row: t.row, rows: titleRowCount(state) };
+        renderFrame();
+        return;
+      }
+      // The todo panel's top rule is a resize handle: pressing it starts a drag, and the panel height follows the
+      // pointer. This has to come before the transcript-selection arming below, or the press starts a selection.
       const hitTodo = hitAt(t);
       if (hitTodo && hitTodo.kind === 'todoResize') {
         state.todoResizeDrag = true;
@@ -17965,6 +18618,10 @@ export async function startTUI(opts) {
       // The todo resize handle gets its own hover flag so its rule lights up.
       const onTodoRule = !!(hb && hb.kind === 'todoResize');
       if (onTodoRule !== state.todoResizeHover) { state.todoResizeHover = onTodoRule; renderFrame(); }
+      // THE BAND LIGHTS UP FOR EITHER OF ITS ROWS. The name and the rule are two controls, but they are one piece
+      // of chrome: highlighting only half of it would read as a rendering fault.
+      const onTitle = !!(hb && (hb.kind === 'titleBar' || hb.kind === 'titleResize'));
+      if (onTitle !== state.titleHover) { state.titleHover = onTitle; renderFrame(); }
       // The queue resize handle also gets a hover flag.
       const onQueueRule = !!(hb && hb.kind === 'queueResize');
       if (onQueueRule !== state.queueResizeHover) { state.queueResizeHover = onQueueRule; renderFrame(); }
@@ -18015,6 +18672,16 @@ export async function startTUI(opts) {
         return;
       }
       if (state.sbDrag) { scrollFromThumb(mouseToCell(t).rowInBody); return; }
+      // Dragging the title rule resizes how many rows of NAME are shown: moving DOWN reveals more of a wrapped
+      // name. The band sits at the top, so this is the opposite direction to the panels below the transcript.
+      if (state.titleResizeDrag) {
+        const start = state.titleResizeStart || { row: t.row, rows: titleRowCount(state) };
+        const delta = (t.row || 1) - start.row;          // down = positive = more rows
+        const need = titleRowsNeeded(state, state.cols || process.stdout.columns || 80);
+        const clamped = Math.max(1, Math.min(need, start.rows + delta));
+        if (clamped !== state.titleRows) { state.titleRows = clamped; renderFrame(); }
+        return;
+      }
       // Dragging the todo rule resizes the panel: moving UP shows more rows.
       if (state.todoResizeDrag) {
         const start = state.todoResizeStart || { row: t.row, rows: todoRowCount(state) };
@@ -18078,6 +18745,15 @@ export async function startTUI(opts) {
       if (state.editor && state.editor.dragging) { editorEndDrag(); return; }
       state._mouseDownPos = null;
       state._composerMouseDown = null;
+      if (state.titleResizeDrag) {
+        // Finish the resize. Keep the hover flag in sync with where the pointer ended up.
+        state.titleResizeDrag = false;
+        state.titleResizeStart = null;
+        const hit = hitAt(t);
+        state.titleHover = !!(hit && (hit.kind === 'titleBar' || hit.kind === 'titleResize'));
+        renderFrame();
+        return;
+      }
       if (state.todoResizeDrag) {
         // Finish the resize. Keep the hover flag in sync with where the pointer is.
         state.todoResizeDrag = false;
@@ -18496,7 +19172,6 @@ export async function startTUI(opts) {
   const repeatState = { key: null, at: 0, run: 0 };
 
   function handleKey(t) {
-    try { fs.appendFileSync(path.join(os.tmpdir(), "kbuf.txt"), "key=" + JSON.stringify(t && (t.ch || t.key)) + " input=" + JSON.stringify(state.input) + "\n"); } catch {} // __KEYBUF_PROBE__
     // A KITTY GRAPHICS REPLY IS NOT A KEYSTROKE. It is the terminal acknowledging an upload (`G i=31;OK`) or
     // reporting that it dropped an image. The token exists so the bytes are CONSUMED rather than typed into the
     // composer; there is nothing to act on yet, because a failed upload is handled by placing the formula as
@@ -18516,21 +19191,22 @@ export async function startTUI(opts) {
       const gap = now - (repeatState.at || 0);
       repeatState.at = now;
       repeatState.key = t.key;
-      // THE BATCH COMES FROM THE GAP, NOT FROM HOW LONG THE KEY HAS BEEN HELD.
+      // THE TERMINAL'S OWN VERDICT WINS WHEN IT GIVES ONE.
       //
-      // Counting the run and batching on its length multiplied twice: a held key already arrives every ~40ms,
-      // so growing the batch to eight made the last event stand for eight MORE deltas on top of the ~25Hz
-      // stream — hundreds of characters a second, and the caret shot past where anyone wanted it. The gap
-      // alone says how fast the terminal repeats, which is the thing to compensate for.
-      //
-      //   140ms+    a deliberate tap                    -> 1
-      //   70-140    a brisk double tap                  -> 2
-      //   35-70     the terminal repeating              -> 3
-      //   under 35  a fast repeat                       -> 4
-      t._repeat = gap >= REPEAT_WINDOW_MS ? 1
-        : gap >= REPEAT_WINDOW_MS / 2 ? 2
-          : gap >= REPEAT_WINDOW_MS / 4 ? 3
-            : 4;
+      // The gap is a guess: two quick taps look exactly like an auto-repeat, and on a terminal that repeats fast
+      // the difference is invisible. With the event-type bit requested (`>3u`) the terminal SAYS which it is —
+      // `repeat` for a held key, `press` for a real hit — so when that flag is present it decides, and the gap is
+      // only the fallback for a terminal that does not report event types.
+      const hasEventType = typeof t.held === 'boolean';
+      if (hasEventType && !t.held) {
+        // A genuine press: one step, however fast it followed the last one.
+        t._repeat = 1;
+      } else {
+        t._repeat = gap >= REPEAT_WINDOW_MS ? 1
+          : gap >= REPEAT_WINDOW_MS / 2 ? 2
+            : gap >= REPEAT_WINDOW_MS / 4 ? 3
+              : 4;
+      }
     } else {
       repeatState.key = null;
       repeatState.at = 0;
@@ -19890,10 +20566,13 @@ export async function startTUI(opts) {
         state.composerSel = null;
         renderFrame();
       } else if (fromMenu) {
-        submit('/' + state.menuList[state.menuSel].name);
+        const commandText = '/' + state.menuList[state.menuSel].name;
+        // Clear before dispatch. submit(forceText) deliberately leaves the composer alone, and clearing after
+        // the call erased whatever an external editor wrote back into it.
         state.input = ''; state.caret = 0;
         state.pastes.clear(); state.pasteCounter = 0;
         state.composerSel = null;
+        submit(commandText);
         renderFrame();
       } else {
         submit();
@@ -20046,7 +20725,7 @@ export async function startTUI(opts) {
   //   * a row's length is `end - start` CHARACTERS, and the caret's column is
   //     measured from that row's `start` (kimi: `cursorCol - vl.startCol`);
   //   * `layout.caretCol` is NOT usable here: it is `1 + prefixWidth +
-  //     displayColumns`, so it mixes in the `❯ ` prefix and counts a double-width
+  //     displayColumns`, so it mixes in the `> ` prefix and counts a double-width
   //     glyph as two. Comparing that against a character length is what made the
   //     caret walk left and right instead of holding its column.
   //
@@ -20313,8 +20992,15 @@ function wheelStep(state, family) {
     }
     state.scroll = 0;
     dropScrollPin(state);   // jump to the tail: reseed the anchor on paint
-    state.running = true;
-    state.startAnim = { start: Date.now() };
+    // A SHELL COMMAND IS NOT THE TURN. `state.running` drives the Working row, the stall timer and the "is the
+    // model still producing" test, so raising it here made an `!ls` typed MID-TURN look like the END of the turn:
+    // the spinner went red while the model was still streaming, and the stream kept arriving into a row the UI had
+    // already settled. Only take the flag when nothing else holds it, and only give it back if this call took it.
+    const tookRunning = state.running !== true;
+    if (tookRunning) {
+      state.running = true;
+      state.startAnim = { start: Date.now() };
+    }
     renderFrame();
 
     let out = '';
@@ -20341,7 +21027,9 @@ function wheelStep(state, family) {
       out = `Error running command: ${e.message}`;
       failed = true;
     } finally {
-      state.running = false;
+      // Only clear the flag this call SET. A turn that was already running keeps it, so its spinner, its stall
+      // timer and its stream all continue as if the shell command had not happened.
+      if (tookRunning) state.running = false;
     }
 
     addChat({ role: 'tool_result', text: out, failed });
@@ -20855,7 +21543,7 @@ function wheelStep(state, family) {
     // The one spawner, so the model's TeamCreate tool and the /team command start the same
     // kind of teammate.
     spawnTeammates,
-    addChat, openPicker, openForm, notice, openPanel, openEditor, openTasksPanel, openRegistryBrowser,
+    addChat, openPicker, openForm, notice, openPanel, openEditor, editComposerExternal, openTasksPanel, openRegistryBrowser,
     // While the side-thread box is open, a typed message goes to the SIDE THREAD, not
     // to the agent — this is the half of kimi's design that makes the box usable:
     // its `sendUserInput` feeds the panel from the ordinary composer, so a follow-up
@@ -21198,6 +21886,11 @@ function wheelStep(state, family) {
     }
     const title = cleanTitle(raw);
     if (!title) return;
+    // THE NAME MUST STILL BE FREE. The naming request takes seconds, and the title band is clickable — a name
+    // typed while this was in flight was overwritten here, which reads as the rename having been ignored. Writing
+    // only onto an UNNAMED session is what makes the band authoritative; `needsTitle` decided the request was
+    // worth making, but it cannot vouch for the state seconds later.
+    if (session.title) return;
     session.title = title;
     try { saveSession(session); } catch { /* the title is cosmetic; never fail a turn over it */ }
     writeWindowTitle(session, stdout);

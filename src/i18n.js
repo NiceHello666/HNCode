@@ -258,11 +258,11 @@ export const MESSAGES = {
   // A copy button reports its own result in place: the label IS the feedback.
   // ---- transcript markers ---------------------------------------------------
   // The glyph the terminal prints in the gutter for each kind of row. They live
-  // here because the terminal and the browser must agree on them: a `❯` in the
-  // terminal and a `❯` in the browser are the same message.
-  'mark.user': { zh: '❯', en: '❯' },
-  'mark.queued': { zh: '❯', en: '❯' },
-  'mark.steer': { zh: '❯', en: '❯' },
+  // here because the terminal and the browser must agree on them: a `>` in the
+  // terminal and a `>` in the browser are the same message.
+  'mark.user': { zh: '>', en: '>' },
+  'mark.queued': { zh: '>', en: '>' },
+  'mark.steer': { zh: '>', en: '>' },
   'mark.bash': { zh: '!', en: '!' },
   'mark.warn': { zh: '⚑', en: '⚑' },
   'mark.thinking': { zh: '●', en: '●' },

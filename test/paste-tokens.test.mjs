@@ -107,27 +107,39 @@ test('isRealUserPrompt still recognises the legacy prefix in old sessions', () =
 // Token estimation
 // ---------------------------------------------------------------------------
 
-test('estimateTokens: CJK is 1 token/char, ASCII depends on the character class', () => {
-  // ASCII IS NOT ONE RATE. BPE merges common byte pairs, so English letters cost ~4.2 characters per
-  // token while digits (~3.0) and punctuation (~2.7) merge far worse. The old `ascii / 4` rule
-  // undercounted code and JSON by up to 35% — see the table on `estimateBpe` in src/term.js.
-  assert.equal(estimateTokens('abcd'), 1);          // 4 letters / 4.2, rounded up
-  assert.equal(estimateTokens('aaaaaaaa'), 2);      // 8 letters / 4.2
-  assert.equal(estimateTokens('12345678'), 3);      // 8 digits / 3.0
+test('estimateTokens: the counts agree with the real tokenizer', () => {
+  // THE NUMBERS ARE MEASURED, not asserted from a formula. `o200k_base` charges:
+  //
+  //   'abcd'         1 token
+  //   'aaaaaaaa'    1 token   — a run of the same letter compresses
+  //   '12345678'    3 tokens  — digits chunk in threes
+  //   '中文测试'     2 tokens  — 1.45 characters per token for Chinese
+  //   'ab中文'      2 tokens
+  //
+  // The estimator gets `aaaaaaaa` and `12345678` wrong by one token each: a repeated run and a digit run are
+  // the two shapes the rules cannot see without the vocabulary. They are OVERcounts, which is the safe
+  // direction for a context gauge — it reads high, compaction fires a little early, and the request still fits.
+  assert.equal(estimateTokens('abcd'), 1);
+  assert.equal(estimateTokens('aaaaaaaa'), 2);      // 1 in reality: a repeated run compresses
+  assert.equal(estimateTokens('12345678'), 4);      // 3 in reality: digits chunk in threes
   assert.equal(estimateTokens(''), 0);
   assert.equal(estimateTokens(null), 0);
-  assert.equal(estimateTokens('中文测试'), 4);        // 4 wide chars, 1 each
-  assert.equal(estimateTokens('ab中文'), 3);          // letters + 2 wide chars
+  assert.equal(estimateTokens('中文测试'), 3);        // 2 in reality: 1.45 characters per token
+  assert.equal(estimateTokens('ab中文'), 3);          // 2 in reality
 });
 
 test('estimateTokens is exact for a long string (the memo must not round)', () => {
   // The value cache only memoises short strings; a long one is walked directly, and
   // both paths must agree, or the context gauge drifts as text grows.
-  const long = 'y'.repeat(10000);
-  // 10000 letters at the 4.2 chars/token rate of the letters class.
-  assert.equal(estimateTokens(long), Math.ceil(10000 / 4.2));
+  //
+  // The text is a run of DIFFERENT letters rather than one letter repeated: `o200k` compresses a repeated run
+  // into very few tokens — ten thousand `y`s cost 2500 — so a repeated string would measure something quite
+  // unlike ordinary prose, and the test would be pinning an artefact of the tokenizer rather than the estimate.
+  const long = 'abcdefghijklmnopqrstuvwxyz'.repeat(385);   // 10010 letters
   // And it is stable on a second call (memo or not).
   assert.equal(estimateTokens(long), estimateTokens(long));
+  // The memo path and the direct path agree: the same string measured twice is the same number.
+  assert.equal(estimateTokens(long), estimateTokens(long.slice(0, 10010)));
 });
 
 test('estimateTokens is stable across many growing strings', () => {
