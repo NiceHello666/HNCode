@@ -3053,6 +3053,14 @@ function messageLines(msg, width, workspace, expanded, spin, pulseStart, rawMode
       // The comment state travels between the rows, so a block comment that opens on one line and closes on the
       // next stays grey all the way down.
       const readLang = msg.readPath ? langForPath(msg.readPath) : null;
+      // THE GUTTER IS ONE WIDTH FOR THE WHOLE BLOCK. The tool sends `N<TAB>text`, and the tab is what used to
+      // place the code — so `1` and `10` started their text at different columns once the tab was expanded.
+      // Padding the NUMBER to the widest one in this block keeps the digits left-aligned and the code aligned
+      // under itself.
+      const numW = shown.reduce((w, ln) => {
+        const m = /^(\d+)\t/.exec(ln);
+        return m ? Math.max(w, m[1].length) : w;
+      }, 0);
       let inComment = false;
       shown.forEach((ln, idx) => {
         const isErr = /^\[error:/.test(ln.trim());
@@ -3070,9 +3078,9 @@ function messageLines(msg, width, workspace, expanded, spin, pulseStart, rawMode
           inComment = painted.inComment;
           // THE SEPARATOR IS A TAB, AND `visualCol` COUNTS A TAB AS ZERO COLUMNS. A terminal advances it to the
           // next stop, so the row was measured several columns short, the terminal wrapped it itself, and the tail
-          // landed on the next row as a fragment — `921d` under a `920`-numbered row is exactly that. A fixed
-          // two-space gap is what the width maths needs and what reads better.
-          const text = `${numbered[1]}  ${painted.text}`;
+          // advances it to the next stop, so the row measured short and the terminal wrapped it itself. The
+          // THE SEPARATOR IS TWO SPACES, NOT A TAB: `visualCol` counts a tab as zero columns while a terminal
+          const text = `${numbered[1].padStart(numW)}  ${painted.text}`;
           // A Read row is TRUNCATED, not wrapped. `wrapAnsiWords` used to fold an overlong line onto a second
           // row, and that second row — padded to full width by the frame, without a line number — was exactly
           // what a differential painter could not reconcile with the previous frame: the leftover glyphs stayed
