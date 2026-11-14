@@ -19871,11 +19871,21 @@ export async function startTUI(opts) {
       if (fg && typeof fg.detach === 'function') {
         const id = fg.detach();
         if (id) {
+          // The hook is gone once the command has been handed to the background: leaving it set made a SECOND
+          // Ctrl+B call `detach` again, get null, and do nothing at all — which read as the shortcut being broken.
+          try { state.agent.ctx._foreground = null; } catch { /* the agent may already be gone */ }
           notice(`Moved to background: ${id}`, 'info');
           renderFrame();
           return;
         }
       }
+      // SAY SO. Ctrl+B with no foreground command used to fall through silently, so there was no way to tell "the
+      // shortcut is broken" from "nothing was running" — and a steer arriving mid-turn made that confusion easy.
+      notice(state.running
+        ? 'Nothing to background — no command is running in the foreground'
+        : 'Nothing to background — the agent is idle', 'error');
+      renderFrame();
+      return;
     }
 
     if (t.key === 'c-s' && !state.editor) {
