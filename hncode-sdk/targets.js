@@ -31,6 +31,14 @@ export const PATCH_TARGETS = [
   "agent.js#canSplitAfter",
   "agent.js#formatEditDiffForModel",
   "agent.js#SYSTEM_PROMPT",
+  "banner.js#BANNER_WIDTH",
+  "banner.js#bannerCells",
+  "banner.js#bannerHeight",
+  "banner.js#bannerLines",
+  "banner.js#bannerScaleFor",
+  "banner.js#bannerShape",
+  "banner.js#bannerWidthAt",
+  "banner.js#SCALE",
   "bootstrap.js#bootstrap",
   "bootstrap.js#markPluginsLoaded",
   "bootstrap.js#pluginsAlreadyLoaded",
@@ -143,6 +151,7 @@ export const PATCH_TARGETS = [
   "config.js#readPersonalPrompt",
   "config.js#readPersonalPromptRaw",
   "config.js#rememberModel",
+  "config.js#removeMemory",
   "config.js#removeProvider",
   "config.js#replaceProviderModels",
   "config.js#resolveConfig",
@@ -235,8 +244,12 @@ export const PATCH_TARGETS = [
   "git.js#summary",
   "git.js#switchBranch",
   "git.js#unstage",
+  "highlight.js#canHighlight",
+  "highlight.js#highlightLine",
+  "highlight.js#langForPath",
   "hooks.js#describeHooks",
   "hooks.js#globalHooksFile",
+  "hooks.js#HOOK_EVENT_HINTS",
   "hooks.js#HOOK_EVENTS",
   "hooks.js#HOOK_TIMEOUT_MS",
   "hooks.js#hookEnv",
@@ -653,6 +666,7 @@ export const PATCH_TARGETS = [
   "term.js#estimateMessageTokens",
   "term.js#estimateRequestOverhead",
   "term.js#estimateTokens",
+  "term.js#estimateTokensByClass",
   "term.js#estimateTokensFloat",
   "term.js#expandTabs",
   "term.js#fit",
@@ -784,6 +798,7 @@ export const PATCH_TARGETS = [
   "tui.js#spinnerFrame",
   "tui.js#splitBlocks",
   "tui.js#startTUI",
+  "tui.js#startupChat",
   "tui.js#STEP_CHARS",
   "tui.js#STEP_MS",
   "tui.js#SWARM_MODE_INSTRUCTION",
@@ -861,7 +876,8 @@ export const PATCH_TARGETS = [
   "web-ws.js#WsConn.close",
   "web-ws.js#WsConn.ping",
   "web-ws.js#WsConn.send",
-  "web.js#startWebServer"
+  "web.js#startWebServer",
+  "wordlist.js#COMMON_WORDS"
 ];
 
 /** Fast membership test for a target string. */
@@ -870,4 +886,4 @@ export const PATCH_TARGET_SET = new Set(PATCH_TARGETS);
 /** True when `target` names a real, patchable symbol. */
 export function isPatchTarget(target) { return PATCH_TARGET_SET.has(String(target)); }
 
-export const GENERATED_FROM = "hncode src/ (78 files, 857 symbols)";
+export const GENERATED_FROM = "hncode src/ (81 files, 873 symbols)";
