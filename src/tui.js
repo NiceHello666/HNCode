@@ -9026,6 +9026,19 @@ export async function dispatch(cmdRaw, arg, state, cfg, session, h, submit, stdo
    * Every surface lands here — `/set`, the /settings browser, and the web's setConfig — so
    * they cannot disagree about what a value means or which keys exist.
    */
+  /**
+   * Fire a TUI-side hook and FORGET it. These are notifications, not decisions: a slow or failing hook must not
+   * hold up a permission prompt, a directory move or a settings save. The config is loaded fresh so an edit made
+   * while the session was running is picked up without a restart.
+   */
+  function fireHook(event, payload, ws) {
+    try {
+      const { hooks } = loadHooks(ws);
+      if (!(hooks[event] || []).length) return;
+      void runShellHooks({ hooks }, event, payload, ws).catch(() => {});
+    } catch { /* a broken hook config is a reason to carry on, not to fail the command */ }
+  }
+
   function applySetting(key, value) {
     const def = SETTING_BY_KEY.get(key);
     if (!def) { appErr(`Unknown setting: ${key}. Try /settings.`); return false; }
@@ -9104,6 +9117,7 @@ export async function dispatch(cmdRaw, arg, state, cfg, session, h, submit, stdo
     if (key === 'plan_instructions') cfg.planInstructions = raw;
     if (key === 'focus_instructions') cfg.focusInstructions = raw;
     if (key === 'swarm_instructions') cfg.swarmInstructions = raw;
+    fireHook('ConfigChange', { key, value: coerced.value, source: 'settings' }, state.workspace || cfg.workspace);
     if (typeof renderFrameArg === 'function') renderFrameArg();
     return true;
   }
@@ -12870,6 +12884,7 @@ export async function dispatch(cmdRaw, arg, state, cfg, session, h, submit, stdo
       // paths against `ctx.cwd || ctx.workspace`, which the agent copies from `cfg`
       // each turn. Moving only the status line left Edit/Read/Bash pointed at the
       // directory being left behind.
+      const prevCwd = state.cwd || cfg.workspace;
       state.cwd = target;
       state.workspace = target;
       cfg.workspace = target;
@@ -12886,6 +12901,7 @@ export async function dispatch(cmdRaw, arg, state, cfg, session, h, submit, stdo
       state.steps = session.steps || 0;
       saveSession(session);
       app(`Session moved to: ${target} (${newSession.id})`);
+      fireHook('CwdChanged', { cwd: target, previous: prevCwd }, target);
       return;
     }
 
@@ -13093,7 +13109,7 @@ export async function dispatch(cmdRaw, arg, state, cfg, session, h, submit, stdo
         return;
       }
       const { hooks, errors } = loadHooks(workspace);
-      const lines = describeHooks({ hooks });
+      const lines = describeHooks({ hooks }, workspace);
       if (errors.length) lines.push('', 'Config problems:', ...errors.map((e) => `  ! ${e}`));
       h.openPanel('hncode — hooks', lines);
       return;
@@ -14791,6 +14807,8 @@ const agents = readAgentsMd(state.cwd || state.workspace || cfg.workspace, state
         // The prompt must NOT touch the composer: the user may already be typing,
         // and only Enter/Esc belong to the prompt.
         state.approvalPending = { toolName, args, desc, resolve, detail };
+        fireHook('PermissionRequest', { toolName, toolArgs: args, prompt: desc }, state.workspace || cfg.workspace);
+        fireHook('Notification', { type: 'permission_prompt', toolName, prompt: desc }, state.workspace || cfg.workspace);
         viewCur.render();
       });
     };
@@ -15252,6 +15270,7 @@ const agents = readAgentsMd(state.cwd || state.workspace || cfg.workspace, state
             // block renders from the moment the swarm is announced. Every item
             // starts "queued" and flips as the tool reports progress.
             if (e.name === 'AgentSwarm') {
+              fireHook('SubagentStart', { description: (e.args && e.args.description) || '', items: (e.args && e.args.items) || [] }, state.workspace || cfg.workspace);
               const a = entry.toolArgs || {};
               entry.swarmDescription = a.description || '';
               entry.swarmModel = a.subagent_type || '';
@@ -15300,6 +15319,7 @@ const agents = readAgentsMd(state.cwd || state.workspace || cfg.workspace, state
               // straight from that payload — no LCS inference, which mis-paired the context rows
               // into `-`/`+` pairs because the two sides had different shapes.
               entry.diff = editDiffRows(e.editDiff);
+              fireHook('FileChanged', { path: e.editDiff.path || (entry.toolArgs && entry.toolArgs.path), change: 'edit' }, state.workspace || cfg.workspace);
             }
             // Hand the counts to the TOOL row (which keeps `+N -N` next to its
             // name) and the diff to the RESULT row (rendered beneath the `↳`).
