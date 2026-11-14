@@ -2758,11 +2758,17 @@ function messageLines(msg, width, workspace, expanded, spin, pulseStart, rawMode
       const MAX_RUN_LINES = expanded ? Infinity : 8;
       const shown = rawLines.slice(-MAX_RUN_LINES); // running: show the newest output
       if (rawLines.length > MAX_RUN_LINES) {
-        out.push({ text: col(`… ${rawLines.length - MAX_RUN_LINES} earlier line(s)`, C.gray), ind: indent, raw: true });
+        const more = col(`… ${rawLines.length - MAX_RUN_LINES} earlier line(s)`, C.gray);
+        out.push({ text: C.termBg + fitAnsi(more.replace(/\x1b\[0m/g, `\x1b[0m${C.termBg}`), bodyW) + C.bgReset, ind: indent, raw: true });
       }
+      // THE TERMINAL SURFACE APPLIES WHILE IT RUNS TOO, not only once the result lands. The row is the same thing
+      // before and after — a command's output — so switching its background on completion made the block jump as
+      // the call finished.
       for (const ln of shown) {
         for (const t of (ln === '' ? [''] : wrapWords(ln, bodyW))) {
-          out.push({ text: col(t, C.gray), ind: indent, raw: true });
+          const painted = col(t, C.gray);
+          const surfaced = painted.replace(/\x1b\[0m/g, `\x1b[0m${C.termBg}`);
+          out.push({ text: C.termBg + fitAnsi(surfaced, bodyW) + C.bgReset, ind: indent, raw: true });
         }
       }
     }
@@ -2824,13 +2830,15 @@ function messageLines(msg, width, workspace, expanded, spin, pulseStart, rawMode
         // and letting it through at full width made the terminal wrap it itself — which pushes every later row down
         // by one and desynchronises the frame, so the screen scrolled while the file was still arriving.
         const room = Math.max(1, width - visualCol(indent) - num.length - 1);
+        // The whole preview sits on the CODE SURFACE, number included, so the block reads as one recessed field.
         if (!writeLang) {
-          out.push({ text: col(`${num} ${fitAnsi(ln, room)}`, C.gray), ind: i === 0 ? '↳ ' : indent, raw: true });
+          out.push({ text: C.codeBg + col(`${num} ${fitAnsi(ln, room)}`.replace(/\x1b\[0m/g, `\x1b[0m${C.codeBg}`), C.gray) + C.bgReset, ind: i === 0 ? '↳ ' : indent, raw: true });
           return;
         }
         const painted = paintCode(ln, writeLang, '', writeInComment);
         writeInComment = painted.inComment;
-        out.push({ text: col(num + ' ', C.gray) + fitAnsi(painted.text, room), ind: i === 0 ? '↳ ' : indent, raw: true });
+          const writeRow = (col(num + ' ', C.gray) + fitAnsi(painted.text, room)).replace(/\x1b\[0m/g, `\x1b[0m${C.codeBg}`);
+          out.push({ text: C.codeBg + writeRow + C.bgReset, ind: i === 0 ? '↳ ' : indent, raw: true });
       });
       const shown = Math.min(lines.length, MAX);
       if (totalLines > shown) out.push({ text: col(`… ${totalLines - shown} more lines, ctrl+o to expand`, C.gray), ind: indent, raw: true });
@@ -2933,6 +2941,11 @@ function messageLines(msg, width, workspace, expanded, spin, pulseStart, rawMode
     // recolouring the transcript, resetting styles mid-row, moving the cursor or
     // clearing the screen over the composer.
     const rawLines = sanitizeText(msg.text).replace(/\r\n/g, '\n').split('\n');
+    // A TAB counts as ZERO columns in our width maths but advances to the next tab stop in a real terminal.
+    // A row containing one was therefore padded short and the terminal kept the old frame's glyphs in the gap —
+    // the "residue" under tool output. Read rows are the exception: their first tab is the line-number separator
+    // and is handled in the Read branch below, where the CONTENT half is expanded too.
+    if (!msg.readPath) for (let k = 0; k < rawLines.length; k++) rawLines[k] = expandTabs(rawLines[k]);
     // Trim blank lines at BOTH ends: commands typically emit a trailing
     // newline, and some tools emit a leading one. A stray blank line would
     // render as a lone "↳ " with no content.
@@ -2995,10 +3008,12 @@ function messageLines(msg, width, workspace, expanded, spin, pulseStart, rawMode
 
         if (!lineBg) {
           // CONTEXT LINES ARE CODE TOO. They are the most of a diff and the part a reader scans to place the
-          // change, so they get the same highlighter with no background.
+          // the change, so they get the same highlighter, on the CODE SURFACE rather than the raw page — a changed
+          // block sits on one recessed field. The +/- rows around it keep their green/red wash.
           const ctxPainted = paintCode(text, d.lang, '', inComment);
           inComment = ctxPainted.inComment;
-          diffRows.push({ text: lead + ctxPainted.text, ind: cont, raw: true });
+          const ctxRow = (lead + ctxPainted.text).replace(/\x1b\[0m/g, `\x1b[0m${C.codeBg}`);
+          diffRows.push({ text: C.codeBg + fitAnsi(ctxRow, bodyW) + C.bgReset, ind: cont, raw: true });
           emitted++;
           continue;
         }
@@ -3047,22 +3062,46 @@ function messageLines(msg, width, workspace, expanded, spin, pulseStart, rawMode
         const numbered = readLang && !isErr ? /^(\d+)\t([\s\S]*)$/.exec(ln) : null;
         if (numbered) {
           // `wrapAnsiWords` measures VISIBLE columns, so the colour codes do not count towards the wrap.
-          const painted = paintCode(numbered[2], readLang, '', inComment);
+          // THE FILE'S OWN INDENTATION IS OFTEN TABS. Left as tabs, `visualCol` counted them as zero columns
+          // while the terminal advanced to the next stop: the row was padded short and the previous frame's
+          // glyphs stayed visible behind it. Expand before measuring, but keep the first tab as the separator
+          // — the regex above already split on it.
+          const painted = paintCode(expandTabs(numbered[2]), readLang, '', inComment);
           inComment = painted.inComment;
           // THE SEPARATOR IS A TAB, AND `visualCol` COUNTS A TAB AS ZERO COLUMNS. A terminal advances it to the
           // next stop, so the row was measured several columns short, the terminal wrapped it itself, and the tail
           // landed on the next row as a fragment — `921d` under a `920`-numbered row is exactly that. A fixed
           // two-space gap is what the width maths needs and what reads better.
           const text = `${numbered[1]}  ${painted.text}`;
-          const wrapped = wrapAnsiWords(text, bodyW);
-          wrapped.forEach((t, i) => {
-            diffRows.push({ text: t, ind: idx === 0 && i === 0 ? pre : cont, raw: true });
-          });
+          // A Read row is TRUNCATED, not wrapped. `wrapAnsiWords` used to fold an overlong line onto a second
+          // row, and that second row — padded to full width by the frame, without a line number — was exactly
+          // what a differential painter could not reconcile with the previous frame: the leftover glyphs stayed
+          // under it as residue. One source line is one display row.
+          //
+          // THE CODE SURFACE: the whole row sits on `codeBg`, one step off the page. The number keeps its grey,
+          // the content keeps its syntax colours, and the wash reaches the right edge. Diff `+`/`-` rows are
+          // NOT affected — they keep their green/red.
+          //
+          // The background has to survive the row's own resets: every syntax token closes with `ESC[0m`, and the
+          // padding `fitAnsi` adds sits AFTER the last one. Re-asserting after each reset — the same trick
+          // `paintCode` uses for a diff wash — keeps the surface on the padding too, so the block reads solid.
+          const surfaced = text.replace(/\x1b\[0m/g, `\x1b[0m${C.codeBg}`);
+          diffRows.push({ text: C.codeBg + fitAnsi(surfaced, bodyW) + C.bgReset, ind: idx === 0 ? pre : cont, raw: true });
           return;
         }
         const wrapped = ln === '' ? [''] : wrapWords(ln, bodyW);
+        // BASH OUTPUT SITS ON THE TERMINAL SURFACE, like text inside a real terminal emulator: the darkest recess
+        // on screen. Other tools keep the plain page background, so a command's output reads as "a terminal ran
+        // this" rather than as an ordinary result. The row keeps its grey text and the surface survives its own
+        // resets the same way the code surface does.
+        const termSurface = msg.toolName === 'Bash' || msg.toolName === 'Shell';
         wrapped.forEach((t, i) => {
-          diffRows.push({ text: t, ind: idx === 0 && i === 0 ? pre : cont, color });
+          if (termSurface) {
+            const surfaced = t.replace(/\x1b\[0m/g, `\x1b[0m${C.termBg}`);
+            diffRows.push({ text: C.termBg + fitAnsi(surfaced, bodyW) + C.bgReset, ind: idx === 0 && i === 0 ? pre : cont, raw: true });
+          } else {
+            diffRows.push({ text: t, ind: idx === 0 && i === 0 ? pre : cont, color });
+          }
         });
       });
       if (visible.length > MAX_RESULT_LINES) {
@@ -4289,16 +4328,22 @@ export function renderChatLines(state, w, viewport) {
     msgLen.set(mem.msgLen.subarray(0, reuse), 0);
     sigs.set(prevSigs.subarray(0, reuse), 0);
     cursor = rowStart[reuse - 1] + msgLen[reuse - 1];
-    prevBordered = chat[reuse - 1].role === 'user' || chat[reuse - 1].role === 'queued'
-      || chat[reuse - 1].role === 'bash';
+    prevBordered = chat[reuse - 1].role === 'queued';
   }
   for (let mi = reuse; mi < n; mi++) {
     const m = chat[mi];
-    const border = m.role === 'user' || m.role === 'queued' || m.role === 'bash';
+    // ONLY `queued` IS DRAWN INSIDE A FRAME. A user message and a shell echo are a filled surface with no walls, so
+    // their text uses the full inner width — leaving them in `border` narrowed it by two columns and this pass's row
+    // count drifted from what the layout actually paints.
+    const border = m.role === 'queued';
     const ww = border ? Math.max(1, Math.min(1, innerW - 4)) : innerW; // placeholder
     void ww;
     rowStart[mi] = cursor;
-    const rules = border ? (prevBordered ? 1 : 2) : 0;
+    // THE RULES BELONG TO THE FRAME, and only `queued` still draws one: a user message and a shell echo are a
+    // filled surface now. Counting two rules for them made this pass's row count disagree with what the layout
+    // actually paints, which is what `chatRowTotal` compares against.
+    const drawsFrame = m.role === 'queued';
+    const rules = drawsFrame ? (prevBordered ? 1 : 2) : 0;
     sigs[mi] = messageSignature(m);
     // Reuse/minimal layout for the row count: same width/border arithmetic as
     // the layout path below. We need boxText for bordered messages.
@@ -4372,7 +4417,7 @@ export function renderChatLines(state, w, viewport) {
     if (!hasFence && !valid && !cached && !animating && m._count && m._count.key === countKey && m._count.textLen === countLen) {
       msgLen[mi] = m._count.len + rules;
       cursor += msgLen[mi];
-      prevBordered = border;
+    prevBordered = drawsFrame;
       continue;
     }
     if (valid) {
@@ -4441,7 +4486,7 @@ export function renderChatLines(state, w, viewport) {
       m._cache = null;
     }
     cursor += msgLen[mi];
-    prevBordered = border;
+    prevBordered = drawsFrame;
   }
   }
   const total = cursor;
@@ -4538,11 +4583,14 @@ export function renderChatLines(state, w, viewport) {
       boxText = Math.max(1, boxInner - boxPad * 2);
     }
     // Shared wall with the previous bordered message (its bottom rule is ours).
+    //
+    // A USER MESSAGE AND A SHELL ECHO NO LONGER DRAW A FRAME, so they have no wall to share. Leaving them in made the
+    // second of two adjacent rows skip its filled surface and fall through to the frame branch — the shell echo
+    // came out with walls and no background. Only `queued` still draws a box.
     let shared = false;
     if (bordered && mi > 0) {
       const prev = chat[mi - 1];
-      shared = (prev.role === 'user' || prev.role === 'queued' || prev.role === 'bash')
-        && rowStart[mi - 1] + msgLen[mi - 1] === cursor;
+      shared = prev.role === 'queued' && rowStart[mi - 1] + msgLen[mi - 1] === cursor;
     }
     const len = msgLen[mi];
     // A message that may contain a bitmap is always built, visible or not: a row COUNT cannot represent a
@@ -4572,8 +4620,20 @@ export function renderChatLines(state, w, viewport) {
       }
       const spinRows = ccc.spinRows;
       const liveAt = (r, i) => (spinRows && spinRows.has(i) ? r.split(SPIN_PLACEHOLDER).join(spinFrame) : r);
-      if (bordered && !shared) out.push(rule(true, boxColor));
-      if (bordered) {
+      const asSurface = msg.role === 'user' || msg.role === 'bash';
+      if (bordered && !shared && !asSurface) out.push(rule(true, boxColor));
+      // A USER MESSAGE IS DRAWN AS A FILLED SURFACE, the same one the composer uses: what was typed and what is
+      // being typed read as one kind of thing. The frame is gone for the same reason it left the composer — a box
+      // competes with the transcript and spends rows on chrome. A shell echo keeps its terminal surface instead.
+      const surfaceFor = msg.role === 'bash' ? C.termBg : (msg.role === 'user' ? C.composerBg : '');
+      if (bordered && surfaceFor && !shared) {
+        for (let i = 0; i < ccc.rows.length; i++) {
+          const rowText = liveAt(ccc.rows[i], i);
+          if (isImageRow(rowText)) { out.push(rowText); continue; }
+          const surfaced = rowText.replace(/\x1b\[0m/g, `\x1b[0m${surfaceFor}`);
+          out.push(PAD + surfaceFor + fitAnsi(surfaced, innerW) + C.bgReset);
+        }
+      } else if (bordered) {
         const pad = ' '.repeat(boxPad);
         const wall = col('│', boxColor);
         for (let i = 0; i < ccc.rows.length; i++) {
@@ -4592,7 +4652,7 @@ export function renderChatLines(state, w, viewport) {
           out.push(isImageRow(rowText) ? rowText : PAD + rowText);
         }
       }
-      if (bordered) out.push(rule(false, boxColor));
+      if (bordered && !asSurface) out.push(rule(false, boxColor));
     } else {
       for (let i = 0; i < len; i++) out.push('');
     }
@@ -5049,7 +5109,7 @@ function justify(left, right, w) {
 // Height of the composer box (top border + content rows + bottom border).
 export function composerHeight(state, cols) {
   const insideW = Math.max(0, (cols | 0) - 2);
-  return composerLayout(state, insideW - 3).rows.length + 2;
+  return composerLayout(state, insideW).rows.length;
 }
 
 // UNCLAMPED height of the AskUserQuestion box. `composeFrame` caps the real
@@ -6036,7 +6096,11 @@ export function composeFrame(state, cols, rows) {
 const takeover = state.editor || state.panel || null;
 
   // ---- geometry ----
-  const composer = composerLayout(state, insideW - 3); // bodyW = (insideW-3)-2 = 53, matches fitAnsi(textW-2) = cInner-4 = 53
+  const composer = composerLayout(state, insideW);
+  // ONE ROW PER INPUT ROW. It used to be `rows.length + 2` for the top and bottom rules; the composer is now a
+  // filled surface with no frame, so reserving those two rows would leave a gap above and below it.
+  // One row per input row, PLUS the separator rule above the composer.
+  // One row per input row, PLUS a rule above and below the composer.
   const composerBoxH = takeover ? 0 : composer.rows.length + 2;
   const menuItems = (state.menuOpen && state.menuList.length && !takeover)
     ? Math.min(state.menuList.length, MAX_MENU) + 1
@@ -7364,33 +7428,30 @@ const queueH = takeover ? 0 : queuePanelHeight(state);
   
   let composerFirstRow = -1;
   if (!takeover) {
-    composerFirstRow = lines.length + 1;
-    // The composer carries the same 1-column left margin as the transcript, so its
-    // walls line up exactly with a sent user/queue message's box.
-    //   frame width = 1 (margin) + 1 (│) + cInner + 1 (│)  =>  cInner = w - 3
-    // `insideW` (w-2) is the space BETWEEN the walls, so the margin is taken OUT of
-    // it rather than added on top — otherwise the box came out 2 columns short.
-    const CPAD = ' ';
-    const cInner = Math.max(1, insideW - 1);
-    // In shell mode the whole editor frame shifts to the violet shellMode hue
-    // (same token kimi-code uses for its bash-mode border), so it reads as
-    // "shell mode" rather than the cyan prompt frame.
-    const shellBorder = state.inputMode === 'bash' ? C.shellMode : C.border;
-    lines.push(CPAD + col('╭' + '─'.repeat(cInner) + '╮', shellBorder));
+    // A SEPARATOR BETWEEN THE TRANSCRIPT AND THE INPUT. With the border gone, the last line of the conversation sat
+    // directly on top of the composer, and a paragraph against a grey block reads as one crowded mass. One faint
+    // rule says "the conversation ends here" without drawing a frame.
+    lines.push(col('─'.repeat(w), C.border));
+    composerFirstRow = lines.length;
+    // THE COMPOSER SPANS THE FULL WIDTH. It used to keep the transcript's 1-column left margin so its walls
+    // lined up with a sent user message's box; with no walls there is nothing to line up, and a filled surface
+    // that stops one column short of an edge reads as a damaged block rather than as an input field.
+    const CPAD = '';
+    const cInner = Math.max(1, insideW + 2);   // the full terminal width: insideW is w - 2
+    // NO BORDER: the composer is a BLOCK OF BACKGROUND, one row per input row. A box drawn in characters competes
+    // with the transcript's own boxes (a sent user message is boxed too) and spends rows on chrome; a filled
+    // surface says the same thing — "this is the input, and it is this wide" — without drawing a frame.
     for (let ri = 0; ri < composer.rows.length; ri++) {
-      addHit(lines.length, 2, cInner, { kind: 'composerRow', rowIdx: ri });
-      // Colour the prompt glyph like the transcript's user marker (cyan) and keep
-      // the typed TEXT white. The prefix is the first `> ` of the row (the
-      // continuation rows are padded with spaces instead).
+      addHit(lines.length, 0, cInner, { kind: 'composerRow', rowIdx: ri });
+      // Colour the prompt glyph like the transcript's user marker and keep the typed TEXT white. The prefix is the
+      // first `> ` of the row (the continuation rows are padded with spaces instead).
       const rawRow = composer.rows[ri];
-      // Which chip the pointer is over, if any. `state.pasteHover` is the paste NUMBER, set by the
-      // mousehover handler from the same index maths the expand gesture uses, so the highlight and the
-      // click can never disagree about which chip they mean.
+      // Which chip the pointer is over, if any. `state.pasteHover` is the paste NUMBER, set by the mousehover
+      // handler from the same index maths the expand gesture uses, so the highlight and the click can never
+      // disagree about which chip they mean.
       const styledRow = highlightPasteMarkers(rawRow, state.pasteHover);
-      // One space of padding after the left wall (and before the right wall), the
-      // same as the transcript's user/queue boxes, so the geometry is identical.
       const pre = composerInput(state).prefix;
-      const textW = Math.max(1, cInner - 2); // Original value: 1+1+textW+1+1 = 60 with pre=2, fitWidth=55
+      const textW = Math.max(1, cInner - 2);
       // Apply composer text selection highlight if a selection is active.
       const sel = state.composerSel;
       const rowMeta = composer.meta[ri] || {};
@@ -7401,18 +7462,16 @@ const queueH = takeover ? 0 : queuePanelHeight(state);
         const highlighted = (sel && sel.anchor !== sel.head)
           ? highlightSelection(textPart, textStart, sel.anchor, sel.head)
           : textPart;
-        // The `!` (shell mode) prefix is BOLD: it is a mode marker, not punctuation,
-        // and it should out-weigh the `>` prompt glyph at a glance.
+        // The `!` (shell mode) prefix is BOLD: it is a mode marker, not punctuation, and it should out-weigh
+        // the `>` prompt glyph at a glance.
         const preCol = state.inputMode === 'bash' ? (C.shellMode + C.bold) : C.cyan;
-        rowAnsi = ' ' + col(pre, preCol) + C.white +
-          fitAnsi(highlighted, Math.max(1, textW - visualCol(pre))) + ' ';
+        rowAnsi = ' ' + col(pre, preCol) + C.white
+          + fitAnsi(highlighted, Math.max(1, textW - visualCol(pre))) + ' ';
       } else {
         // THE INDENT IS NOT TEXT. A continuation row arrives as `cont + text` — two spaces standing in for
         // `> ` — and `rowMeta.start` is the offset of the TEXT, not of the row. Handing the whole row to
         // `highlightSelection` therefore shifted the selection by the prefix's width: the two blank columns lit
         // up and the highlight ran two characters early, which is the offset seen on every wrapped line.
-        //
-        // The first-row branch above already strips its prefix; this one has to strip the continuation's.
         const contWidth = rowMeta.preWidth != null ? rowMeta.preWidth : visualCol(pre);
         const indent = styledRow.slice(0, contWidth);
         const textPart = styledRow.slice(contWidth);
@@ -7422,13 +7481,15 @@ const queueH = takeover ? 0 : queuePanelHeight(state);
           : textPart;
         rowAnsi = ' ' + indent + C.white + fitAnsi(highlighted, Math.max(1, textW - contWidth)) + ' ';
       }
-      lines.push(
-        CPAD + col('│', shellBorder) + rowAnsi + C.reset + col('│', shellBorder)
-      );
+      // THE SURFACE SURVIVES THE ROW'S OWN RESETS: every colour span closes with \x1b[0m, so the background is
+      // re-asserted after each one — the same trick the code and terminal surfaces use.
+      const surfaced = rowAnsi.replace(/\x1b\[0m/g, `\x1b[0m${C.composerBg}`);
+      lines.push(C.composerBg + fitAnsi(surfaced, insideW + 2) + C.bgReset);
     }
-    lines.push(CPAD + col('╰' + '─'.repeat(cInner) + '╯', shellBorder));
+    // AND THE RULE UNDER IT, mirroring the one above: the input is bounded by two faint rules, so it reads as a
+    // field between the conversation and the status line rather than as a block touching both.
+    lines.push(col('─'.repeat(w), C.border));
   }
-
   
   const MPAD = ' ';
   const mInner = Math.max(1, insideW - 3);
@@ -7759,10 +7820,12 @@ const queueH = takeover ? 0 : queuePanelHeight(state);
     // The confirm prompt is NOT a term here: it shares the tip row, which is already inside
     // STATUS_H, so counting it made the caret jump up a line every time Ctrl+C was pressed.
     const bottomChrome = STATUS_H + CTX_H + menuH + mentionH;
+    // `- 2`: the two rules that bound the composer. The input's last row sits above the lower rule, which sits above
+    // the status line.
     const caretScreenRow = h - bottomChrome - 2 - (composer.rows.length - 1 - composer.caretRow);
     cursor = {
       row: Math.max(0, Math.min(caretScreenRow, h - 1)),
-      col: Math.min(composer.caretCol + 2, w - 1),
+      col: Math.min(Math.max(0, composer.caretCol), w - 1),
     };
     cursorVisible = true;
   }
@@ -8960,6 +9023,23 @@ function ensureMenuVisible(state) {
 }
 
 // ---- command dispatch ----
+/**
+ * Fire a TUI-side hook and FORGET it. These are notifications, not decisions: a slow or failing hook must not
+ * hold up a permission prompt, a directory move or a settings save. The config is loaded fresh so an edit made
+ * while the session was running is picked up without a restart.
+ *
+ * MODULE-LEVEL ON PURPOSE. `runTurn` and `dispatch` are both module-level functions, and the onEvent callbacks
+ * in runTurn reach this helper too. A version scoped inside either one is invisible to the other, and the bare
+ * name then throws a ReferenceError right after a tool result has arrived — which used to kill the process.
+ */
+function fireHook(event, payload, ws) {
+  try {
+    const { hooks } = loadHooks(ws);
+    if (!(hooks[event] || []).length) return;
+    void runShellHooks({ hooks }, event, payload, ws).catch(() => {});
+  } catch { /* a broken hook config is a reason to carry on, not to fail the command */ }
+}
+
 export async function dispatch(cmdRaw, arg, state, cfg, session, h, submit, stdout, renderFrameArg) {
   const { addChat, openPicker, openForm, notice, sendPrompt, quit, saveSession, openEditor } = h;
 
@@ -9026,19 +9106,6 @@ export async function dispatch(cmdRaw, arg, state, cfg, session, h, submit, stdo
    * Every surface lands here — `/set`, the /settings browser, and the web's setConfig — so
    * they cannot disagree about what a value means or which keys exist.
    */
-  /**
-   * Fire a TUI-side hook and FORGET it. These are notifications, not decisions: a slow or failing hook must not
-   * hold up a permission prompt, a directory move or a settings save. The config is loaded fresh so an edit made
-   * while the session was running is picked up without a restart.
-   */
-  function fireHook(event, payload, ws) {
-    try {
-      const { hooks } = loadHooks(ws);
-      if (!(hooks[event] || []).length) return;
-      void runShellHooks({ hooks }, event, payload, ws).catch(() => {});
-    } catch { /* a broken hook config is a reason to carry on, not to fail the command */ }
-  }
-
   function applySetting(key, value) {
     const def = SETTING_BY_KEY.get(key);
     if (!def) { appErr(`Unknown setting: ${key}. Try /settings.`); return false; }
@@ -18303,7 +18370,7 @@ export async function startTUI(opts) {
       case 'composerRow': {
         const { cols } = dims();
         const insideW = Math.max(0, cols - 2);
-        const layout = composerLayout(state, insideW - 3);
+        const layout = composerLayout(state, insideW);
         const t = state._lastMouse;
         const clickCol = t ? (t.col || 1) - 1 : 1;
         // The column is measured from the row's PREFIX, because `composerTextIndexAt`
@@ -18673,7 +18740,7 @@ export async function startTUI(opts) {
       if (hb && hb.kind === 'composerRow') {
         const { cols } = dims();
         const insideW = Math.max(0, cols - 2);
-        const layout = composerLayout(state, insideW - 3);
+        const layout = composerLayout(state, insideW);
         const clickCol = Math.max(0, (t.col || 1) - 1 - 3);
         pasteHover = pasteMarkerIdAt(state.input || '', composerTextIndexAt(layout, hb.rowIdx, clickCol));
       }
@@ -18745,7 +18812,7 @@ export async function startTUI(opts) {
         if (hb && hb.kind === 'composerRow') {
           const { cols } = dims();
           const insideW = Math.max(0, cols - 2);
-          const layout = composerLayout(state, insideW - 3);
+          const layout = composerLayout(state, insideW);
           const clickCol = (t.col || 1) - 1;
           const colInContent = Math.max(0, clickCol - 1);
           const idx = composerTextIndexAt(layout, hb.rowIdx, colInContent);
@@ -19930,7 +19997,7 @@ export async function startTUI(opts) {
           }
         }
         const insideW = Math.max(0, dims().cols - 2);
-        const layout = composerLayout(state, insideW - 3);
+        const layout = composerLayout(state, insideW);
         const dir = t.key === 'down' ? 1 : -1;
         const targetRow = layout.caretRow + dir;
         if (targetRow >= 0 && targetRow < layout.rows.length) {
@@ -19958,7 +20025,7 @@ export async function startTUI(opts) {
         if (!overlay) {
           const cur = state.input || '';
           const insideW = Math.max(0, dims().cols - 2);
-          const layout = composerLayout(state, insideW - 3);
+          const layout = composerLayout(state, insideW);
           const dir = t.key === 'down' ? 1 : -1;
           const targetRow = layout.caretRow + dir;
           // The composer is MULTI-LINE: ↑/↓ move the caret between its rows
@@ -20386,7 +20453,7 @@ export async function startTUI(opts) {
         return;
       }
       const insideW = Math.max(0, dims().cols - 2);
-      const layout = composerLayout(state, insideW - 3);
+      const layout = composerLayout(state, insideW);
       const dir = t.key === 'down' ? 1 : -1;
       const targetRow = layout.caretRow + dir;
       if (targetRow >= 0 && targetRow < layout.rows.length) {
@@ -20514,7 +20581,7 @@ export async function startTUI(opts) {
         // a multi-line prompt can be selected across lines. Same sticky column as
         // the plain ↑/↓ (see verticalCaretIndex).
         const insideW = Math.max(0, dims().cols - 2);
-        const layout = composerLayout(state, insideW - 3);
+        const layout = composerLayout(state, insideW);
         const targetRow = layout.caretRow + (dirName === 'down' ? 1 : -1);
         if (targetRow < 0 || targetRow >= layout.rows.length) { renderFrame(); return; }
         next = verticalCaretIndex(state, cur, layout, targetRow);

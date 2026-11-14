@@ -20,6 +20,7 @@ import {
   composeFrame, renderChatLines, chatRowTotal, metricsSignature,
 } from '../src/tui.js';
 import { visualWidth } from '../src/term.js';
+import { C } from '../src/colors.js';
 
 const FENCE = String.fromCharCode(96).repeat(3);
 
@@ -456,8 +457,17 @@ test('every row behind the panel is greyed, and the panel keeps its own colours'
   assert.ok(b, 'the panel rendered');
 
   // (1) The composer and the status line are part of the backdrop.
-  const topBorders = plain.map((r, i) => (/╭─+╮/.test(r) ? i : -1)).filter((i) => i >= 0);
-  const composerIdx = topBorders[topBorders.length - 1];
+  //
+  // The composer is FOUND BY ITS SURFACE, not by a border: it draws no `╭─╮` any more, so the old glyph search
+  // picked the last framed row on screen — the panel itself — and the assertion failed on a frame that was correct.
+  //
+  // The surface is DIMMED here, so its colour no longer equals `C.composerBg`; what identifies it is a FILLED row
+  // below the panel that the panel does not own. The status line and the context bar are the only others.
+  const filledBelow = raw
+    .map((r, i) => ({ i, filled: /48;2;\d+;\d+;\d+/.test(r) }))
+    .filter((x) => x.filled && x.i > b.row1);
+  assert.ok(filledBelow.length > 0, 'the composer surface is on screen');
+  const composerIdx = filledBelow[0].i;
   assert.ok(composerIdx > b.row0, 'the composer is below the panel');
   assert.ok(raw[composerIdx].includes(FAINT), 'the composer is dimmed too');
   // THE STATUS LINE IS FOUND, NOT ASSUMED TO BE LAST. It used to be the final row; the context bar now sits

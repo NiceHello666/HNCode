@@ -267,6 +267,13 @@ export const C = {
   // is rgb(48,48,48) = #303030 — clearly lifted off a near-black terminal without
   // washing the text out. Truecolor gets `#2e2e2e`, the same shade written exactly.
   bgPanel: TRUECOLOR ? '\x1b[48;2;46;46;46m' : '\x1b[48;5;236m',
+  // The code-surface background, set by setTheme from the theme's own page colour. A placeholder until then, so
+  // code drawn before the first setTheme still has a surface.
+  codeBg: TRUECOLOR ? '\x1b[48;2;12;20;26m' : '\x1b[48;5;233m',
+  // The terminal-surface background, set by setTheme from the theme's page colour. Placeholder until then.
+  termBg: TRUECOLOR ? '\x1b[48;2;0;14;21m' : '\x1b[48;5;234m',
+  // The composer's neutral-grey surface. Placeholder until setTheme runs.
+  composerBg: TRUECOLOR ? '\x1b[48;2;44;44;46m' : '\x1b[48;5;237m',
   border: BORDER,
   red: '\x1b[91m',
   green: '\x1b[92m',
@@ -470,6 +477,28 @@ export function setTheme(name) {
   // so they read ON that wash — not the theme's plain green/red, which is tuned for the page background.
   C.diffAddFg = rgb(...mix(green, t.fg, 0.55));
   C.diffDelFg = rgb(...mix(red, t.fg, 0.55));
+
+  // THE CODE-SURFACE BACKGROUND, one step off the page. Read rows, Write previews and diff CONTEXT lines sit on
+  // it; diff `+`/`-` rows keep their green/red wash on top. Mixed from this theme's own page colour rather than
+  // a fixed grey, so a light theme gets a light code surface and a dark one a dark one.
+  //
+  // The step depends on WHICH SIDE the page is. On a dark page the surface is one step LIGHTER (mix very little
+  // foreground in); on a light page it is one step DARKER (mix a little foreground in). Same small distance either
+  // way, because a code region must read as "same screen, slightly recessed", not as a panel.
+  C.codeBg = brgb(...mix(t.bg, t.fg, isLight ? 0.93 : 0.94));
+  // THE TERMINAL-SURFACE BACKGROUND: the same small step on the OTHER side of the page, so the ordering holds on
+  // both kinds of theme — page < terminal < code on a dark one, terminal < code < page on a light one. Bash output
+  // and the shell-mode echo sit on it: a command reads as "a terminal ran this" without becoming a black band,
+  // which is what a deeper well looked like — a hole in the screen rather than a region of it.
+  //
+  // Towards BLACK on a dark theme and towards the foreground on a light one: mixing a dark page further towards its
+  // own foreground would make it lighter, which is `codeBg`'s job, not this one.
+  C.termBg = brgb(...mix(t.bg, isLight ? t.fg : [0, 0, 0], isLight ? 0.88 : 0.94));
+  // THE COMPOSER SURFACE: a NEUTRAL GREY, not a tint of the page. The input area is the one region that should not
+  // follow the theme's hue — a cyan-tinted box on a dark-teal page reads as "more page", while a grey one reads as
+  // an input field. Neutral means equal RGB, so it is written as a grey and adjusted only for light vs dark. A
+  // theme may override it with its own `composer` triple.
+  C.composerBg = brgb(...(t.composer || (isLight ? [232, 232, 232] : [44, 44, 46])));
 
   // A comment: the palette's foreground, pulled most of the way towards its background so it reads as quiet. A dark
   // page can afford a looser mix; a light one cannot — solar's foreground is already a muted blue-grey, and at the
