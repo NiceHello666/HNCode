@@ -218,6 +218,7 @@ export const COMMANDS = [
   { name: 'auto-trim', aliases: ['autotrim'], desc: 'Auto tool-result trimming: the threshold is a share of the WINDOW, `keep` a share of the tool-result TEXT', priority: 40, argumentHint: '[on|off | threshold <n> | keep <n>]' },
   { name: 'title', aliases: ['rename'], desc: 'Set or show session title (also sets window title)', priority: 60, argumentHint: '<title>' },
   { name: 'auto-title', desc: 'Let the model name the session from its first message (persisted)', priority: 60, argumentHint: '[on|off]' },
+  { name: 'ptc', desc: 'PTC mode: every tool call goes through the programmatic sandbox, no direct tools', priority: 55, argumentHint: '[on|off]' },
   { name: 'status', desc: 'Show current session and runtime status', priority: 60 },
   { name: 'doctor', desc: 'Diagnose the environment: config, store, MCP, hooks, disk, git, terminal', priority: 60, argumentHint: '[--all] [--probe]' },
   { name: 'memory-profile', aliases: ['memprof'], desc: 'Where this session’s memory goes: text vs tool results vs tool arguments', priority: 60, argumentHint: '[--verbose]' },
@@ -2752,11 +2753,19 @@ function messageLines(msg, width, workspace, expanded, spin, pulseStart, rawMode
     // Live output of a RUNNING command (Bash): rendered under the "Using …"
     // row exactly like the finished "Used …" output, just not done yet. Only
     // the tail is shown (capped) so a chatty command cannot flood the frame.
-    if (msg.pending && typeof msg.liveOutput === 'string' && msg.liveOutput.length) {
+    if (msg.pending && msg.toolName === 'Bash') {
+      // THE OUTPUT AREA EXISTS BEFORE THERE IS ANY OUTPUT. A Bash call used to grow a row only once the
+      // command produced its first byte, so the transcript shifted down at that moment and the tool row sat alone
+      // until then — with no sign that this is where the output will appear. It opens with one empty surface row
+      // and fills that row as data arrives.
       const bodyW = Math.max(1, width - visualCol('  '));
-      const rawLines = sanitizeText(msg.liveOutput).replace(/\r\n/g, '\n').split('\n');
+      const rawLines = sanitizeText(msg.liveOutput || '').replace(/\r\n/g, '\n').split('\n');
       const MAX_RUN_LINES = expanded ? Infinity : 8;
-      const shown = rawLines.slice(-MAX_RUN_LINES); // running: show the newest output
+      // A trailing newline leaves an empty element; keeping it drew two blank rows for an empty output.
+      if (rawLines.length > 1 && rawLines[rawLines.length - 1] === '') rawLines.pop();
+      const shown = rawLines.length ? rawLines.slice(-MAX_RUN_LINES) : [''];
+      // The `↳` on the first row costs two columns, exactly as it does on the finished result.
+      let liveEmitted = 0;
       if (rawLines.length > MAX_RUN_LINES) {
         const more = col(`… ${rawLines.length - MAX_RUN_LINES} earlier line(s)`, C.gray);
         out.push({ text: C.termBg + fitAnsi(more.replace(/\x1b\[0m/g, `\x1b[0m${C.termBg}`), bodyW) + C.bgReset, ind: indent, raw: true });
@@ -2768,7 +2777,11 @@ function messageLines(msg, width, workspace, expanded, spin, pulseStart, rawMode
         for (const t of (ln === '' ? [''] : wrapWords(ln, bodyW))) {
           const painted = col(t, C.gray);
           const surfaced = painted.replace(/\x1b\[0m/g, `\x1b[0m${C.termBg}`);
-          out.push({ text: C.termBg + fitAnsi(surfaced, bodyW) + C.bgReset, ind: indent, raw: true });
+          const firstLive = liveEmitted++ === 0;
+          // The same `↳ ` the finished result puts on its first row, so the block does not shift right when the
+          // command completes. Continuation rows indent by two spaces, matching the result block.
+          const rowW = Math.max(1, bodyW - (firstLive ? visualCol('↳ ') : 2));
+          out.push({ text: C.termBg + fitAnsi(surfaced, rowW) + C.bgReset, ind: firstLive ? '↳ ' : '  ', raw: true });
         }
       }
     }
@@ -2832,12 +2845,12 @@ function messageLines(msg, width, workspace, expanded, spin, pulseStart, rawMode
         const room = Math.max(1, width - visualCol(indent) - num.length - 1);
         // The whole preview sits on the CODE SURFACE, number included, so the block reads as one recessed field.
         if (!writeLang) {
-          out.push({ text: C.codeBg + col(`${num} ${fitAnsi(ln, room)}`.replace(/\x1b\[0m/g, `\x1b[0m${C.codeBg}`), C.gray) + C.bgReset, ind: i === 0 ? '↳ ' : indent, raw: true });
+          out.push({ text: C.codeBg + col(`${num} ${fitAnsi(ln, room)}`.replace(/\x1b\[0m/g, `\x1b[0m${C.codeBg}`), C.white) + C.bgReset, ind: i === 0 ? '↳ ' : indent, raw: true });
           return;
         }
         const painted = paintCode(ln, writeLang, '', writeInComment);
         writeInComment = painted.inComment;
-          const writeRow = (col(num + ' ', C.gray) + fitAnsi(painted.text, room)).replace(/\x1b\[0m/g, `\x1b[0m${C.codeBg}`);
+          const writeRow = (col(num + ' ', C.white) + fitAnsi(painted.text, room)).replace(/\x1b\[0m/g, `\x1b[0m${C.codeBg}`);
           out.push({ text: C.codeBg + writeRow + C.bgReset, ind: i === 0 ? '↳ ' : indent, raw: true });
       });
       const shown = Math.min(lines.length, MAX);
@@ -2996,7 +3009,9 @@ function messageLines(msg, width, workspace, expanded, spin, pulseStart, rawMode
         }
         const no = String(d.no || 0).padStart(wNo);
         const mark = d.type === 'add' ? '+' : d.type === 'del' ? '-' : ' ';
-        const text = sanitizeText(d.text);
+        // TABS ARE EXPANDED FIRST: `visualCol` counts one as zero columns, so an indented row measured short
+        // and its background stopped before the right edge — the strip of page colour seen on Go diffs.
+        const text = expandTabs(sanitizeText(d.text));
 
         // The sign, line number and content share the line's addition/deletion background; syntax highlighting
         // changes only the foreground. The wash runs to the right edge so adjacent changed rows read as one block.
@@ -3080,7 +3095,7 @@ function messageLines(msg, width, workspace, expanded, spin, pulseStart, rawMode
           // next stop, so the row was measured several columns short, the terminal wrapped it itself, and the tail
           // advances it to the next stop, so the row measured short and the terminal wrapped it itself. The
           // THE SEPARATOR IS TWO SPACES, NOT A TAB: `visualCol` counts a tab as zero columns while a terminal
-          const text = `${numbered[1].padStart(numW)}  ${painted.text}`;
+          const text = `${col(numbered[1].padStart(numW), C.white)} ${painted.text}`;
           // A Read row is TRUNCATED, not wrapped. `wrapAnsiWords` used to fold an overlong line onto a second
           // row, and that second row — padded to full width by the frame, without a line number — was exactly
           // what a differential painter could not reconcile with the previous frame: the leftover glyphs stayed
@@ -7446,9 +7461,9 @@ const queueH = takeover ? 0 : queuePanelHeight(state);
     // that stops one column short of an edge reads as a damaged block rather than as an input field.
     const CPAD = '';
     const cInner = Math.max(1, insideW + 2);   // the full terminal width: insideW is w - 2
-    // NO BORDER: the composer is a BLOCK OF BACKGROUND, one row per input row. A box drawn in characters competes
-    // with the transcript's own boxes (a sent user message is boxed too) and spends rows on chrome; a filled
-    // surface says the same thing — "this is the input, and it is this wide" — without drawing a frame.
+    // NO FILLED SURFACE. The input is separated from the transcript by the rule above it and from the status
+    // line by the rule below; a grey block on top of that was a second, heavier boundary saying the same
+    // thing. The prompt glyph and the text colours carry the rest.
     for (let ri = 0; ri < composer.rows.length; ri++) {
       addHit(lines.length, 0, cInner, { kind: 'composerRow', rowIdx: ri });
       // Colour the prompt glyph like the transcript's user marker and keep the typed TEXT white. The prefix is the
@@ -7489,18 +7504,18 @@ const queueH = takeover ? 0 : queuePanelHeight(state);
           : textPart;
         rowAnsi = ' ' + indent + C.white + fitAnsi(highlighted, Math.max(1, textW - contWidth)) + ' ';
       }
-      // THE SURFACE SURVIVES THE ROW'S OWN RESETS: every colour span closes with \x1b[0m, so the background is
-      // re-asserted after each one — the same trick the code and terminal surfaces use.
-      const surfaced = rowAnsi.replace(/\x1b\[0m/g, `\x1b[0m${C.composerBg}`);
-      lines.push(C.composerBg + fitAnsi(surfaced, insideW + 2) + C.bgReset);
+      lines.push(fitAnsi(rowAnsi, insideW + 2));
     }
     // AND THE RULE UNDER IT, mirroring the one above: the input is bounded by two faint rules, so it reads as a
     // field between the conversation and the status line rather than as a block touching both.
     lines.push(col('─'.repeat(w), C.border));
   }
   
-  const MPAD = ' ';
-  const mInner = Math.max(1, insideW - 3);
+  // NO LEFT MARGIN: the menu's rule sits in column 0, aligned with the composer's own edge, instead of one
+  // column in and looking detached from it.
+  const MPAD = '';
+  // The row is `│ content │`, and `insideW` is `w - 2`, so the content gets two columns less.
+  const mInner = Math.max(1, insideW - 2);
   const menuRow = (content) => MPAD + col('│', C.border) + ' ' + fitAnsi(content, mInner) + ' ' + col('│', C.border);
   if (state.menuOpen && state.menuList.length && !takeover) {
     const totalMatches = state.menuList.length;
@@ -7583,10 +7598,12 @@ const queueH = takeover ? 0 : queuePanelHeight(state);
     ? (thinkLevel ? ` thinking ${thinkLevel}` : ' thinking')
     : state.seenThinking ? ' thinking' : '';
   const label = state.modelLabel || state.model || '';
-  // Plan / Focus / Swarm are mutually exclusive modes, so at most one badge is
-  // shown. Swarm uses a spring-green (cyan shifted toward green) to stay in the
-  // theme family while reading as its own thing next to Plan's cyan.
-  const modeBadge = state.plan ? col('Plan', C.cyan + C.bold)
+  // Plan / Focus / Swarm / PTC are mutually exclusive modes, so at most one badge is shown. Swarm uses a
+  // spring-green (cyan shifted toward green) to stay in the theme family while reading as its own thing next to
+  // Plan's cyan. PTC comes first: it narrows the toolset harder than any of the others, and a user who turned it on
+  // needs to see that from the status line alone.
+  const modeBadge = state.ptcMode ? col('PTC', C.orange + C.bold)
+    : state.plan ? col('Plan', C.cyan + C.bold)
     : state.focus ? col('Focus', C.blue + C.bold)
     : state.swarm ? col('Swarm', C.spring + C.bold)
     : '';
@@ -8534,6 +8551,9 @@ export function makeState({ cfg, session, opts }) {
     plan: !!(session && session.plan),
     planPath: (session && session.planPath) || null,
     focus: !!(session && session.focus),
+    // PTC mode is per-SESSION for the same reason as focus: it changes which tools the model is even offered, so a
+    // resume that forgot it would quietly hand the model a different toolset than the one it was working with.
+    ptcMode: !!(session && session.ptcMode),
     // Swarm mode is per-SESSION (like plan/focus), not just per-config: it is
     // restored here and written by persistState(). Reading only config.toml left
     // it off after /sessions resume, /fork and a plain restart.
@@ -10380,6 +10400,26 @@ export async function dispatch(cmdRaw, arg, state, cfg, session, h, submit, stdo
       app(want
         ? 'Auto title: ON — the first message names the session.'
         : 'Auto title: OFF — the name comes only from /title.');
+      return;
+    }
+    case 'ptc': {
+      // PTC MODE: the only tool the model is given is `PTC`, and every real tool call happens inside its sandbox.
+      //
+      // WHY A MODE AND NOT A SUGGESTION. The tool's own description asks the model to prefer it for loops, and a
+      // model is free to ignore that — a `for f in $(ls); do grep …; done` through Bash does the same work with the
+      // same context cost the sandbox exists to avoid. The promise is only real when the direct path is gone.
+      const a = raw.trim().toLowerCase();
+      let want;
+      if (a === 'on') want = true;
+      else if (a === 'off') want = false;
+      else if (a === '') { app(`PTC mode: ${state.ptcMode ? 'on' : 'off'}. /ptc [on|off]`); return; }
+      else { appErr('Usage: /ptc [on|off]'); return; }
+      state.ptcMode = want;
+      if (session) session.ptcMode = want;
+      try { sess.saveSession(session); } catch { /* a preference; a failed save must not block the mode */ }
+      app(want
+        ? 'PTC mode: ON — the model gets only the PTC tool and reaches everything else through its sandbox.'
+        : 'PTC mode: OFF — direct tool calls are available again.');
       return;
     }
     case 'title': {
@@ -12939,6 +12979,7 @@ export async function dispatch(cmdRaw, arg, state, cfg, session, h, submit, stdo
         plan: session.plan,
         planPath: session.planPath,
         focus: session.focus,
+        ptcMode: session.ptcMode,
         swarm: session.swarm,
         effort: session.effort,
         theme: session.theme,
@@ -14718,7 +14759,13 @@ const agents = readAgentsMd(state.cwd || state.workspace || cfg.workspace, state
     // Remember the value HERE, at the start, so that a /focus the user sets while the
     // turn is running survives instead of being cancelled by the turn-end cleanup.
     const focusAtTurnStart = !!state.focus;
-    if (state.plan) {
+    // PTC MODE WINS OVER EVERY OTHER FILTER. It exists to make a specific promise — "every tool call goes through
+    // the sandbox, so a loop over forty files costs one round trip and a handful of tokens" — and that promise is
+    // only kept if the model CANNOT reach a tool directly. Leaving even one out (Bash above all) hands back the
+    // whole machine and the guarantee evaporates.
+    if (state.ptcMode) {
+      cfg.toolFilter = ['PTC'];
+    } else if (state.plan) {
       cfg.toolFilter = ['Read', 'Grep', 'Glob'];
     } else if (state.focus) {
       cfg.toolFilter = ['Read', 'Write', 'Edit', 'Bash'];
@@ -14824,7 +14871,7 @@ const agents = readAgentsMd(state.cwd || state.workspace || cfg.workspace, state
         const own = getTool(toolName);
         if (own && own.autoApprove === true) return true;
       }
-      const safeTools = ['Read', 'Grep', 'Glob', 'FetchURL', 'WebSearch', 'TaskOutput', 'TaskList', 'TaskStop', 'TaskWait', 'TodoList', 'Goal', 'ActivateSkill', 'ProgrammaticToolCall', 'FileLines', 'AgentList', 'AgentMessage', 'AgentInterrupt', 'AgentClose', 'TaskInput', 'SendMessage', 'TeamTaskCreate', 'TeamTaskUpdate', 'TeamTaskList', 'ListTeammates', 'Memory', 'AskUserQuestion'];
+      const safeTools = ['Read', 'Grep', 'Glob', 'FetchURL', 'WebSearch', 'TaskOutput', 'TaskList', 'TaskStop', 'TaskWait', 'TodoList', 'Goal', 'ActivateSkill', 'PTC', 'FileLines', 'AgentList', 'AgentMessage', 'AgentInterrupt', 'AgentClose', 'TaskInput', 'SendMessage', 'TeamTaskCreate', 'TeamTaskUpdate', 'TeamTaskList', 'ListTeammates', 'Memory', 'AskUserQuestion'];
       if (rule !== 'ask' && safeTools.includes(toolName)) return true;
       // A read-only SHELL COMMAND (ls/git status/rg/cat …) is as safe as a
       // read-only TOOL, so it runs without a prompt in Ask mode too — the user
@@ -15692,6 +15739,9 @@ const agents = readAgentsMd(state.cwd || state.workspace || cfg.workspace, state
     // the current value) decides, so a /focus issued while the turn ran still stands.
     if (focusAtTurnStart) state.focus = false;
     session.focus = !!state.focus;
+    // PTC mode PERSISTS, unlike focus: it is not a one-turn narrowing, it is a decision about how this session
+    // works, and the user set it deliberately.
+    session.ptcMode = !!state.ptcMode;
     session.swarm = !!state.swarm;
     // The turn's token totals, so a resumed session keeps the running cost rather
     // than restarting it at zero (the numbers have to sum across the whole
