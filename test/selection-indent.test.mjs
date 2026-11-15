@@ -35,11 +35,16 @@ function selectedColumns(row) {
   // than demanding an exact match.
   const sel = /48;2;(\d+);(\d+);(\d+)/.exec(C.selBg);
   const selRgb = sel ? [Number(sel[1]), Number(sel[2]), Number(sel[3])] : null;
+  const page = /48;2;(\d+);(\d+);(\d+)/.exec(C.bg);
+  const pageRgb = page ? [Number(page[1]), Number(page[2]), Number(page[3])] : [0, 0, 0];
+  const dist = (a, b) => Math.abs(a[0] - b[0]) + Math.abs(a[1] - b[1]) + Math.abs(a[2] - b[2]);
+  // THE SELECTION IS THE NEAREST ANCHOR, not "anything within a distance". Every row now carries the PAGE
+  // colour as its base, and a selection blended over the page sits only ~15 away from the plain selection —
+  // closer to it than a fixed threshold can distinguish from the page itself. Comparing the two distances is
+  // what tells them apart: a cell is selected when it is nearer the selection colour than the page.
   const isSel = (rgb) => {
     if (!rgb || !selRgb) return false;
-    // A blend keeps seven parts of the selection colour, so it stays within a small distance of it. The diff
-    // washes are far away (dark red / dark green), which is what makes this a reliable discriminator.
-    return Math.abs(rgb[0] - selRgb[0]) + Math.abs(rgb[1] - selRgb[1]) + Math.abs(rgb[2] - selRgb[2]) < 120;
+    return dist(rgb, selRgb) < dist(rgb, pageRgb);
   };
   while (i < s.length) {
     const m = /^\x1b\[([0-9;]*)m/.exec(s.slice(i));

@@ -324,6 +324,23 @@ export function findCommand(name) {
     || pluginCommands.find((c) => c.name === n || (c.aliases || []).includes(n));
 }
 
+/**
+ * Colour ONLY a complete command name at the start of a composer row.
+ *
+ * `/hel` is still being typed and stays plain; `/help` is a command and lights up in the theme accent.
+ * Everything after the first space is an argument and keeps whatever colour it already has.
+ */
+export function highlightCommandName(row) {
+  const s = String(row);
+  // A composer row starts with its `> ` or `! ` prompt glyph; the command follows it. The hint belongs on the
+  // WORD only, so the marker and every argument keep their own colour.
+  const m = /^(\s*(?:[>!]\s+)?)((?:\/)[^\s]*)(.*)$/.exec(s);
+  if (!m) return s;
+  const cmd = findCommand(m[2]);
+  if (!cmd) return s;
+  return m[1] + col(m[2], C.cyan + C.bold) + m[3];
+}
+
 // Check if a command name refers to a plugin command.
 export function isPluginCommand(name) {
   const n = String(name || '').replace(/^\//, '');
@@ -1832,15 +1849,18 @@ export function expandPastes(text, pastes) {
 // colour. `highlightSelection` below documents this exact hazard; this function was missing it.
 //
 // `hoverId` is the paste number the pointer is over, when it is over one. That chip keeps its
-// background and takes a BRIGHTER FOREGROUND instead — `C.hover` is a foreground (bold + bright), not a
-// background, so using it as one would collide with the chip's own `selBg` and the two would fight.
-// Without any change the chip looks like ordinary text and Ctrl+click stays undiscoverable.
-export function highlightPasteMarkers(row, hoverId = null) {
+// `surface` is the background the CALLER is about to paint under this row, or '' when the row has none. The
+// chip's own fill ends with a background reset, which would otherwise drop the rest of the row to the terminal
+// default; re-asserting the caller's surface right after keeps the row whole.
+export function highlightPasteMarkers(row, hoverId = null, surface = C.bg) {
   const s = String(row);
   if (!s.includes('[paste #')) return s;
+  // `C.bgReset` alone drops the rest of the row to the terminal's default background, because the caller has not
+  // applied the surface yet. Re-asserting it right after the reset keeps the chip a chip and leaves the row whole.
   return s.replace(PASTE_MARKER_RE, (m, id) => {
-    if (Number(id) === hoverId) return C.hover + C.selBg + m + C.bgReset + C.reset;
-    return C.selBg + m + C.bgReset;
+    const after = C.bgReset + surface;
+    if (Number(id) === hoverId) return C.hover + C.selBg + m + after;
+    return C.selBg + m + after;
   });
 }
 /**
@@ -2778,9 +2798,12 @@ function messageLines(msg, width, workspace, expanded, spin, pulseStart, rawMode
           const painted = col(t, C.gray);
           const surfaced = painted.replace(/\x1b\[0m/g, `\x1b[0m${C.termBg}`);
           const firstLive = liveEmitted++ === 0;
+          // `bodyW` ALREADY EXCLUDES THE MARKER — it is `width - 2`, and the marker is the two columns it took
+          // off. Subtracting them again stopped the surface two columns short, so the page colour showed at the
+          // right edge in the one column the scrollbar does not own.
           // The same `↳ ` the finished result puts on its first row, so the block does not shift right when the
           // command completes. Continuation rows indent by two spaces, matching the result block.
-          const rowW = Math.max(1, bodyW - (firstLive ? visualCol('↳ ') : 2));
+          const rowW = bodyW;
           out.push({ text: C.termBg + fitAnsi(surfaced, rowW) + C.bgReset, ind: firstLive ? '↳ ' : '  ', raw: true });
         }
       }
@@ -2971,7 +2994,9 @@ function messageLines(msg, width, workspace, expanded, spin, pulseStart, rawMode
     // `[error: …]` is kept: it carries the message, not just a code.
     const visible = rawLines.filter((ln) => !/^\[exit code:/.test(ln.trim()));
     const failed = msg.failed === true;
-    const shown = visible.slice(0, MAX_RESULT_LINES);
+    // A silent Bash keeps the ONE empty output row it had while running. Only Bash has this special area: an empty
+    // Read/Grep result must not grow a phantom line merely because the command itself printed nothing.
+    const shown = visible.length ? visible.slice(0, MAX_RESULT_LINES) : (msg.toolName === 'Bash' ? [''] : []);
 
     // ---- DISPLAY ORDER -----------------------------------------------------
     // The row reads as a block under the tool line, with ONE `↳` marker:
@@ -3089,8 +3114,14 @@ function messageLines(msg, width, workspace, expanded, spin, pulseStart, rawMode
           // while the terminal advanced to the next stop: the row was padded short and the previous frame's
           // glyphs stayed visible behind it. Expand before measuring, but keep the first tab as the separator
           // — the regex above already split on it.
-          const painted = paintCode(expandTabs(numbered[2]), readLang, '', inComment);
-          inComment = painted.inComment;
+          // tell the highlighter the first visible row is a comment — it coloured `of`, `switch`, `from` in a JSDoc
+          // paragraph as keywords. A row that is plainly part of a block comment (` * …`, an opening `/**`, or the
+          // closing `*/`) is painted as a comment on its own merits; the opener also seeds the rows that follow.
+          const content = expandTabs(numbered[2]);
+          const isBlockCommentRow = /^\s*(?:\/\*|\*|\*\/|\*\*)/.test(content);
+          const painted = paintCode(content, readLang, '', inComment || isBlockCommentRow);
+          if (/\/\*/.test(content) && !/\*\//.test(content)) inComment = true;
+          else if (/\*\//.test(content)) inComment = false;
           // THE SEPARATOR IS A TAB, AND `visualCol` COUNTS A TAB AS ZERO COLUMNS. A terminal advances it to the
           // next stop, so the row was measured several columns short, the terminal wrapped it itself, and the tail
           // advances it to the next stop, so the row measured short and the terminal wrapped it itself. The
@@ -4648,8 +4679,10 @@ export function renderChatLines(state, w, viewport) {
       // A USER MESSAGE IS DRAWN AS A FILLED SURFACE, the same one the composer uses: what was typed and what is
       // being typed read as one kind of thing. The frame is gone for the same reason it left the composer — a box
       // competes with the transcript and spends rows on chrome. A shell echo keeps its terminal surface instead.
-      const surfaceFor = msg.role === 'bash' ? C.termBg : (msg.role === 'user' ? C.composerBg : '');
-      if (bordered && surfaceFor && !shared) {
+      const surfaceFor = msg.role === 'bash' ? C.termBg
+        : (msg.role === 'user' || msg.role === 'steer') ? C.composerBg
+        : '';
+      if (surfaceFor && !shared) {
         for (let i = 0; i < ccc.rows.length; i++) {
           const rowText = liveAt(ccc.rows[i], i);
           if (isImageRow(rowText)) { out.push(rowText); continue; }
@@ -4746,10 +4779,7 @@ export function metricsSignature(state, n, w, expanded, innerW) {
     mix(m.pluginLog && m.expanded ? 1 : 0);
     mix(m._cache ? 1 : 0);
     mix(m._count ? 1 : 0);
-    // A pending row repaints as the light moves, with none of the fields above changing. Without this
-    // the signature matched every frame and the transcript was never re-walked, so the animation froze
-    // until the message itself was touched.
-    if (m.pending) mix(Math.floor(Date.now() / STEP_MS));
+    // The animation clock is deliberately NOT hashed here — see the note above the signature.
   }
   return h;
 }
@@ -4857,7 +4887,12 @@ function fmtTokens(n) {
  * quantity cannot read two ways on one screen.
  */
 function scaleUnit(v) {
-  return v < 100 ? v.toFixed(1).replace(/\.0$/, '') : String(Math.round(v));
+  if (v < 100) return v.toFixed(1).replace(/\.0$/, '');
+  const r = Math.round(v);
+  // A value that ROUNDS to the whole number keeps its decimal: 1048576/1e6 is 1.048576, and printing `1` put it
+  // in the same bucket as a plain million. `v === r` is the exact case.
+  if (r >= 100 && Math.abs(v - r) <= 0.5) return String(r);
+  return v.toFixed(1).replace(/\.0$/, '');
 }
 
 // Thousands separators for a plain count. fmtTokens rounds to k/M, which is right
@@ -5667,7 +5702,13 @@ function dimRange(row, from, to) {
  *  The floor exists for the same reason: a fill already at the page's own brightness has
  *  nowhere to go, and forcing it lower only makes it read as a hole.
  */
-const DIM_BACKGROUND_SCALE = 0.72;
+// HOW FAR A FILL RECEDES, as a fraction of ITS OWN DISTANCE FROM THE PAGE.
+//
+// A fixed multiplier treats every fill the same, and they are not: the page colour itself has nowhere to go, a
+// barely-off-page surface has almost nothing to lose, and a saturated accent band has the most to give. Measured
+// against the page, a flat 0.72 either left a dark fill untouched or crushed a bright one into the background.
+// The distance from the page IS "how much this stands out", so shrinking THAT is the only rule that behaves.
+const DIM_BACKGROUND_SCALE = 0.55;
 const DIM_BACKGROUND_FLOOR = 28;
 
 /**
@@ -5691,13 +5732,17 @@ const DIM_BACKGROUND_FLOOR = 28;
  * does not implement is dropped silently, which looks exactly like "the fill vanished" — and
  * that is what happened before this was noticed.
  */
-function dimmedBg([r, g, b]) {
+function dimmedBg(rgb) {
   if (!TRUECOLOR) return '';
-  const k = (v) => Math.max(DIM_BACKGROUND_FLOOR, Math.min(255, Math.round(v * DIM_BACKGROUND_SCALE)));
-  const out = [k(r), k(g), k(b)];
-  // Unchanged means the fill was already at the floor: darkening further would only make it
-  // read as a hole punched in the page.
-  if (out[0] === r && out[1] === g && out[2] === b) return '';
+  // The page, parsed once per call: this runs per cell while a picker is open, and `C.bg` is a string.
+  const page = /48;2;(\d+);(\d+);(\d+)/.exec(C.bg);
+  if (!page) return '';
+  const base = [Number(page[1]), Number(page[2]), Number(page[3])];
+  // Move each channel the given fraction of the way from the fill to the page. A fill already AT the page comes
+  // out unchanged, and the caller then leaves it alone rather than drawing a hole.
+  const toward = (v, i) => Math.round(base[i] + (v - base[i]) * (1 - DIM_BACKGROUND_SCALE));
+  const out = [toward(rgb[0], 0), toward(rgb[1], 1), toward(rgb[2], 2)];
+  if (out[0] === rgb[0] && out[1] === rgb[1] && out[2] === rgb[2]) return '';
   return bgRgb(out[0], out[1], out[2]);
 }
 
@@ -6671,10 +6716,12 @@ const queueH = takeover ? 0 : queuePanelHeight(state);
         // covered. The payload is padded to the column before the rail instead of being cut, so the sequence
         // survives intact and the rail is drawn where it always is.
         if (isImageRow(row)) {
-          const rail = fg + bg + glyphChar + C.reset;
+          const rail = fg + bg + glyphChar;
           row = row + rail;
         } else {
-          row = fitAnsi(row, w - 1) + fg + bg + glyphChar + C.reset;
+          // NO TRAILING RESET. The page-colour pass already closes the row, and the next row re-asserts its own
+          // background at the front — a reset here only overwrote this cell's track colour or left a stray escape.
+          row = fitAnsi(row, w - 1) + fg + bg + glyphChar;
         }
       }
       // `body` IS INDEXED BY TRANSCRIPT ROW, so the padding must not be appended to it. The loop starts at
@@ -7472,7 +7519,7 @@ const queueH = takeover ? 0 : queuePanelHeight(state);
       // Which chip the pointer is over, if any. `state.pasteHover` is the paste NUMBER, set by the mousehover
       // handler from the same index maths the expand gesture uses, so the highlight and the click can never
       // disagree about which chip they mean.
-      const styledRow = highlightPasteMarkers(rawRow, state.pasteHover);
+      const styledRow = highlightCommandName(highlightPasteMarkers(rawRow, state.pasteHover));
       const pre = composerInput(state).prefix;
       const textW = Math.max(1, cInner - 2);
       // Apply composer text selection highlight if a selection is active.
@@ -7917,7 +7964,14 @@ const queueH = takeover ? 0 : queuePanelHeight(state);
     }
   }
 
-  let padded = lines.map((l) => (isImageRow(l) ? l : fitAnsi(l, w)));
+  // THE PAGE COLOUR IS THE BASE OF EVERY ROW, and it is re-asserted after every reset the row embeds: an
+  // `ESC[0m` ends an inline span but also clears the background, so seeding only the front left most of the row
+  // unpainted. A cell with its own background keeps it — that escape comes later and overrides this.
+  let padded = lines.map((l) => {
+    if (isImageRow(l)) return l;   // a bitmap payload is not text; a trailing background would corrupt it
+    const base = fitAnsi(l, w).replace(/\x1b\[0m/g, `\x1b[0m${C.bg}`);
+    return C.bg + base + C.bgReset;
+  });
   // Mixin seam: beforeRender - plugins may rewrite the painted lines. Runs before the
   // ANSI string is built so the change actually reaches the screen.
   try { const out = runPatchSync('beforeRender', { lines: padded, state, cols: w, rows: h }, (c) => c); if (out && Array.isArray(out.lines)) padded = out.lines; } catch (e) {}

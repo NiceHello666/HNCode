@@ -741,6 +741,7 @@ export const PATCH_TARGETS = [
   "tui.js#formatToolLine",
   "tui.js#FRAME_MS",
   "tui.js#framesPerChar",
+  "tui.js#highlightCommandName",
   "tui.js#highlightPasteMarkers",
   "tui.js#highlightSelection",
   "tui.js#isFailureResult",
@@ -886,4 +887,4 @@ export const PATCH_TARGET_SET = new Set(PATCH_TARGETS);
 /** True when `target` names a real, patchable symbol. */
 export function isPatchTarget(target) { return PATCH_TARGET_SET.has(String(target)); }
 
-export const GENERATED_FROM = "hncode src/ (81 files, 873 symbols)";
+export const GENERATED_FROM = "hncode src/ (81 files, 874 symbols)";
