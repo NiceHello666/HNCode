@@ -47,14 +47,40 @@ export const HOOK_EVENTS = [
   'SessionEnd',
   'UserPromptSubmit',
   'PreToolUse',
+  'PermissionRequest',
   'PostToolUse',
   'PostToolUseFailure',
+  'FileChanged',
   'Stop',
+  'SubagentStart',
   'SubagentStop',
   'PreCompact',
   'PostCompact',
   'Notification',
+  'ConfigChange',
+  'CwdChanged',
 ];
+
+/** What each event means, shown by /hooks so the panel is a reference rather than a bare list of names. */
+export const HOOK_EVENT_HINTS = {
+  SessionStart: 'a session opens or resumes',
+  SessionEnd: 'a session is closing',
+  UserPromptSubmit: 'before your prompt is sent',
+  PreToolUse: 'before a tool runs; can block it',
+  PermissionRequest: 'a tool needs your approval',
+  PostToolUse: 'after a tool succeeds',
+  PostToolUseFailure: 'after a tool fails',
+  FileChanged: 'after a file is written or edited',
+  Stop: 'the model finishes a turn',
+  SubagentStart: 'a subagent is spawned',
+  SubagentStop: 'a subagent finishes',
+  PreCompact: 'before history is summarized',
+  PostCompact: 'after history is summarized',
+  Notification: 'the app needs your attention',
+  ConfigChange: 'a setting or config file changes',
+  CwdChanged: 'the working directory changes',
+};
+
 
 // A hook that hangs must not hang the agent. 60s is generous for a formatter or
 // a lint pass and still bounded.
@@ -221,7 +247,12 @@ export async function runShellHooks(config, event, payload, cwd) {
   // ran after reads and searches too.
   const isToolEvent = event === 'PreToolUse' || event === 'PostToolUse' || event === 'PostToolUseFailure';
   const results = [];
-  for (const entry of list) {
+  for (const raw of list) {
+    // A hook entry can arrive from a CONFIG FILE (which fills in the defaults) or from a caller that built it by
+    // hand — a test, a plugin, or one of the TUI-side notifications. The timeout must exist in both cases: an
+    // undefined one made setTimeout fire at once and reported "timed out after NaNs" without ever running the
+    // command.
+    const entry = { ...raw, timeoutMs: Number.isFinite(raw.timeoutMs) ? raw.timeoutMs : HOOK_TIMEOUT_MS };
     if (isToolEvent && !matcherApplies(entry.matcher, payload && payload.toolName)) continue;
     const r = await runHookCommand(entry, event, payload, cwd);
     results.push({ entry, ...r });
@@ -239,19 +270,25 @@ export async function runShellHooks(config, event, payload, cwd) {
 }
 
 // Human-readable summary for /hooks.
-export function describeHooks(config) {
+//
+// EVERY EVENT IS LISTED, including the ones with nothing configured. The old version printed a single
+// "No hooks configured." line when the config was empty, which told the user nothing about what COULD be hooked
+// and left the panel almost blank. Listing the full set is what makes the screen a reference: a reader sees the
+// eleven events, which of them are active, and where the files live, without having to read the docs first.
+export function describeHooks(config, workspace) {
   const hooks = (config && config.hooks) || {};
   const lines = [];
-  const total = Object.values(hooks).reduce((a, l) => a + l.length, 0);
-  if (!total) return ['No hooks configured.', '', `Global file:  ${globalHooksFile()}`, `Project file: ${projectHooksFile(process.cwd())}`];
+  const total = HOOK_EVENTS.reduce((a, ev) => a + ((hooks[ev] || []).length), 0);
+  lines.push(`${total} hook${total === 1 ? '' : 's'} configured across ${HOOK_EVENTS.length} events.`, '');
   for (const ev of HOOK_EVENTS) {
-    const list = hooks[ev];
-    if (!list || !list.length) continue;
-    lines.push(`${ev}:`);
+    const list = hooks[ev] || [];
+    const hint = HOOK_EVENT_HINTS[ev] || '';
+    lines.push(`${ev}${hint ? ` — ${hint}` : ''}: ${list.length ? `${list.length} configured` : '(none)'}`);
     for (const e of list) {
       lines.push(`  ${e.matcher ? `[${e.matcher}] ` : ''}${e.command}`);
       lines.push(`      (${e.source})`);
     }
   }
+  lines.push('', `Global file:  ${globalHooksFile()}`, `Project file: ${projectHooksFile(workspace || process.cwd())}`);
   return lines;
 }

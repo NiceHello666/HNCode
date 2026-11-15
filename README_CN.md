@@ -6,9 +6,31 @@
 
 [English](https://github.com/NiceHello666/HNCode/blob/main/README.md) | 简体中文 | [Wiki](https://github.com/NiceHello666/HNCode/blob/main/README_WIKI_CN.md)
 
-> **这是我vibe coding的产物. 我在尽全力让它变的完美, 所以如果你有何建议, 欢迎开一个issue.**
+一个住在终端里的编程 agent。指到某个仓库、说清楚要改什么，它会读文件、改文件、跑测试，全过程都在一个原始终端渲染器里完成，包括 Windows Terminal 上那些会让多数终端界面花屏的场景。
 
-一个基于终端用户界面（TUI）的 AI 编程助手，灵感源自 [Kimi Code](https://github.com/MoonshotAI/kimi-code)。它提供青色蓝调 (Cyan-blue) 的 TUI 界面，支持 OpenAI 和 Anthropic 双协议，配备 MCP 风格的工具集和智能上下文管理。
+## 为什么用它
+
+**原始终端，做对了。** agent 和终端之间没有 UI 库。渲染器自己写终端序列、自己维护单元格缓冲，所以 blessed 一类库会在非 TTY 流上花屏的 Windows Terminal，也能拿到和别处一致的排版。能力是实时探测的：同步输出、Kitty 键盘协议、图片协议，以及跟着背景色走的主题。
+
+**打字时跟得上。** Markdown 按块渲染并带缓存，流式回复不用每一帧都重新解析整份记录；重绘只写变化的单元格。消息的 token 数按对象记忆化，并维护滚动总量，context 计量不再在每一轮里反复遍历长历史。读过几百个文件之后，这个差别肉眼可见。
+
+**为「看代码」而做。** diff 和文件读取带语法高亮，行级红绿底色在鼠标选区下仍然保留，块注释整段灰色，CJK 宽字符对齐，滚动条有亚单元格精度，LaTeX 排版成位图并带 Unicode 与源码回退，Mermaid 画成图。`/raw` 可以逐字看模型的原始回复，用来分辨是回答本身不对还是渲染不对。
+
+**全部就在这个仓库里。** 零运行时依赖：token 估算器、`/web` 背后的 RFC6455 WebSocket、图片编码器、语法高亮器、插件与 skill 管理器都在这里，能读也能改。`npm install -g @hncode/hncode` 装的就是这份代码。
+
+---
+
+## 一次会话
+
+```bash
+$ npm install -g @hncode/hncode
+$ cd my-project
+$ hncode
+
+> 改完配置之后测试挂了，查清楚原因并修好
+```
+
+它会读配置和失败的测试，跑一遍测试，改文件，再跑一遍。每次工具调用都带着自己的语法高亮 diff，改动发生之前就已经在屏幕上。
 
 ---
 

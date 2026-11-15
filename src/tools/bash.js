@@ -277,6 +277,9 @@ if (child.stdout) child.stdout.on('data', push);
       // keeps running, gets registered as a task, and this promise resolves
       // immediately with a "moved to background" note so the agent continues.
       if (ctx) {
+        // THE HOOK BELONGS TO THE NEWEST FOREGROUND COMMAND. Replacing it here is what makes the identity check
+        // above correct: a command that finishes later compares `ctx._foreground.child` against its own child and
+        // leaves someone else's hook alone.
         ctx._foreground = {
           command: args.command,
           description: args.description || args.command,
@@ -288,6 +291,10 @@ if (child.stdout) child.stdout.on('data', push);
             // Stop treating this as foreground: drop the abort listener so an
             // Esc after detaching does not kill the now-background task.
             if (signal) signal.removeEventListener('abort', onAbort);
+            // AND DROP THE HOOK. `child.on('close')` clears it for a command that finishes on its own, but a
+            // detached one resolves HERE and never reaches that path — so the hook stayed set, and a second Ctrl+B
+            // called `detach` again, got null, and did nothing at all.
+            if (ctx && ctx._foreground && ctx._foreground.child === child) ctx._foreground = null;
             const id = registerBackgroundTask(args, child, ctx, chunks);
             resolve(`Moved to background as task #${id}. It keeps running; inspect with TaskList / TaskOutput {task_id: "${id}"}.`);
             return id;
@@ -296,7 +303,7 @@ if (child.stdout) child.stdout.on('data', push);
       }
       child.on('close', (code) => {
         cleanup();
-        if (ctx) ctx._foreground = null;
+        if (ctx && ctx._foreground && ctx._foreground.child === child) ctx._foreground = null;
         if (settled) return;
         settled = true;
         // Flush the last partial line the live sink was holding back.
@@ -313,9 +320,9 @@ if (child.stdout) child.stdout.on('data', push);
         resolve(out);
       });
       child.on('error', (e) => {
-
         cleanup();
-        if (ctx) ctx._foreground = null;
+        // Same identity check as `close`: a failing command must not take another command's hook with it.
+        if (ctx && ctx._foreground && ctx._foreground.child === child) ctx._foreground = null;
         if (settled) return;
         settled = true;
         resolve(truncateBuf(sanitizeShellOutput(decodeChunks(chunks))) + `\n[error: ${e.message}]`);

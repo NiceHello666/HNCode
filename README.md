@@ -6,9 +6,31 @@
 
 English | [简体中文](https://github.com/NiceHello666/HNCode/blob/main/README_CN.md) | [Wiki](https://github.com/NiceHello666/HNCode/blob/main/README_WIKI.md)
 
-> **This is a product of my vibe coding session. I'm trying my best to make it perfect, so if you have any suggestions, feel free to open an issue.**
+A coding agent that lives in your terminal. Point it at a repo, describe the change, and it reads the files, edits them and runs the tests — inside a raw-TTY renderer that stays correct on Windows Terminal, where most terminal UIs garble.
 
-A cyan-blue terminal user interface (TUI) coding agent inspired by [Kimi Code](https://github.com/MoonshotAI/kimi-code), with OpenAI + Anthropic support, an MCP-style toolbelt, and intelligent context management.
+## Why this one
+
+**Raw terminal, done properly.** No UI library sits between the agent and the terminal. The renderer writes the escape sequences itself and keeps its own cell buffer, so Windows Terminal — where blessed-style libraries garble on a non-TTY stream — gets the same layout as everything else. Capabilities are probed live: synchronized output, the Kitty keyboard protocol, image protocols, and a theme that follows the detected background.
+
+**Fast enough to type against.** Markdown is rendered block-by-block with a cache, so a streaming reply does not re-parse the whole transcript on every frame. Only changed cells are repainted. Message token counts are memoized per message and kept as a rolling total; the context gauge no longer re-walks a long history several times per turn. It makes a visible difference once a session has read a few hundred files.
+
+**Built to be looked at.** Syntax-highlighted diffs and file reads, line-level red/green washes that survive a mouse selection, block comments that stay grey, wide CJK glyphs, a scrollbar with sub-cell resolution, LaTeX typeset as a bitmap with Unicode and source fallbacks, Mermaid fences drawn as diagrams. `/raw` shows the model's reply verbatim when you need to tell a bad answer from a bad render.
+
+**Everything is in this repository.** No runtime dependencies. The token estimator, the RFC6455 WebSocket behind `/web`, the image encoder, the syntax highlighter and the plugin/skill managers are all here, readable and patchable. `npm install -g @hncode/hncode` installs exactly this code.
+
+---
+
+## A session
+
+```bash
+$ npm install -g @hncode/hncode
+$ cd my-project
+$ hncode
+
+> the tests fail after the config change — find out why and fix it
+```
+
+The agent reads the config and the failing test, runs the suite, edits the file, and runs it again. Every tool call appears with its own syntax-highlighted diff, so the change is on screen before it happens.
 
 ---
 

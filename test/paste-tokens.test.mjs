@@ -19,11 +19,11 @@ import { estimateTokens, estimateMessageTokens, estimateMessagesTokens } from '.
 test('pasteMarker names the shape of what was pasted', () => {
   // A single-line text paste stays literal (no marker), which is why lineCount 1 is
   // still passed here for the image case only.
-  assert.equal(pasteMarker(1, 12), '[paste #1 +12 lines]');
-  assert.equal(pasteMarker(2, 1), '[paste #2 1 lines]');
+  assert.equal(pasteMarker(1, 12), `[paste #1 +12 lines]`);
+  assert.equal(pasteMarker(2, 1), `[paste #2 1 lines]`);
   // An image shares the `paste #N` prefix so it inherits the chip styling and the
   // atomic caret behaviour; only the suffix says it is a picture.
-  assert.equal(pasteMarker(3, 1, 'image'), '[paste #3 image]');
+  assert.equal(pasteMarker(3, 1, 'image'), `[paste #3 image]`);
 });
 
 test('expandPastes replaces every marker with its payload, text or image', () => {
@@ -31,17 +31,17 @@ test('expandPastes replaces every marker with its payload, text or image', () =>
     [1, { text: 'a\nb', lines: 2, kind: 'paste' }],
     [3, { text: 'C:\\tmp\\shot.png', lines: 1, kind: 'image' }],
   ]);
-  assert.equal(expandPastes('[paste #3 image]', pastes), 'C:\\tmp\\shot.png');
-  assert.equal(expandPastes('[paste #1 +2 lines]', pastes), 'a\nb');
+  assert.equal(expandPastes(pasteMarker(3, 1, 'image'), pastes), 'C:\\tmp\\shot.png');
+  assert.equal(expandPastes(pasteMarker(1, 2), pastes), 'a\nb');
   // Mixed, and the surrounding text is preserved verbatim.
-  assert.equal(expandPastes('see [paste #3 image] and [paste #1 +2 lines]', pastes),
+  assert.equal(expandPastes(`see ${pasteMarker(3, 1, 'image')} and ${pasteMarker(1, 2)}`, pastes),
     'see C:\\tmp\\shot.png and a\nb');
 });
 
 test('expandPastes leaves an unknown marker alone', () => {
   // A marker whose entry was cleared (e.g. after an edit) must not vanish or throw.
   const pastes = new Map();
-  assert.equal(expandPastes('[paste #9 +1 lines]', pastes), '[paste #9 +1 lines]');
+  assert.equal(expandPastes(pasteMarker(9, 2), pastes), '[paste #9 +2 lines]');
 });
 
 test('expandPastes is a no-op when there is no marker', () => {
@@ -51,7 +51,7 @@ test('expandPastes is a no-op when there is no marker', () => {
 });
 
 test('highlightPasteMarkers wraps both marker forms and nothing else', () => {
-  const row = 'a [paste #1 +2 lines] b [paste #2 image] c';
+  const row = `a ${pasteMarker(1, 2)} b ${pasteMarker(2, 1, 'image')} c`;
   const out = highlightPasteMarkers(row);
   const wrapped = out.match(/\x1b\[[0-9;]*m\[paste #\d+ [^\]]*\]/g) || [];
   assert.equal(wrapped.length, 2, 'both markers must be wrapped');

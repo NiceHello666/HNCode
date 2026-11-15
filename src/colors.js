@@ -50,7 +50,11 @@ export const TEAL = rgb(0, 184, 219);
 export const CYAN = rgb(0, 215, 255);
 export const BLUE = rgb(66, 135, 245);
 export const FG = TEAL;                   // primary fg
-export const BG = rgb(0, 18, 26);
+// `brgb`, not `rgb`: this constant is used as a BACKGROUND (`C.bg`), and a foreground sequence in a background
+// slot is silently ignored — the cell keeps whatever background was already in force. It only ever looked correct
+// because `setTheme` overwrites `C.bg` on startup, so the wrong escape survived in the initial value where nothing
+// exercised it.
+export const BG = brgb(0, 18, 26);
 export const BORDER = rgb(70, 130, 180);
 
 // Named accent colours per theme. `auto` keeps the brand cyan-blue and lets the
@@ -74,7 +78,7 @@ const THEMES = {
     surface: [46, 46, 46],
   },
   light: {
-    fg: [26, 26, 26], bg: [255, 255, 255],
+    fg: [26, 26, 26], bg: [250, 250, 250],
     teal: [0, 102, 128], cyan: [0, 122, 153], blue: [10, 77, 158], border: [138, 155, 176],
     hover: [0, 78, 102], selBg: [200, 230, 239],
     red: [179, 38, 30], green: [30, 122, 60], yellow: [160, 120, 0], orange: [178, 90, 0],
@@ -152,7 +156,7 @@ const THEMES = {
     teal: [38, 139, 210], cyan: [38, 139, 210], blue: [108, 113, 196], border: [147, 161, 161],
     hover: [211, 54, 130], selBg: [238, 232, 213],
     red: [220, 50, 47], green: [133, 153, 0], yellow: [181, 137, 0], orange: [203, 75, 22],
-    white: [253, 246, 227], gray: [147, 161, 161],
+    white: [101, 123, 131], gray: [147, 161, 161],
     surface: [238, 232, 213],
   },
   rose: {
@@ -267,6 +271,13 @@ export const C = {
   // is rgb(48,48,48) = #303030 — clearly lifted off a near-black terminal without
   // washing the text out. Truecolor gets `#2e2e2e`, the same shade written exactly.
   bgPanel: TRUECOLOR ? '\x1b[48;2;46;46;46m' : '\x1b[48;5;236m',
+  // The code-surface background, set by setTheme from the theme's own page colour. A placeholder until then, so
+  // code drawn before the first setTheme still has a surface.
+  codeBg: TRUECOLOR ? '\x1b[48;2;12;20;26m' : '\x1b[48;5;233m',
+  // The terminal-surface background, set by setTheme from the theme's page colour. Placeholder until then.
+  termBg: TRUECOLOR ? '\x1b[48;2;0;14;21m' : '\x1b[48;5;234m',
+  // The composer's neutral-grey surface. Placeholder until setTheme runs.
+  composerBg: TRUECOLOR ? '\x1b[48;2;44;44;46m' : '\x1b[48;5;237m',
   border: BORDER,
   red: '\x1b[91m',
   green: '\x1b[92m',
@@ -387,6 +398,12 @@ export function setTheme(name) {
   if (!t) return false;
   appliedTheme = resolved;
 
+  // A light page inverts several surface decisions, so everything below needs this. Declared at the top because
+  // the scrollbar and the context bar — set before the diff section — use it too.
+  const isLight = t.bg && t.bg[0] > 128;
+  // Mix `a` towards `b`: k = 1 is all `a`, k = 0 is all `b`.
+  const mix = (a, b, k) => a.map((v, i) => Math.round(v * k + b[i] * (1 - k)));
+
 
   
   // Update foreground colors
@@ -415,8 +432,11 @@ export function setTheme(name) {
     Math.min(255, Math.round(t.teal[2] * 0.6 + 255 * 0.4)),
   ];
   const hover = t.hover || [190, 245, 255];
-  C.scrollTrackFg = rgb(0x25, 0x25, 0x27);
-  C.scrollTrackBg = brgb(0x25, 0x25, 0x27);
+  // The rail: the page, one step darker, so it reads as part of the surface rather than a strip of grey
+  // from another interface. Was a fixed `#252527` in every theme.
+  const track = mix(t.bg, [0, 0, 0], isLight ? 0.93 : 0.86);
+  C.scrollTrackFg = rgb(...track);
+  C.scrollTrackBg = brgb(...track);
   C.scrollThumbFg = rgb(...t.teal);
   C.scrollThumbBg = brgb(...t.teal);
   C.scrollThumbHoverFg = rgb(...hover);
@@ -453,13 +473,11 @@ export function setTheme(name) {
   // still reads as text, strong enough that the block is visible without reading it. Mixing towards `t.bg` rather
   // than towards black is what makes a light theme work — a dark red wash on white is a black bar with letters in
   // it, while a pale red is a highlighter mark.
-  const mix = (a, b, k) => a.map((v, i) => Math.round(v * k + b[i] * (1 - k)));
   const green = t.green || [120, 200, 120];
   const red = t.red || [230, 80, 80];
   // ABOUT HALF. Lower mixes disappear into a dark page — the wash has to be obvious without being read, and at
   // 16% an added block looked like ordinary text with a faint tint. Light backgrounds need slightly more still,
   // because the same distance in RGB is a smaller difference next to white.
-  const isLight = t.bg && t.bg[0] > 128;
   const line = isLight ? 0.52 : 0.46;
   const word = isLight ? 0.68 : 0.62;
   C.diffAddBg = brgb(...mix(green, t.bg, line));
@@ -470,6 +488,47 @@ export function setTheme(name) {
   // so they read ON that wash — not the theme's plain green/red, which is tuned for the page background.
   C.diffAddFg = rgb(...mix(green, t.fg, 0.55));
   C.diffDelFg = rgb(...mix(red, t.fg, 0.55));
+
+  // THE CODE-SURFACE BACKGROUND, one step off the page. Read rows, Write previews and diff CONTEXT lines sit on
+  // it; diff `+`/`-` rows keep their green/red wash on top.
+  //
+  // The step is a VISIBLE DISTANCE, not a ratio. 6% of a near-black page doubles its brightness, while 6% of a
+  // white page is 16 levels out of 255 and reads as no change at all. A light page also has no brighter side to
+  // step toward, so its steps stay near white — 250 page, 241 code, 231 terminal — where a larger step turned the
+  // whole screen grey.
+  const codeStep = isLight ? 0.96 : 0.94;
+  C.codeBg = brgb(...mix(t.bg, t.fg, codeStep));
+
+  // THE CONTEXT BAR FOLLOWS THE THEME. These six were fixed constants in every palette, so a dracula or gruvbox
+  // session drew the same navy-to-blue bar as the default dark one — and its "free" segment was a neutral grey
+  // that matched neither the bar nor the page. The bar is a row of FILLS read at a glance, so each step is a mix
+  // of the theme accent into its own page: the free part is the plain page, and the used parts climb towards the
+  // accent.
+  const ctxBase = mix(t.bg, t.fg, codeStep);   // = codeBg, the brightest surface
+  const ctxMix = (k) => brgb(...mix(ctxBase, t.teal, k));
+  C.ctxSystem = ctxMix(0.68);
+  C.ctxPrompt = ctxMix(0.56);
+  C.ctxAssistant = ctxMix(0.42);
+  C.ctxThinking = ctxMix(0.26);
+  C.ctxTools = ctxMix(0.10);
+  // The free segment is the page itself: "nothing here yet" should look like the surface it sits on, and a separate
+  // grey made the empty half of the bar look like a second widget.
+  C.ctxFree = brgb(...ctxBase);
+  // THE TERMINAL-SURFACE BACKGROUND: the same small step on the OTHER side of the page, so the ordering holds on
+  // both kinds of theme — page < terminal < code on a dark one, terminal < code < page on a light one. Bash output
+  // and the shell-mode echo sit on it: a command reads as "a terminal ran this" without becoming a black band,
+  // which is what a deeper well looked like — a hole in the screen rather than a region of it.
+  //
+  // Towards BLACK on a dark theme and towards the foreground on a light one: mixing a dark page further towards its
+  // own foreground would make it lighter, which is `codeBg`'s job, not this one.
+  C.termBg = brgb(...mix(t.bg, [0, 0, 0], isLight ? 0.925 : 0.78));
+  // THE COMPOSER SURFACE: NEUTRAL, and derived from the page. Neutral because a hue here reads as "more page"
+  // rather than as an input field; derived because a fixed grey meant every theme drew the default dark theme's
+  // input box. The three channels are set to the page's own LUMINANCE plus a step, so the field is grey while
+  // still belonging to the palette it sits in. A theme may override it with its own `composer` triple.
+  const pageLum = (t.bg[0] + t.bg[1] + t.bg[2]) / 3;
+  const neutral = Math.max(0, Math.min(255, Math.round(pageLum + (isLight ? -14 : 14))));
+  C.composerBg = brgb(...(t.composer || [neutral, neutral, neutral + (isLight ? 0 : 2)]));
 
   // A comment: the palette's foreground, pulled most of the way towards its background so it reads as quiet. A dark
   // page can afford a looser mix; a light one cannot — solar's foreground is already a muted blue-grey, and at the

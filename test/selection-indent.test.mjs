@@ -14,6 +14,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { composeFrame, renderChatLines } from '../src/tui.js';
+import { C } from '../src/colors.js';
 
 const strip = (s) => String(s).replace(/\x1b\[[0-9;]*m/g, '');
 
@@ -29,11 +30,28 @@ function selectedColumns(row) {
   let col = 0;
   let inSel = false;
   let i = 0;
+  // The selection colour, in RGB. A plain row is painted with exactly this; a diff row is painted with a blend
+  // of this and its own red/green wash, so the test accepts a colour that LEANS towards the selection rather
+  // than demanding an exact match.
+  const sel = /48;2;(\d+);(\d+);(\d+)/.exec(C.selBg);
+  const selRgb = sel ? [Number(sel[1]), Number(sel[2]), Number(sel[3])] : null;
+  const page = /48;2;(\d+);(\d+);(\d+)/.exec(C.bg);
+  const pageRgb = page ? [Number(page[1]), Number(page[2]), Number(page[3])] : [0, 0, 0];
+  const dist = (a, b) => Math.abs(a[0] - b[0]) + Math.abs(a[1] - b[1]) + Math.abs(a[2] - b[2]);
+  // THE SELECTION IS THE NEAREST ANCHOR, not "anything within a distance". Every row now carries the PAGE
+  // colour as its base, and a selection blended over the page sits only ~15 away from the plain selection —
+  // closer to it than a fixed threshold can distinguish from the page itself. Comparing the two distances is
+  // what tells them apart: a cell is selected when it is nearer the selection colour than the page.
+  const isSel = (rgb) => {
+    if (!rgb || !selRgb) return false;
+    return dist(rgb, selRgb) < dist(rgb, pageRgb);
+  };
   while (i < s.length) {
     const m = /^\x1b\[([0-9;]*)m/.exec(s.slice(i));
     if (m) {
       const p = m[1];
-      if (/^48;5;/.test(p) || /^48;2;/.test(p)) inSel = true;
+      const bg = /48;2;(\d+);(\d+);(\d+)/.exec(p);
+      if (bg) inSel = isSel([Number(bg[1]), Number(bg[2]), Number(bg[3])]);
       else if (p === '49' || p === '0') inSel = false;
       i += m[0].length;
       continue;

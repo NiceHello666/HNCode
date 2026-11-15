@@ -218,6 +218,7 @@ export const COMMANDS = [
   { name: 'auto-trim', aliases: ['autotrim'], desc: 'Auto tool-result trimming: the threshold is a share of the WINDOW, `keep` a share of the tool-result TEXT', priority: 40, argumentHint: '[on|off | threshold <n> | keep <n>]' },
   { name: 'title', aliases: ['rename'], desc: 'Set or show session title (also sets window title)', priority: 60, argumentHint: '<title>' },
   { name: 'auto-title', desc: 'Let the model name the session from its first message (persisted)', priority: 60, argumentHint: '[on|off]' },
+  { name: 'ptc', desc: 'PTC mode: every tool call goes through the programmatic sandbox, no direct tools', priority: 55, argumentHint: '[on|off]' },
   { name: 'status', desc: 'Show current session and runtime status', priority: 60 },
   { name: 'doctor', desc: 'Diagnose the environment: config, store, MCP, hooks, disk, git, terminal', priority: 60, argumentHint: '[--all] [--probe]' },
   { name: 'memory-profile', aliases: ['memprof'], desc: 'Where this session’s memory goes: text vs tool results vs tool arguments', priority: 60, argumentHint: '[--verbose]' },
@@ -321,6 +322,23 @@ export function findCommand(name) {
   const n = String(name || '').replace(/^\//, '');
   return COMMANDS.find((c) => c.name === n || (c.aliases || []).includes(n))
     || pluginCommands.find((c) => c.name === n || (c.aliases || []).includes(n));
+}
+
+/**
+ * Colour ONLY a complete command name at the start of a composer row.
+ *
+ * `/hel` is still being typed and stays plain; `/help` is a command and lights up in the theme accent.
+ * Everything after the first space is an argument and keeps whatever colour it already has.
+ */
+export function highlightCommandName(row) {
+  const s = String(row);
+  // A composer row starts with its `> ` or `! ` prompt glyph; the command follows it. The hint belongs on the
+  // WORD only, so the marker and every argument keep their own colour.
+  const m = /^(\s*(?:[>!]\s+)?)((?:\/)[^\s]*)(.*)$/.exec(s);
+  if (!m) return s;
+  const cmd = findCommand(m[2]);
+  if (!cmd) return s;
+  return m[1] + col(m[2], C.cyan + C.bold) + m[3];
 }
 
 // Check if a command name refers to a plugin command.
@@ -1543,7 +1561,9 @@ function paintCode(text, lang, bg, inComment = false) {
   // whole body inside one token, so it drew with no wash at all while the code below it was washed, and the block
   // looked striped. Seeding the background at the front covers that first run; the replacement covers every run
   // after it, because each token closes with a reset that would otherwise drop back to the page background.
-  return { text: bg + raw.replace(/\x1b\[0m/g, `\x1b[0m${bg}`) + C.reset, inComment: result.inComment };
+  // ESC[39m, NOT ESC[0m: a bare reset clears the background too, and the row's wash must survive past the last
+  // token. The final glyph is still inside the coloured run, so nothing is left over to clear.
+  return { text: bg + raw.replace(/\x1b\[0m/g, `\x1b[0m${bg}`) + '\x1b[39m', inComment: result.inComment };
 }
 
 /**
@@ -1829,15 +1849,18 @@ export function expandPastes(text, pastes) {
 // colour. `highlightSelection` below documents this exact hazard; this function was missing it.
 //
 // `hoverId` is the paste number the pointer is over, when it is over one. That chip keeps its
-// background and takes a BRIGHTER FOREGROUND instead — `C.hover` is a foreground (bold + bright), not a
-// background, so using it as one would collide with the chip's own `selBg` and the two would fight.
-// Without any change the chip looks like ordinary text and Ctrl+click stays undiscoverable.
-export function highlightPasteMarkers(row, hoverId = null) {
+// `surface` is the background the CALLER is about to paint under this row, or '' when the row has none. The
+// chip's own fill ends with a background reset, which would otherwise drop the rest of the row to the terminal
+// default; re-asserting the caller's surface right after keeps the row whole.
+export function highlightPasteMarkers(row, hoverId = null, surface = C.bg) {
   const s = String(row);
   if (!s.includes('[paste #')) return s;
+  // `C.bgReset` alone drops the rest of the row to the terminal's default background, because the caller has not
+  // applied the surface yet. Re-asserting it right after the reset keeps the chip a chip and leaves the row whole.
   return s.replace(PASTE_MARKER_RE, (m, id) => {
-    if (Number(id) === hoverId) return C.hover + C.selBg + m + C.bgReset + C.reset;
-    return C.selBg + m + C.bgReset;
+    const after = C.bgReset + surface;
+    if (Number(id) === hoverId) return C.hover + C.selBg + m + after;
+    return C.selBg + m + after;
   });
 }
 /**
@@ -2750,17 +2773,38 @@ function messageLines(msg, width, workspace, expanded, spin, pulseStart, rawMode
     // Live output of a RUNNING command (Bash): rendered under the "Using …"
     // row exactly like the finished "Used …" output, just not done yet. Only
     // the tail is shown (capped) so a chatty command cannot flood the frame.
-    if (msg.pending && typeof msg.liveOutput === 'string' && msg.liveOutput.length) {
+    if (msg.pending && msg.toolName === 'Bash') {
+      // THE OUTPUT AREA EXISTS BEFORE THERE IS ANY OUTPUT. A Bash call used to grow a row only once the
+      // command produced its first byte, so the transcript shifted down at that moment and the tool row sat alone
+      // until then — with no sign that this is where the output will appear. It opens with one empty surface row
+      // and fills that row as data arrives.
       const bodyW = Math.max(1, width - visualCol('  '));
-      const rawLines = sanitizeText(msg.liveOutput).replace(/\r\n/g, '\n').split('\n');
+      const rawLines = sanitizeText(msg.liveOutput || '').replace(/\r\n/g, '\n').split('\n');
       const MAX_RUN_LINES = expanded ? Infinity : 8;
-      const shown = rawLines.slice(-MAX_RUN_LINES); // running: show the newest output
+      // A trailing newline leaves an empty element; keeping it drew two blank rows for an empty output.
+      if (rawLines.length > 1 && rawLines[rawLines.length - 1] === '') rawLines.pop();
+      const shown = rawLines.length ? rawLines.slice(-MAX_RUN_LINES) : [''];
+      // The `↳` on the first row costs two columns, exactly as it does on the finished result.
+      let liveEmitted = 0;
       if (rawLines.length > MAX_RUN_LINES) {
-        out.push({ text: col(`… ${rawLines.length - MAX_RUN_LINES} earlier line(s)`, C.gray), ind: indent, raw: true });
+        const more = col(`… ${rawLines.length - MAX_RUN_LINES} earlier line(s)`, C.gray);
+        out.push({ text: C.termBg + fitAnsi(more.replace(/\x1b\[0m/g, `\x1b[0m${C.termBg}`), bodyW) + C.bgReset, ind: indent, raw: true });
       }
+      // THE TERMINAL SURFACE APPLIES WHILE IT RUNS TOO, not only once the result lands. The row is the same thing
+      // before and after — a command's output — so switching its background on completion made the block jump as
+      // the call finished.
       for (const ln of shown) {
         for (const t of (ln === '' ? [''] : wrapWords(ln, bodyW))) {
-          out.push({ text: col(t, C.gray), ind: indent, raw: true });
+          const painted = col(t, C.gray);
+          const surfaced = painted.replace(/\x1b\[0m/g, `\x1b[0m${C.termBg}`);
+          const firstLive = liveEmitted++ === 0;
+          // `bodyW` ALREADY EXCLUDES THE MARKER — it is `width - 2`, and the marker is the two columns it took
+          // off. Subtracting them again stopped the surface two columns short, so the page colour showed at the
+          // right edge in the one column the scrollbar does not own.
+          // The same `↳ ` the finished result puts on its first row, so the block does not shift right when the
+          // command completes. Continuation rows indent by two spaces, matching the result block.
+          const rowW = bodyW;
+          out.push({ text: C.termBg + fitAnsi(surfaced, rowW) + C.bgReset, ind: firstLive ? '↳ ' : '  ', raw: true });
         }
       }
     }
@@ -2822,13 +2866,15 @@ function messageLines(msg, width, workspace, expanded, spin, pulseStart, rawMode
         // and letting it through at full width made the terminal wrap it itself — which pushes every later row down
         // by one and desynchronises the frame, so the screen scrolled while the file was still arriving.
         const room = Math.max(1, width - visualCol(indent) - num.length - 1);
+        // The whole preview sits on the CODE SURFACE, number included, so the block reads as one recessed field.
         if (!writeLang) {
-          out.push({ text: col(`${num} ${fitAnsi(ln, room)}`, C.gray), ind: i === 0 ? '↳ ' : indent, raw: true });
+          out.push({ text: C.codeBg + col(`${num} ${fitAnsi(ln, room)}`.replace(/\x1b\[0m/g, `\x1b[0m${C.codeBg}`), C.white) + C.bgReset, ind: i === 0 ? '↳ ' : indent, raw: true });
           return;
         }
         const painted = paintCode(ln, writeLang, '', writeInComment);
         writeInComment = painted.inComment;
-        out.push({ text: col(num + ' ', C.gray) + fitAnsi(painted.text, room), ind: i === 0 ? '↳ ' : indent, raw: true });
+          const writeRow = (col(num + ' ', C.white) + fitAnsi(painted.text, room)).replace(/\x1b\[0m/g, `\x1b[0m${C.codeBg}`);
+          out.push({ text: C.codeBg + writeRow + C.bgReset, ind: i === 0 ? '↳ ' : indent, raw: true });
       });
       const shown = Math.min(lines.length, MAX);
       if (totalLines > shown) out.push({ text: col(`… ${totalLines - shown} more lines, ctrl+o to expand`, C.gray), ind: indent, raw: true });
@@ -2931,6 +2977,11 @@ function messageLines(msg, width, workspace, expanded, spin, pulseStart, rawMode
     // recolouring the transcript, resetting styles mid-row, moving the cursor or
     // clearing the screen over the composer.
     const rawLines = sanitizeText(msg.text).replace(/\r\n/g, '\n').split('\n');
+    // A TAB counts as ZERO columns in our width maths but advances to the next tab stop in a real terminal.
+    // A row containing one was therefore padded short and the terminal kept the old frame's glyphs in the gap —
+    // the "residue" under tool output. Read rows are the exception: their first tab is the line-number separator
+    // and is handled in the Read branch below, where the CONTENT half is expanded too.
+    if (!msg.readPath) for (let k = 0; k < rawLines.length; k++) rawLines[k] = expandTabs(rawLines[k]);
     // Trim blank lines at BOTH ends: commands typically emit a trailing
     // newline, and some tools emit a leading one. A stray blank line would
     // render as a lone "↳ " with no content.
@@ -2943,7 +2994,9 @@ function messageLines(msg, width, workspace, expanded, spin, pulseStart, rawMode
     // `[error: …]` is kept: it carries the message, not just a code.
     const visible = rawLines.filter((ln) => !/^\[exit code:/.test(ln.trim()));
     const failed = msg.failed === true;
-    const shown = visible.slice(0, MAX_RESULT_LINES);
+    // A silent Bash keeps the ONE empty output row it had while running. Only Bash has this special area: an empty
+    // Read/Grep result must not grow a phantom line merely because the command itself printed nothing.
+    const shown = visible.length ? visible.slice(0, MAX_RESULT_LINES) : (msg.toolName === 'Bash' ? [''] : []);
 
     // ---- DISPLAY ORDER -----------------------------------------------------
     // The row reads as a block under the tool line, with ONE `↳` marker:
@@ -2981,7 +3034,9 @@ function messageLines(msg, width, workspace, expanded, spin, pulseStart, rawMode
         }
         const no = String(d.no || 0).padStart(wNo);
         const mark = d.type === 'add' ? '+' : d.type === 'del' ? '-' : ' ';
-        const text = sanitizeText(d.text);
+        // TABS ARE EXPANDED FIRST: `visualCol` counts one as zero columns, so an indented row measured short
+        // and its background stopped before the right edge — the strip of page colour seen on Go diffs.
+        const text = expandTabs(sanitizeText(d.text));
 
         // The sign, line number and content share the line's addition/deletion background; syntax highlighting
         // changes only the foreground. The wash runs to the right edge so adjacent changed rows read as one block.
@@ -2993,10 +3048,12 @@ function messageLines(msg, width, workspace, expanded, spin, pulseStart, rawMode
 
         if (!lineBg) {
           // CONTEXT LINES ARE CODE TOO. They are the most of a diff and the part a reader scans to place the
-          // change, so they get the same highlighter with no background.
+          // the change, so they get the same highlighter, on the CODE SURFACE rather than the raw page — a changed
+          // block sits on one recessed field. The +/- rows around it keep their green/red wash.
           const ctxPainted = paintCode(text, d.lang, '', inComment);
           inComment = ctxPainted.inComment;
-          diffRows.push({ text: lead + ctxPainted.text, ind: cont, raw: true });
+          const ctxRow = (lead + ctxPainted.text).replace(/\x1b\[0m/g, `\x1b[0m${C.codeBg}`);
+          diffRows.push({ text: C.codeBg + fitAnsi(ctxRow, bodyW) + C.bgReset, ind: cont, raw: true });
           emitted++;
           continue;
         }
@@ -3007,7 +3064,9 @@ function messageLines(msg, width, workspace, expanded, spin, pulseStart, rawMode
         inComment = painted.inComment;
         const used = visualCol(`${no} ${mark} `) + visualCol(painted.text);
         const pad = ' '.repeat(Math.max(0, bodyW - used));
-        diffRows.push({ text: lead + painted.text + col(pad, lineBg), ind: cont, raw: true });
+        // The padding is INSIDE the wash, so it must not end with a bare reset: `col()` closes with ESC[0m, which
+        // would drop the background on the last column and leave a strip of page colour at the right edge.
+        diffRows.push({ text: lead + painted.text + lineBg + pad + '\x1b[39m', ind: cont, raw: true });
         emitted++;
       }
       if (total > emitted) {
@@ -3034,6 +3093,14 @@ function messageLines(msg, width, workspace, expanded, spin, pulseStart, rawMode
       // The comment state travels between the rows, so a block comment that opens on one line and closes on the
       // next stays grey all the way down.
       const readLang = msg.readPath ? langForPath(msg.readPath) : null;
+      // THE GUTTER IS ONE WIDTH FOR THE WHOLE BLOCK. The tool sends `N<TAB>text`, and the tab is what used to
+      // place the code — so `1` and `10` started their text at different columns once the tab was expanded.
+      // Padding the NUMBER to the widest one in this block keeps the digits left-aligned and the code aligned
+      // under itself.
+      const numW = shown.reduce((w, ln) => {
+        const m = /^(\d+)\t/.exec(ln);
+        return m ? Math.max(w, m[1].length) : w;
+      }, 0);
       let inComment = false;
       shown.forEach((ln, idx) => {
         const isErr = /^\[error:/.test(ln.trim());
@@ -3043,22 +3110,52 @@ function messageLines(msg, width, workspace, expanded, spin, pulseStart, rawMode
         const numbered = readLang && !isErr ? /^(\d+)\t([\s\S]*)$/.exec(ln) : null;
         if (numbered) {
           // `wrapAnsiWords` measures VISIBLE columns, so the colour codes do not count towards the wrap.
-          const painted = paintCode(numbered[2], readLang, '', inComment);
-          inComment = painted.inComment;
+          // THE FILE'S OWN INDENTATION IS OFTEN TABS. Left as tabs, `visualCol` counted them as zero columns
+          // while the terminal advanced to the next stop: the row was padded short and the previous frame's
+          // glyphs stayed visible behind it. Expand before measuring, but keep the first tab as the separator
+          // — the regex above already split on it.
+          // tell the highlighter the first visible row is a comment — it coloured `of`, `switch`, `from` in a JSDoc
+          // paragraph as keywords. A row that is plainly part of a block comment (` * …`, an opening `/**`, or the
+          // closing `*/`) is painted as a comment on its own merits; the opener also seeds the rows that follow.
+          const content = expandTabs(numbered[2]);
+          const isBlockCommentRow = /^\s*(?:\/\*|\*|\*\/|\*\*)/.test(content);
+          const painted = paintCode(content, readLang, '', inComment || isBlockCommentRow);
+          if (/\/\*/.test(content) && !/\*\//.test(content)) inComment = true;
+          else if (/\*\//.test(content)) inComment = false;
           // THE SEPARATOR IS A TAB, AND `visualCol` COUNTS A TAB AS ZERO COLUMNS. A terminal advances it to the
           // next stop, so the row was measured several columns short, the terminal wrapped it itself, and the tail
-          // landed on the next row as a fragment — `921d` under a `920`-numbered row is exactly that. A fixed
-          // two-space gap is what the width maths needs and what reads better.
-          const text = `${numbered[1]}  ${painted.text}`;
-          const wrapped = wrapAnsiWords(text, bodyW);
-          wrapped.forEach((t, i) => {
-            diffRows.push({ text: t, ind: idx === 0 && i === 0 ? pre : cont, raw: true });
-          });
+          // advances it to the next stop, so the row measured short and the terminal wrapped it itself. The
+          // THE SEPARATOR IS TWO SPACES, NOT A TAB: `visualCol` counts a tab as zero columns while a terminal
+          const text = `${col(numbered[1].padStart(numW), C.white)} ${painted.text}`;
+          // A Read row is TRUNCATED, not wrapped. `wrapAnsiWords` used to fold an overlong line onto a second
+          // row, and that second row — padded to full width by the frame, without a line number — was exactly
+          // what a differential painter could not reconcile with the previous frame: the leftover glyphs stayed
+          // under it as residue. One source line is one display row.
+          //
+          // THE CODE SURFACE: the whole row sits on `codeBg`, one step off the page. The number keeps its grey,
+          // the content keeps its syntax colours, and the wash reaches the right edge. Diff `+`/`-` rows are
+          // NOT affected — they keep their green/red.
+          //
+          // The background has to survive the row's own resets: every syntax token closes with `ESC[0m`, and the
+          // padding `fitAnsi` adds sits AFTER the last one. Re-asserting after each reset — the same trick
+          // `paintCode` uses for a diff wash — keeps the surface on the padding too, so the block reads solid.
+          const surfaced = text.replace(/\x1b\[0m/g, `\x1b[0m${C.codeBg}`);
+          diffRows.push({ text: C.codeBg + fitAnsi(surfaced, bodyW) + C.bgReset, ind: idx === 0 ? pre : cont, raw: true });
           return;
         }
         const wrapped = ln === '' ? [''] : wrapWords(ln, bodyW);
+        // BASH OUTPUT SITS ON THE TERMINAL SURFACE, like text inside a real terminal emulator: the darkest recess
+        // on screen. Other tools keep the plain page background, so a command's output reads as "a terminal ran
+        // this" rather than as an ordinary result. The row keeps its grey text and the surface survives its own
+        // resets the same way the code surface does.
+        const termSurface = msg.toolName === 'Bash' || msg.toolName === 'Shell';
         wrapped.forEach((t, i) => {
-          diffRows.push({ text: t, ind: idx === 0 && i === 0 ? pre : cont, color });
+          if (termSurface) {
+            const surfaced = t.replace(/\x1b\[0m/g, `\x1b[0m${C.termBg}`);
+            diffRows.push({ text: C.termBg + fitAnsi(surfaced, bodyW) + C.bgReset, ind: idx === 0 && i === 0 ? pre : cont, raw: true });
+          } else {
+            diffRows.push({ text: t, ind: idx === 0 && i === 0 ? pre : cont, color });
+          }
         });
       });
       if (visible.length > MAX_RESULT_LINES) {
@@ -4285,16 +4382,22 @@ export function renderChatLines(state, w, viewport) {
     msgLen.set(mem.msgLen.subarray(0, reuse), 0);
     sigs.set(prevSigs.subarray(0, reuse), 0);
     cursor = rowStart[reuse - 1] + msgLen[reuse - 1];
-    prevBordered = chat[reuse - 1].role === 'user' || chat[reuse - 1].role === 'queued'
-      || chat[reuse - 1].role === 'bash';
+    prevBordered = chat[reuse - 1].role === 'queued';
   }
   for (let mi = reuse; mi < n; mi++) {
     const m = chat[mi];
-    const border = m.role === 'user' || m.role === 'queued' || m.role === 'bash';
+    // ONLY `queued` IS DRAWN INSIDE A FRAME. A user message and a shell echo are a filled surface with no walls, so
+    // their text uses the full inner width — leaving them in `border` narrowed it by two columns and this pass's row
+    // count drifted from what the layout actually paints.
+    const border = m.role === 'queued';
     const ww = border ? Math.max(1, Math.min(1, innerW - 4)) : innerW; // placeholder
     void ww;
     rowStart[mi] = cursor;
-    const rules = border ? (prevBordered ? 1 : 2) : 0;
+    // THE RULES BELONG TO THE FRAME, and only `queued` still draws one: a user message and a shell echo are a
+    // filled surface now. Counting two rules for them made this pass's row count disagree with what the layout
+    // actually paints, which is what `chatRowTotal` compares against.
+    const drawsFrame = m.role === 'queued';
+    const rules = drawsFrame ? (prevBordered ? 1 : 2) : 0;
     sigs[mi] = messageSignature(m);
     // Reuse/minimal layout for the row count: same width/border arithmetic as
     // the layout path below. We need boxText for bordered messages.
@@ -4368,7 +4471,7 @@ export function renderChatLines(state, w, viewport) {
     if (!hasFence && !valid && !cached && !animating && m._count && m._count.key === countKey && m._count.textLen === countLen) {
       msgLen[mi] = m._count.len + rules;
       cursor += msgLen[mi];
-      prevBordered = border;
+    prevBordered = drawsFrame;
       continue;
     }
     if (valid) {
@@ -4437,7 +4540,7 @@ export function renderChatLines(state, w, viewport) {
       m._cache = null;
     }
     cursor += msgLen[mi];
-    prevBordered = border;
+    prevBordered = drawsFrame;
   }
   }
   const total = cursor;
@@ -4534,11 +4637,14 @@ export function renderChatLines(state, w, viewport) {
       boxText = Math.max(1, boxInner - boxPad * 2);
     }
     // Shared wall with the previous bordered message (its bottom rule is ours).
+    //
+    // A USER MESSAGE AND A SHELL ECHO NO LONGER DRAW A FRAME, so they have no wall to share. Leaving them in made the
+    // second of two adjacent rows skip its filled surface and fall through to the frame branch — the shell echo
+    // came out with walls and no background. Only `queued` still draws a box.
     let shared = false;
     if (bordered && mi > 0) {
       const prev = chat[mi - 1];
-      shared = (prev.role === 'user' || prev.role === 'queued' || prev.role === 'bash')
-        && rowStart[mi - 1] + msgLen[mi - 1] === cursor;
+      shared = prev.role === 'queued' && rowStart[mi - 1] + msgLen[mi - 1] === cursor;
     }
     const len = msgLen[mi];
     // A message that may contain a bitmap is always built, visible or not: a row COUNT cannot represent a
@@ -4568,8 +4674,22 @@ export function renderChatLines(state, w, viewport) {
       }
       const spinRows = ccc.spinRows;
       const liveAt = (r, i) => (spinRows && spinRows.has(i) ? r.split(SPIN_PLACEHOLDER).join(spinFrame) : r);
-      if (bordered && !shared) out.push(rule(true, boxColor));
-      if (bordered) {
+      const asSurface = msg.role === 'user' || msg.role === 'bash';
+      if (bordered && !shared && !asSurface) out.push(rule(true, boxColor));
+      // A USER MESSAGE IS DRAWN AS A FILLED SURFACE, the same one the composer uses: what was typed and what is
+      // being typed read as one kind of thing. The frame is gone for the same reason it left the composer — a box
+      // competes with the transcript and spends rows on chrome. A shell echo keeps its terminal surface instead.
+      const surfaceFor = msg.role === 'bash' ? C.termBg
+        : (msg.role === 'user' || msg.role === 'steer') ? C.composerBg
+        : '';
+      if (surfaceFor && !shared) {
+        for (let i = 0; i < ccc.rows.length; i++) {
+          const rowText = liveAt(ccc.rows[i], i);
+          if (isImageRow(rowText)) { out.push(rowText); continue; }
+          const surfaced = rowText.replace(/\x1b\[0m/g, `\x1b[0m${surfaceFor}`);
+          out.push(PAD + surfaceFor + fitAnsi(surfaced, innerW) + C.bgReset);
+        }
+      } else if (bordered) {
         const pad = ' '.repeat(boxPad);
         const wall = col('│', boxColor);
         for (let i = 0; i < ccc.rows.length; i++) {
@@ -4588,7 +4708,7 @@ export function renderChatLines(state, w, viewport) {
           out.push(isImageRow(rowText) ? rowText : PAD + rowText);
         }
       }
-      if (bordered) out.push(rule(false, boxColor));
+      if (bordered && !asSurface) out.push(rule(false, boxColor));
     } else {
       for (let i = 0; i < len; i++) out.push('');
     }
@@ -4659,10 +4779,7 @@ export function metricsSignature(state, n, w, expanded, innerW) {
     mix(m.pluginLog && m.expanded ? 1 : 0);
     mix(m._cache ? 1 : 0);
     mix(m._count ? 1 : 0);
-    // A pending row repaints as the light moves, with none of the fields above changing. Without this
-    // the signature matched every frame and the transcript was never re-walked, so the animation froze
-    // until the message itself was touched.
-    if (m.pending) mix(Math.floor(Date.now() / STEP_MS));
+    // The animation clock is deliberately NOT hashed here — see the note above the signature.
   }
   return h;
 }
@@ -4770,7 +4887,12 @@ function fmtTokens(n) {
  * quantity cannot read two ways on one screen.
  */
 function scaleUnit(v) {
-  return v < 100 ? v.toFixed(1).replace(/\.0$/, '') : String(Math.round(v));
+  if (v < 100) return v.toFixed(1).replace(/\.0$/, '');
+  const r = Math.round(v);
+  // A value that ROUNDS to the whole number keeps its decimal: 1048576/1e6 is 1.048576, and printing `1` put it
+  // in the same bucket as a plain million. `v === r` is the exact case.
+  if (r >= 100 && Math.abs(v - r) <= 0.5) return String(r);
+  return v.toFixed(1).replace(/\.0$/, '');
 }
 
 // Thousands separators for a plain count. fmtTokens rounds to k/M, which is right
@@ -5045,7 +5167,7 @@ function justify(left, right, w) {
 // Height of the composer box (top border + content rows + bottom border).
 export function composerHeight(state, cols) {
   const insideW = Math.max(0, (cols | 0) - 2);
-  return composerLayout(state, insideW - 3).rows.length + 2;
+  return composerLayout(state, insideW).rows.length;
 }
 
 // UNCLAMPED height of the AskUserQuestion box. `composeFrame` caps the real
@@ -5308,25 +5430,45 @@ function applySelectionToRow(lines, idx, sel, w) {
  */
 function highlightAnsiRange(row, c0, c1, w) {
   const s = String(row);
+  const cells = parseCells(s);
+  // The SGR for the background each column was drawn with, or '' when the row has none there.
+  const ownBg = cells.map((_, c) => {
+    const rgb = cellBg(cells, c);
+    return rgb ? `\x1b[48;2;${rgb[0]};${rgb[1]};${rgb[2]}m` : '';
+  });
+  // The theme's selection colour, read from the SGR rather than hardcoded: a light theme has a pale one.
+  const m = /48;2;(\d+);(\d+);(\d+)/.exec(C.selBg);
+  const selRgb = m ? [Number(m[1]), Number(m[2]), Number(m[3])] : null;
+  // The SELECTION WINS. A hint of the row's own wash stays in the mix so a selected deletion still reads as a
+  // deletion, but nine parts selection to one part row — an earlier three-parts-row blend left the diff colour
+  // dominating and the selected range looked like an unselected diff with a tint.
+  const selectedBg = (col) => {
+    const rgb = cellBg(cells, col);
+    if (!rgb || !selRgb) return C.selBg;
+    const mix = (a, b) => Math.round(a * 0.9 + b * 0.1);
+    return `\x1b[48;2;${mix(selRgb[0], rgb[0])};${mix(selRgb[1], rgb[1])};${mix(selRgb[2], rgb[2])}m`;
+  };
+  const lo = Math.max(c0, 1);
   let out = '';
   let col = 0;
   let i = 0;
   let inSel = false;
-  // A range that begins at the margin starts one column later.
-  const lo = Math.max(c0, 1);
 
   while (i < s.length) {
     if (s[i] === '\x1b') {
-      // Emit the escape, then RE-ASSERT the selection background if we are
-      // inside the range. The row embeds its own resets (a markdown bold or
-      // inline-code span ends in ESC[0m), and a bare ESC[0m cancels the
-      // background too — so without re-asserting, everything after the first
-      // coloured run inside the selection lost its highlight.
-      const m = /^\x1b\[[0-9;?]*[a-zA-Z]/.exec(s.slice(i)) || /^\x1b\[[0-9;?]* [a-zA-Z]/.exec(s.slice(i));
-      if (m) {
-        out += m[0];
-        if (inSel) out += C.selBg;
-        i += m[0].length;
+      // Emit the escape, then RE-ASSERT the background for the column it was emitted at: the row embeds its own
+      // resets (a markdown span ends in ESC[0m), and a bare reset clears the background too.
+      const esc = /^\x1b\[[0-9;?]*[a-zA-Z]/.exec(s.slice(i)) || /^\x1b\[[0-9;?]* [a-zA-Z]/.exec(s.slice(i));
+      if (esc) {
+        out += esc[0];
+        // The row writes its OWN background back after every syntax token — `paintCode` re-asserts the diff wash
+        // after each `ESC[0m`. Those SGRs arrive here as ordinary escapes, not resets, so leaving them untouched
+        // let the diff colour overwrite the selection mid-run. Inside the selection, ANY background escape that
+        // follows is replaced by the selected one; outside it, only a reset needs the row's own wash restored.
+        const isBg = /^\x1b\[48;/.test(esc[0]);
+        if (inSel && (isBg || esc[0] === '\x1b[0m' || esc[0] === '\x1b[m')) out += selectedBg(col);
+        else if (!inSel && (esc[0] === '\x1b[0m' || esc[0] === '\x1b[m')) out += ownBg[col] || '';
+        i += esc[0].length;
         continue;
       }
     }
@@ -5336,28 +5478,21 @@ function highlightAnsiRange(row, c0, c1, w) {
     const cw = visualWidth(ch);
     const want = col >= lo && col < c1;
 
-    if (want && !inSel) {
-      // Selection changes only the BACKGROUND; the foreground (documented colour)
-      // is left intact so a cyan/teal markdown span stays its colour inside the
-      // highlight.
-      out += C.selBg;
-      inSel = true;
-    } else if (!want && inSel) {
-      // Leave the selection: reset just the background (ESC[49m), keeping the
-      // row's foreground. A bare reset would also clear the foreground.
-      out += C.bgReset;
+    if (want && !inSel) { out += selectedBg(col); inSel = true; }
+    else if (!want && inSel) {
+      // RESTORE the row's own background, not ESC[49m: a diff row is red or green all the way to the right edge,
+      // and clearing the background there left a strip of page colour in the middle of the wash.
+      out += ownBg[col] || C.bgReset;
       inSel = false;
     }
 
     out += ch;
     col += cw;
     i += cp > 0xffff ? 2 : 1;
-
     if (col >= w) break;
   }
 
   if (inSel) out += C.reset;
-
   return out;
 }
 
@@ -5567,7 +5702,13 @@ function dimRange(row, from, to) {
  *  The floor exists for the same reason: a fill already at the page's own brightness has
  *  nowhere to go, and forcing it lower only makes it read as a hole.
  */
-const DIM_BACKGROUND_SCALE = 0.72;
+// HOW FAR A FILL RECEDES, as a fraction of ITS OWN DISTANCE FROM THE PAGE.
+//
+// A fixed multiplier treats every fill the same, and they are not: the page colour itself has nowhere to go, a
+// barely-off-page surface has almost nothing to lose, and a saturated accent band has the most to give. Measured
+// against the page, a flat 0.72 either left a dark fill untouched or crushed a bright one into the background.
+// The distance from the page IS "how much this stands out", so shrinking THAT is the only rule that behaves.
+const DIM_BACKGROUND_SCALE = 0.55;
 const DIM_BACKGROUND_FLOOR = 28;
 
 /**
@@ -5591,13 +5732,17 @@ const DIM_BACKGROUND_FLOOR = 28;
  * does not implement is dropped silently, which looks exactly like "the fill vanished" — and
  * that is what happened before this was noticed.
  */
-function dimmedBg([r, g, b]) {
+function dimmedBg(rgb) {
   if (!TRUECOLOR) return '';
-  const k = (v) => Math.max(DIM_BACKGROUND_FLOOR, Math.min(255, Math.round(v * DIM_BACKGROUND_SCALE)));
-  const out = [k(r), k(g), k(b)];
-  // Unchanged means the fill was already at the floor: darkening further would only make it
-  // read as a hole punched in the page.
-  if (out[0] === r && out[1] === g && out[2] === b) return '';
+  // The page, parsed once per call: this runs per cell while a picker is open, and `C.bg` is a string.
+  const page = /48;2;(\d+);(\d+);(\d+)/.exec(C.bg);
+  if (!page) return '';
+  const base = [Number(page[1]), Number(page[2]), Number(page[3])];
+  // Move each channel the given fraction of the way from the fill to the page. A fill already AT the page comes
+  // out unchanged, and the caller then leaves it alone rather than drawing a hole.
+  const toward = (v, i) => Math.round(base[i] + (v - base[i]) * (1 - DIM_BACKGROUND_SCALE));
+  const out = [toward(rgb[0], 0), toward(rgb[1], 1), toward(rgb[2], 2)];
+  if (out[0] === rgb[0] && out[1] === rgb[1] && out[2] === rgb[2]) return '';
   return bgRgb(out[0], out[1], out[2]);
 }
 
@@ -6019,7 +6164,11 @@ export function composeFrame(state, cols, rows) {
 const takeover = state.editor || state.panel || null;
 
   // ---- geometry ----
-  const composer = composerLayout(state, insideW - 3); // bodyW = (insideW-3)-2 = 53, matches fitAnsi(textW-2) = cInner-4 = 53
+  const composer = composerLayout(state, insideW);
+  // ONE ROW PER INPUT ROW. It used to be `rows.length + 2` for the top and bottom rules; the composer is now a
+  // filled surface with no frame, so reserving those two rows would leave a gap above and below it.
+  // One row per input row, PLUS the separator rule above the composer.
+  // One row per input row, PLUS a rule above and below the composer.
   const composerBoxH = takeover ? 0 : composer.rows.length + 2;
   const menuItems = (state.menuOpen && state.menuList.length && !takeover)
     ? Math.min(state.menuList.length, MAX_MENU) + 1
@@ -6567,10 +6716,12 @@ const queueH = takeover ? 0 : queuePanelHeight(state);
         // covered. The payload is padded to the column before the rail instead of being cut, so the sequence
         // survives intact and the rail is drawn where it always is.
         if (isImageRow(row)) {
-          const rail = fg + bg + glyphChar + C.reset;
+          const rail = fg + bg + glyphChar;
           row = row + rail;
         } else {
-          row = fitAnsi(row, w - 1) + fg + bg + glyphChar + C.reset;
+          // NO TRAILING RESET. The page-colour pass already closes the row, and the next row re-asserts its own
+          // background at the front — a reset here only overwrote this cell's track colour or left a stray escape.
+          row = fitAnsi(row, w - 1) + fg + bg + glyphChar;
         }
       }
       // `body` IS INDEXED BY TRANSCRIPT ROW, so the padding must not be appended to it. The loop starts at
@@ -7347,33 +7498,30 @@ const queueH = takeover ? 0 : queuePanelHeight(state);
   
   let composerFirstRow = -1;
   if (!takeover) {
-    composerFirstRow = lines.length + 1;
-    // The composer carries the same 1-column left margin as the transcript, so its
-    // walls line up exactly with a sent user/queue message's box.
-    //   frame width = 1 (margin) + 1 (│) + cInner + 1 (│)  =>  cInner = w - 3
-    // `insideW` (w-2) is the space BETWEEN the walls, so the margin is taken OUT of
-    // it rather than added on top — otherwise the box came out 2 columns short.
-    const CPAD = ' ';
-    const cInner = Math.max(1, insideW - 1);
-    // In shell mode the whole editor frame shifts to the violet shellMode hue
-    // (same token kimi-code uses for its bash-mode border), so it reads as
-    // "shell mode" rather than the cyan prompt frame.
-    const shellBorder = state.inputMode === 'bash' ? C.shellMode : C.border;
-    lines.push(CPAD + col('╭' + '─'.repeat(cInner) + '╮', shellBorder));
+    // A SEPARATOR BETWEEN THE TRANSCRIPT AND THE INPUT. With the border gone, the last line of the conversation sat
+    // directly on top of the composer, and a paragraph against a grey block reads as one crowded mass. One faint
+    // rule says "the conversation ends here" without drawing a frame.
+    lines.push(col('─'.repeat(w), C.border));
+    composerFirstRow = lines.length;
+    // THE COMPOSER SPANS THE FULL WIDTH. It used to keep the transcript's 1-column left margin so its walls
+    // lined up with a sent user message's box; with no walls there is nothing to line up, and a filled surface
+    // that stops one column short of an edge reads as a damaged block rather than as an input field.
+    const CPAD = '';
+    const cInner = Math.max(1, insideW + 2);   // the full terminal width: insideW is w - 2
+    // NO FILLED SURFACE. The input is separated from the transcript by the rule above it and from the status
+    // line by the rule below; a grey block on top of that was a second, heavier boundary saying the same
+    // thing. The prompt glyph and the text colours carry the rest.
     for (let ri = 0; ri < composer.rows.length; ri++) {
-      addHit(lines.length, 2, cInner, { kind: 'composerRow', rowIdx: ri });
-      // Colour the prompt glyph like the transcript's user marker (cyan) and keep
-      // the typed TEXT white. The prefix is the first `> ` of the row (the
-      // continuation rows are padded with spaces instead).
+      addHit(lines.length, 0, cInner, { kind: 'composerRow', rowIdx: ri });
+      // Colour the prompt glyph like the transcript's user marker and keep the typed TEXT white. The prefix is the
+      // first `> ` of the row (the continuation rows are padded with spaces instead).
       const rawRow = composer.rows[ri];
-      // Which chip the pointer is over, if any. `state.pasteHover` is the paste NUMBER, set by the
-      // mousehover handler from the same index maths the expand gesture uses, so the highlight and the
-      // click can never disagree about which chip they mean.
-      const styledRow = highlightPasteMarkers(rawRow, state.pasteHover);
-      // One space of padding after the left wall (and before the right wall), the
-      // same as the transcript's user/queue boxes, so the geometry is identical.
+      // Which chip the pointer is over, if any. `state.pasteHover` is the paste NUMBER, set by the mousehover
+      // handler from the same index maths the expand gesture uses, so the highlight and the click can never
+      // disagree about which chip they mean.
+      const styledRow = highlightCommandName(highlightPasteMarkers(rawRow, state.pasteHover));
       const pre = composerInput(state).prefix;
-      const textW = Math.max(1, cInner - 2); // Original value: 1+1+textW+1+1 = 60 with pre=2, fitWidth=55
+      const textW = Math.max(1, cInner - 2);
       // Apply composer text selection highlight if a selection is active.
       const sel = state.composerSel;
       const rowMeta = composer.meta[ri] || {};
@@ -7384,18 +7532,16 @@ const queueH = takeover ? 0 : queuePanelHeight(state);
         const highlighted = (sel && sel.anchor !== sel.head)
           ? highlightSelection(textPart, textStart, sel.anchor, sel.head)
           : textPart;
-        // The `!` (shell mode) prefix is BOLD: it is a mode marker, not punctuation,
-        // and it should out-weigh the `>` prompt glyph at a glance.
+        // The `!` (shell mode) prefix is BOLD: it is a mode marker, not punctuation, and it should out-weigh
+        // the `>` prompt glyph at a glance.
         const preCol = state.inputMode === 'bash' ? (C.shellMode + C.bold) : C.cyan;
-        rowAnsi = ' ' + col(pre, preCol) + C.white +
-          fitAnsi(highlighted, Math.max(1, textW - visualCol(pre))) + ' ';
+        rowAnsi = ' ' + col(pre, preCol) + C.white
+          + fitAnsi(highlighted, Math.max(1, textW - visualCol(pre))) + ' ';
       } else {
         // THE INDENT IS NOT TEXT. A continuation row arrives as `cont + text` — two spaces standing in for
         // `> ` — and `rowMeta.start` is the offset of the TEXT, not of the row. Handing the whole row to
         // `highlightSelection` therefore shifted the selection by the prefix's width: the two blank columns lit
         // up and the highlight ran two characters early, which is the offset seen on every wrapped line.
-        //
-        // The first-row branch above already strips its prefix; this one has to strip the continuation's.
         const contWidth = rowMeta.preWidth != null ? rowMeta.preWidth : visualCol(pre);
         const indent = styledRow.slice(0, contWidth);
         const textPart = styledRow.slice(contWidth);
@@ -7405,16 +7551,18 @@ const queueH = takeover ? 0 : queuePanelHeight(state);
           : textPart;
         rowAnsi = ' ' + indent + C.white + fitAnsi(highlighted, Math.max(1, textW - contWidth)) + ' ';
       }
-      lines.push(
-        CPAD + col('│', shellBorder) + rowAnsi + C.reset + col('│', shellBorder)
-      );
+      lines.push(fitAnsi(rowAnsi, insideW + 2));
     }
-    lines.push(CPAD + col('╰' + '─'.repeat(cInner) + '╯', shellBorder));
+    // AND THE RULE UNDER IT, mirroring the one above: the input is bounded by two faint rules, so it reads as a
+    // field between the conversation and the status line rather than as a block touching both.
+    lines.push(col('─'.repeat(w), C.border));
   }
-
   
-  const MPAD = ' ';
-  const mInner = Math.max(1, insideW - 3);
+  // NO LEFT MARGIN: the menu's rule sits in column 0, aligned with the composer's own edge, instead of one
+  // column in and looking detached from it.
+  const MPAD = '';
+  // The row is `│ content │`, and `insideW` is `w - 2`, so the content gets two columns less.
+  const mInner = Math.max(1, insideW - 2);
   const menuRow = (content) => MPAD + col('│', C.border) + ' ' + fitAnsi(content, mInner) + ' ' + col('│', C.border);
   if (state.menuOpen && state.menuList.length && !takeover) {
     const totalMatches = state.menuList.length;
@@ -7497,10 +7645,12 @@ const queueH = takeover ? 0 : queuePanelHeight(state);
     ? (thinkLevel ? ` thinking ${thinkLevel}` : ' thinking')
     : state.seenThinking ? ' thinking' : '';
   const label = state.modelLabel || state.model || '';
-  // Plan / Focus / Swarm are mutually exclusive modes, so at most one badge is
-  // shown. Swarm uses a spring-green (cyan shifted toward green) to stay in the
-  // theme family while reading as its own thing next to Plan's cyan.
-  const modeBadge = state.plan ? col('Plan', C.cyan + C.bold)
+  // Plan / Focus / Swarm / PTC are mutually exclusive modes, so at most one badge is shown. Swarm uses a
+  // spring-green (cyan shifted toward green) to stay in the theme family while reading as its own thing next to
+  // Plan's cyan. PTC comes first: it narrows the toolset harder than any of the others, and a user who turned it on
+  // needs to see that from the status line alone.
+  const modeBadge = state.ptcMode ? col('PTC', C.orange + C.bold)
+    : state.plan ? col('Plan', C.cyan + C.bold)
     : state.focus ? col('Focus', C.blue + C.bold)
     : state.swarm ? col('Swarm', C.spring + C.bold)
     : '';
@@ -7742,10 +7892,12 @@ const queueH = takeover ? 0 : queuePanelHeight(state);
     // The confirm prompt is NOT a term here: it shares the tip row, which is already inside
     // STATUS_H, so counting it made the caret jump up a line every time Ctrl+C was pressed.
     const bottomChrome = STATUS_H + CTX_H + menuH + mentionH;
+    // `- 2`: the two rules that bound the composer. The input's last row sits above the lower rule, which sits above
+    // the status line.
     const caretScreenRow = h - bottomChrome - 2 - (composer.rows.length - 1 - composer.caretRow);
     cursor = {
       row: Math.max(0, Math.min(caretScreenRow, h - 1)),
-      col: Math.min(composer.caretCol + 2, w - 1),
+      col: Math.min(Math.max(0, composer.caretCol), w - 1),
     };
     cursorVisible = true;
   }
@@ -7812,7 +7964,14 @@ const queueH = takeover ? 0 : queuePanelHeight(state);
     }
   }
 
-  let padded = lines.map((l) => (isImageRow(l) ? l : fitAnsi(l, w)));
+  // THE PAGE COLOUR IS THE BASE OF EVERY ROW, and it is re-asserted after every reset the row embeds: an
+  // `ESC[0m` ends an inline span but also clears the background, so seeding only the front left most of the row
+  // unpainted. A cell with its own background keeps it — that escape comes later and overrides this.
+  let padded = lines.map((l) => {
+    if (isImageRow(l)) return l;   // a bitmap payload is not text; a trailing background would corrupt it
+    const base = fitAnsi(l, w).replace(/\x1b\[0m/g, `\x1b[0m${C.bg}`);
+    return C.bg + base + C.bgReset;
+  });
   // Mixin seam: beforeRender - plugins may rewrite the painted lines. Runs before the
   // ANSI string is built so the change actually reaches the screen.
   try { const out = runPatchSync('beforeRender', { lines: padded, state, cols: w, rows: h }, (c) => c); if (out && Array.isArray(out.lines)) padded = out.lines; } catch (e) {}
@@ -8446,6 +8605,9 @@ export function makeState({ cfg, session, opts }) {
     plan: !!(session && session.plan),
     planPath: (session && session.planPath) || null,
     focus: !!(session && session.focus),
+    // PTC mode is per-SESSION for the same reason as focus: it changes which tools the model is even offered, so a
+    // resume that forgot it would quietly hand the model a different toolset than the one it was working with.
+    ptcMode: !!(session && session.ptcMode),
     // Swarm mode is per-SESSION (like plan/focus), not just per-config: it is
     // restored here and written by persistState(). Reading only config.toml left
     // it off after /sessions resume, /fork and a plain restart.
@@ -8943,6 +9105,23 @@ function ensureMenuVisible(state) {
 }
 
 // ---- command dispatch ----
+/**
+ * Fire a TUI-side hook and FORGET it. These are notifications, not decisions: a slow or failing hook must not
+ * hold up a permission prompt, a directory move or a settings save. The config is loaded fresh so an edit made
+ * while the session was running is picked up without a restart.
+ *
+ * MODULE-LEVEL ON PURPOSE. `runTurn` and `dispatch` are both module-level functions, and the onEvent callbacks
+ * in runTurn reach this helper too. A version scoped inside either one is invisible to the other, and the bare
+ * name then throws a ReferenceError right after a tool result has arrived — which used to kill the process.
+ */
+function fireHook(event, payload, ws) {
+  try {
+    const { hooks } = loadHooks(ws);
+    if (!(hooks[event] || []).length) return;
+    void runShellHooks({ hooks }, event, payload, ws).catch(() => {});
+  } catch { /* a broken hook config is a reason to carry on, not to fail the command */ }
+}
+
 export async function dispatch(cmdRaw, arg, state, cfg, session, h, submit, stdout, renderFrameArg) {
   const { addChat, openPicker, openForm, notice, sendPrompt, quit, saveSession, openEditor } = h;
 
@@ -9087,6 +9266,7 @@ export async function dispatch(cmdRaw, arg, state, cfg, session, h, submit, stdo
     if (key === 'plan_instructions') cfg.planInstructions = raw;
     if (key === 'focus_instructions') cfg.focusInstructions = raw;
     if (key === 'swarm_instructions') cfg.swarmInstructions = raw;
+    fireHook('ConfigChange', { key, value: coerced.value, source: 'settings' }, state.workspace || cfg.workspace);
     if (typeof renderFrameArg === 'function') renderFrameArg();
     return true;
   }
@@ -10274,6 +10454,26 @@ export async function dispatch(cmdRaw, arg, state, cfg, session, h, submit, stdo
       app(want
         ? 'Auto title: ON — the first message names the session.'
         : 'Auto title: OFF — the name comes only from /title.');
+      return;
+    }
+    case 'ptc': {
+      // PTC MODE: the only tool the model is given is `PTC`, and every real tool call happens inside its sandbox.
+      //
+      // WHY A MODE AND NOT A SUGGESTION. The tool's own description asks the model to prefer it for loops, and a
+      // model is free to ignore that — a `for f in $(ls); do grep …; done` through Bash does the same work with the
+      // same context cost the sandbox exists to avoid. The promise is only real when the direct path is gone.
+      const a = raw.trim().toLowerCase();
+      let want;
+      if (a === 'on') want = true;
+      else if (a === 'off') want = false;
+      else if (a === '') { app(`PTC mode: ${state.ptcMode ? 'on' : 'off'}. /ptc [on|off]`); return; }
+      else { appErr('Usage: /ptc [on|off]'); return; }
+      state.ptcMode = want;
+      if (session) session.ptcMode = want;
+      try { sess.saveSession(session); } catch { /* a preference; a failed save must not block the mode */ }
+      app(want
+        ? 'PTC mode: ON — the model gets only the PTC tool and reaches everything else through its sandbox.'
+        : 'PTC mode: OFF — direct tool calls are available again.');
       return;
     }
     case 'title': {
@@ -12833,6 +13033,7 @@ export async function dispatch(cmdRaw, arg, state, cfg, session, h, submit, stdo
         plan: session.plan,
         planPath: session.planPath,
         focus: session.focus,
+        ptcMode: session.ptcMode,
         swarm: session.swarm,
         effort: session.effort,
         theme: session.theme,
@@ -12853,6 +13054,7 @@ export async function dispatch(cmdRaw, arg, state, cfg, session, h, submit, stdo
       // paths against `ctx.cwd || ctx.workspace`, which the agent copies from `cfg`
       // each turn. Moving only the status line left Edit/Read/Bash pointed at the
       // directory being left behind.
+      const prevCwd = state.cwd || cfg.workspace;
       state.cwd = target;
       state.workspace = target;
       cfg.workspace = target;
@@ -12869,6 +13071,7 @@ export async function dispatch(cmdRaw, arg, state, cfg, session, h, submit, stdo
       state.steps = session.steps || 0;
       saveSession(session);
       app(`Session moved to: ${target} (${newSession.id})`);
+      fireHook('CwdChanged', { cwd: target, previous: prevCwd }, target);
       return;
     }
 
@@ -13076,7 +13279,7 @@ export async function dispatch(cmdRaw, arg, state, cfg, session, h, submit, stdo
         return;
       }
       const { hooks, errors } = loadHooks(workspace);
-      const lines = describeHooks({ hooks });
+      const lines = describeHooks({ hooks }, workspace);
       if (errors.length) lines.push('', 'Config problems:', ...errors.map((e) => `  ! ${e}`));
       h.openPanel('hncode — hooks', lines);
       return;
@@ -14610,7 +14813,13 @@ const agents = readAgentsMd(state.cwd || state.workspace || cfg.workspace, state
     // Remember the value HERE, at the start, so that a /focus the user sets while the
     // turn is running survives instead of being cancelled by the turn-end cleanup.
     const focusAtTurnStart = !!state.focus;
-    if (state.plan) {
+    // PTC MODE WINS OVER EVERY OTHER FILTER. It exists to make a specific promise — "every tool call goes through
+    // the sandbox, so a loop over forty files costs one round trip and a handful of tokens" — and that promise is
+    // only kept if the model CANNOT reach a tool directly. Leaving even one out (Bash above all) hands back the
+    // whole machine and the guarantee evaporates.
+    if (state.ptcMode) {
+      cfg.toolFilter = ['PTC'];
+    } else if (state.plan) {
       cfg.toolFilter = ['Read', 'Grep', 'Glob'];
     } else if (state.focus) {
       cfg.toolFilter = ['Read', 'Write', 'Edit', 'Bash'];
@@ -14716,7 +14925,7 @@ const agents = readAgentsMd(state.cwd || state.workspace || cfg.workspace, state
         const own = getTool(toolName);
         if (own && own.autoApprove === true) return true;
       }
-      const safeTools = ['Read', 'Grep', 'Glob', 'FetchURL', 'WebSearch', 'TaskOutput', 'TaskList', 'TaskStop', 'TaskWait', 'TodoList', 'Goal', 'ActivateSkill', 'ProgrammaticToolCall', 'FileLines', 'AgentList', 'AgentMessage', 'AgentInterrupt', 'AgentClose', 'TaskInput', 'SendMessage', 'TeamTaskCreate', 'TeamTaskUpdate', 'TeamTaskList', 'ListTeammates', 'Memory', 'AskUserQuestion'];
+      const safeTools = ['Read', 'Grep', 'Glob', 'FetchURL', 'WebSearch', 'TaskOutput', 'TaskList', 'TaskStop', 'TaskWait', 'TodoList', 'Goal', 'ActivateSkill', 'PTC', 'FileLines', 'AgentList', 'AgentMessage', 'AgentInterrupt', 'AgentClose', 'TaskInput', 'SendMessage', 'TeamTaskCreate', 'TeamTaskUpdate', 'TeamTaskList', 'ListTeammates', 'Memory', 'AskUserQuestion'];
       if (rule !== 'ask' && safeTools.includes(toolName)) return true;
       // A read-only SHELL COMMAND (ls/git status/rg/cat …) is as safe as a
       // read-only TOOL, so it runs without a prompt in Ask mode too — the user
@@ -14774,6 +14983,8 @@ const agents = readAgentsMd(state.cwd || state.workspace || cfg.workspace, state
         // The prompt must NOT touch the composer: the user may already be typing,
         // and only Enter/Esc belong to the prompt.
         state.approvalPending = { toolName, args, desc, resolve, detail };
+        fireHook('PermissionRequest', { toolName, toolArgs: args, prompt: desc }, state.workspace || cfg.workspace);
+        fireHook('Notification', { type: 'permission_prompt', toolName, prompt: desc }, state.workspace || cfg.workspace);
         viewCur.render();
       });
     };
@@ -15235,6 +15446,7 @@ const agents = readAgentsMd(state.cwd || state.workspace || cfg.workspace, state
             // block renders from the moment the swarm is announced. Every item
             // starts "queued" and flips as the tool reports progress.
             if (e.name === 'AgentSwarm') {
+              fireHook('SubagentStart', { description: (e.args && e.args.description) || '', items: (e.args && e.args.items) || [] }, state.workspace || cfg.workspace);
               const a = entry.toolArgs || {};
               entry.swarmDescription = a.description || '';
               entry.swarmModel = a.subagent_type || '';
@@ -15283,6 +15495,7 @@ const agents = readAgentsMd(state.cwd || state.workspace || cfg.workspace, state
               // straight from that payload — no LCS inference, which mis-paired the context rows
               // into `-`/`+` pairs because the two sides had different shapes.
               entry.diff = editDiffRows(e.editDiff);
+              fireHook('FileChanged', { path: e.editDiff.path || (entry.toolArgs && entry.toolArgs.path), change: 'edit' }, state.workspace || cfg.workspace);
             }
             // Hand the counts to the TOOL row (which keeps `+N -N` next to its
             // name) and the diff to the RESULT row (rendered beneath the `↳`).
@@ -15580,6 +15793,9 @@ const agents = readAgentsMd(state.cwd || state.workspace || cfg.workspace, state
     // the current value) decides, so a /focus issued while the turn ran still stands.
     if (focusAtTurnStart) state.focus = false;
     session.focus = !!state.focus;
+    // PTC mode PERSISTS, unlike focus: it is not a one-turn narrowing, it is a decision about how this session
+    // works, and the user set it deliberately.
+    session.ptcMode = !!state.ptcMode;
     session.swarm = !!state.swarm;
     // The turn's token totals, so a resumed session keeps the running cost rather
     // than restarting it at zero (the numbers have to sum across the whole
@@ -18266,7 +18482,7 @@ export async function startTUI(opts) {
       case 'composerRow': {
         const { cols } = dims();
         const insideW = Math.max(0, cols - 2);
-        const layout = composerLayout(state, insideW - 3);
+        const layout = composerLayout(state, insideW);
         const t = state._lastMouse;
         const clickCol = t ? (t.col || 1) - 1 : 1;
         // The column is measured from the row's PREFIX, because `composerTextIndexAt`
@@ -18636,7 +18852,7 @@ export async function startTUI(opts) {
       if (hb && hb.kind === 'composerRow') {
         const { cols } = dims();
         const insideW = Math.max(0, cols - 2);
-        const layout = composerLayout(state, insideW - 3);
+        const layout = composerLayout(state, insideW);
         const clickCol = Math.max(0, (t.col || 1) - 1 - 3);
         pasteHover = pasteMarkerIdAt(state.input || '', composerTextIndexAt(layout, hb.rowIdx, clickCol));
       }
@@ -18708,7 +18924,7 @@ export async function startTUI(opts) {
         if (hb && hb.kind === 'composerRow') {
           const { cols } = dims();
           const insideW = Math.max(0, cols - 2);
-          const layout = composerLayout(state, insideW - 3);
+          const layout = composerLayout(state, insideW);
           const clickCol = (t.col || 1) - 1;
           const colInContent = Math.max(0, clickCol - 1);
           const idx = composerTextIndexAt(layout, hb.rowIdx, colInContent);
@@ -19767,11 +19983,21 @@ export async function startTUI(opts) {
       if (fg && typeof fg.detach === 'function') {
         const id = fg.detach();
         if (id) {
+          // The hook is gone once the command has been handed to the background: leaving it set made a SECOND
+          // Ctrl+B call `detach` again, get null, and do nothing at all — which read as the shortcut being broken.
+          try { state.agent.ctx._foreground = null; } catch { /* the agent may already be gone */ }
           notice(`Moved to background: ${id}`, 'info');
           renderFrame();
           return;
         }
       }
+      // SAY SO. Ctrl+B with no foreground command used to fall through silently, so there was no way to tell "the
+      // shortcut is broken" from "nothing was running" — and a steer arriving mid-turn made that confusion easy.
+      notice(state.running
+        ? 'Nothing to background — no command is running in the foreground'
+        : 'Nothing to background — the agent is idle', 'error');
+      renderFrame();
+      return;
     }
 
     if (t.key === 'c-s' && !state.editor) {
@@ -19893,7 +20119,7 @@ export async function startTUI(opts) {
           }
         }
         const insideW = Math.max(0, dims().cols - 2);
-        const layout = composerLayout(state, insideW - 3);
+        const layout = composerLayout(state, insideW);
         const dir = t.key === 'down' ? 1 : -1;
         const targetRow = layout.caretRow + dir;
         if (targetRow >= 0 && targetRow < layout.rows.length) {
@@ -19921,7 +20147,7 @@ export async function startTUI(opts) {
         if (!overlay) {
           const cur = state.input || '';
           const insideW = Math.max(0, dims().cols - 2);
-          const layout = composerLayout(state, insideW - 3);
+          const layout = composerLayout(state, insideW);
           const dir = t.key === 'down' ? 1 : -1;
           const targetRow = layout.caretRow + dir;
           // The composer is MULTI-LINE: ↑/↓ move the caret between its rows
@@ -20349,7 +20575,7 @@ export async function startTUI(opts) {
         return;
       }
       const insideW = Math.max(0, dims().cols - 2);
-      const layout = composerLayout(state, insideW - 3);
+      const layout = composerLayout(state, insideW);
       const dir = t.key === 'down' ? 1 : -1;
       const targetRow = layout.caretRow + dir;
       if (targetRow >= 0 && targetRow < layout.rows.length) {
@@ -20477,7 +20703,7 @@ export async function startTUI(opts) {
         // a multi-line prompt can be selected across lines. Same sticky column as
         // the plain ↑/↓ (see verticalCaretIndex).
         const insideW = Math.max(0, dims().cols - 2);
-        const layout = composerLayout(state, insideW - 3);
+        const layout = composerLayout(state, insideW);
         const targetRow = layout.caretRow + (dirName === 'down' ? 1 : -1);
         if (targetRow < 0 || targetRow >= layout.rows.length) { renderFrame(); return; }
         next = verticalCaretIndex(state, cur, layout, targetRow);

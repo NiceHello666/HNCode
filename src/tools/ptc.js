@@ -1,5 +1,5 @@
 /**
- * ProgrammaticToolCall — let the model orchestrate tools with code instead of one round trip each.
+ * PTC (ProgrammaticToolCall) — let the model orchestrate tools with code instead of one round trip each.
  *
  * THE PROBLEM IT SOLVES: a task like "which of these forty files reference the removed symbol" is forty calls,
  * each with its own inference pass, and every one of those results then sits in the context whether or not it
@@ -47,7 +47,7 @@ const DESCRIPTION = [
 const BASE_DESCRIPTION = DESCRIPTION.join('\n');
 
 export const spec = {
-  name: 'ProgrammaticToolCall',
+  name: 'PTC',
   // Built per read so a plugin that loaded after this module is named in the list the model is given.
   get description() {
     return BASE_DESCRIPTION + '\n\nCALLABLE TOOLS: ' + callableTools().join(', ') + '.'

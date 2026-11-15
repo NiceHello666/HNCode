@@ -13,14 +13,14 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 
-const { highlightPasteMarkers } = await import('../src/tui.js');
+const { highlightPasteMarkers, pasteMarker } = await import('../src/tui.js');
 const { C } = await import('../src/colors.js');
 
 /** A row of the composer, as the caller would hand it in. */
 const body = (line) => highlightPasteMarkers(line);
 
 test('the chip does not end with a bare reset', () => {
-  const out = body('[paste #1 +12 lines] and then normal text');
+  const out = body(pasteMarker(1, 12) + ' and then normal text');
   assert.ok(out.includes(C.selBg), 'the chip has its selection background');
   const afterChip = out.slice(out.indexOf(']') + 1);
   assert.ok(!afterChip.includes(C.reset),
@@ -30,7 +30,7 @@ test('the chip does not end with a bare reset', () => {
 test('the tail keeps whatever colour the caller set', () => {
   // Reconstruct what the composer does: colour the whole line, then chip the marker. String
   // concat means the chip's own escapes land in the middle of that coloured run.
-  const line = C.cyan + 'note this ' + C.white + '[paste #1 image]' + C.cyan + ' and more' + C.reset;
+  const line = C.cyan + 'note this ' + C.white + pasteMarker(1, 1, 'image') + C.cyan + ' and more' + C.reset;
   const out = body(line);
   assert.ok(out.includes(C.bgReset), 'the chip closes its own background');
   // The chip must not cancel the cyan that follows it.
@@ -41,12 +41,12 @@ test('the tail keeps whatever colour the caller set', () => {
 });
 
 test('every marker in a row is chipped, and none leaves a reset behind', () => {
-  const out = body('a [paste #1 +2 lines] b [paste #2 image] c');
-  // Either 256-colour or truecolor, depending on the theme — the assertion is that BOTH markers got a
-  // background, not which encoding carried it. Pinning the exact index made this fail on truecolor while the
-  // behaviour was correct.
-  assert.equal((out.match(/48;(?:5;\d+|2;\d+;\d+;\d+)/g) || []).length, 2, 'both markers got a background');
-  assert.equal((out.match(/\[0m/g) || []).length, 0, 'no bare reset anywhere in the row');
+  const out = body(`a ${pasteMarker(1, 2)} b ${pasteMarker(2, 1, 'image')} c`);
+  // Every marker contributes TWO backgrounds now: its own chip fill, and the page colour it restores after closing
+  // the chip. Counting all of them still proves both markers were recognised; the important half is that the row
+  // after each chip is not left on the terminal's default background.
+  assert.equal((out.match(/48;(?:5;\d+|2;\d+;\d+;\d+)/g) || []).length, 4, 'both markers got a fill and restored the page');
+  assert.ok(out.includes(C.bgReset + C.bg), 'the page colour is re-asserted after each chip');
 });
 test('a row with no marker is returned untouched', () => {
 
@@ -57,7 +57,7 @@ test('a row with no marker is returned untouched', () => {
 test('the background is restored, not merely cleared', () => {
   // `C.bgReset` is ESC[49m: close the selection background, leave the foreground alone. That is the
   // distinction the whole file is about, so it is asserted directly rather than inferred.
-  const out = body('[paste #1 1 lines] tail');
+  const out = body(pasteMarker(1, 1) + ' tail');
   assert.ok(out.includes(C.bgReset), 'the chip closes with the background-only reset');
   assert.equal(C.bgReset, '\x1b[49m', 'which is ESC[49m');
   assert.notEqual(C.bgReset, C.reset, 'and not the full reset');

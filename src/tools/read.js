@@ -97,6 +97,9 @@ export const spec = {
       : total;
     let out = '';
     out += `${args.path} (lines ${start}-${end} of ${total})\n`;
+    // THE NUMBER IS LEFT-ALIGNED AND PADDED ON THE RIGHT, not the other way round. `padStart` put the padding in
+    // FRONT, so `1` arrived as `" 1"` and the gutter read as right-aligned. The tab after it is what aligns the
+    // code, so all a number needs is to start in column 0.
     for (let i = start; i <= end; i++) out += `${i}\t${lines[i - 1]}\n`;
     // No trailing "truncated" banner: without an explicit end_line every line is returned, so the only way
     // to stop early is a deliberate range request — the header already states which lines those were.
