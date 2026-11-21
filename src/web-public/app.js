@@ -1539,10 +1539,13 @@ function renderStatusLine(s) {
   // One badge, one accent — Plan/Focus/Swarm are mutually exclusive, so exactly one
   // of these is shown. The class carries the colour (see .sl-badge-* in app.css); the
   // three must NOT share it, or the statusline cannot say which mode is on.
-  const badge = s.plan ? { text: 'Plan', cls: 'sl-badge-plan' }
-    : s.focus ? { text: 'Focus', cls: 'sl-badge-focus' }
-      : s.swarm ? { text: 'Swarm', cls: 'sl-badge-swarm' }
-        : null;
+  // PTC FIRST: it narrows the toolset harder than any of the others — only the sandbox tool is offered — so a
+  // session in that mode must say so from the status line alone.
+  const badge = s.ptcMode ? { text: 'PTC', cls: 'sl-badge-ptc' }
+    : s.plan ? { text: 'Plan', cls: 'sl-badge-plan' }
+      : s.focus ? { text: 'Focus', cls: 'sl-badge-focus' }
+        : s.swarm ? { text: 'Swarm', cls: 'sl-badge-swarm' }
+          : null;
   if (badge) line.appendChild(el('sl-badge ' + badge.cls, badge.text));
 
   if (s.model) {

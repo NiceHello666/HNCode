@@ -936,12 +936,14 @@ button { font: inherit; color: inherit; }
   border: 0;
   padding: 0;
 }
-/* Plan / Focus / Swarm are MUTUALLY EXCLUSIVE modes, so at most one badge is shown —
-   and each carries its OWN accent, matching src/tui.js:
-     Plan  -> cyan   |  Focus -> blue  |  Swarm -> spring (green-tinted cyan)
-   They used to collapse into one `--teal` badge, which made three different modes
-   look like the same state. */
+/* Plan / Focus / Swarm / PTC are MUTUALLY EXCLUSIVE modes, so at most one badge is
+   shown — and each carries its OWN accent, matching src/tui.js:
+     PTC -> orange  |  Plan -> cyan  |  Focus -> blue  |  Swarm -> spring
+   They used to collapse into one `--teal` badge, which made different modes look
+   like the same state. PTC takes orange because it is the one mode that removes
+   tools rather than narrowing them, and it must not read as a flavour of Plan. */
 .sl-badge { color: var(--teal); font-weight: 600; flex: none; }
+.sl-badge-ptc { color: var(--orange); }
 .sl-badge-plan { color: var(--cyan); }
 .sl-badge-focus { color: var(--blue); }
 .sl-badge-swarm { color: var(--spring); }

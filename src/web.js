@@ -35,6 +35,8 @@ const ALLOWED_ACTIONS = [
   // conversation
   'submit', 'dispatch', 'interrupt', 'approve', 'answerPlan', 'answerQuestion', 'stopTask',
   'setMode', 'shell', 'steer', 'editQueued', 'dropQueued',
+  // Answering a prompt and moving a command to the background: the browser's Ctrl+G and Ctrl+B.
+  'stdinLine', 'detach',
   // files
   'readFile', 'writeFile',
   // session settings

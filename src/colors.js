@@ -522,14 +522,21 @@ export function setTheme(name) {
   // Towards BLACK on a dark theme and towards the foreground on a light one: mixing a dark page further towards its
   // own foreground would make it lighter, which is `codeBg`'s job, not this one.
   C.termBg = brgb(...mix(t.bg, [0, 0, 0], isLight ? 0.925 : 0.78));
-  // THE COMPOSER SURFACE: NEUTRAL, and derived from the page. Neutral because a hue here reads as "more page"
-  // rather than as an input field; derived because a fixed grey meant every theme drew the default dark theme's
-  // input box. The three channels are set to the page's own LUMINANCE plus a step, so the field is grey while
-  // still belonging to the palette it sits in. A theme may override it with its own `composer` triple.
-  const pageLum = (t.bg[0] + t.bg[1] + t.bg[2]) / 3;
-  const neutral = Math.max(0, Math.min(255, Math.round(pageLum + (isLight ? -14 : 14))));
-  C.composerBg = brgb(...(t.composer || [neutral, neutral, neutral + (isLight ? 0 : 2)]));
-
+  // THE INPUT SURFACE IS A THEMED SURFACE, not a neutral one.
+  //
+  // It used to be three equal channels — a true grey — on the reasoning that an input field should not look like
+  // "more page". On the dark theme that produced the opposite: the page is a dark TEAL, and a neutral grey beside
+  // it does not read as a field on this page, it reads as a panel from some other program. Every other surface
+  // here carries the palette hue, so this one does too: the step is the same mix as `codeBg`, which raises the
+  // brightness while keeping the colour, and a sent message and a steered one sit on the SAME surface as the
+  // composer because they are the same kind of thing. A theme may still override it with its own `composer`
+  // triple.
+  C.composerBg = brgb(...(t.composer || mix(t.bg, t.fg, isLight ? 0.90 : 0.88)));
+  // THE MODE SURFACES. The composer is otherwise unfilled, and a line typed while a mode is on goes somewhere
+  // other than the model — so the FIELD says so, not one character at the far left. Each is the theme's own
+  // accent mixed mostly towards the page, so text on it stays readable; a saturated fill would not be.
+  C.stdinBg = brgb(...mix(t.bg, t.orange || [203, 75, 22], isLight ? 0.72 : 0.74));
+  C.shellBg = brgb(...mix(t.bg, t.shellMode || t.teal, isLight ? 0.72 : 0.74));
   // A comment: the palette's foreground, pulled most of the way towards its background so it reads as quiet. A dark
   // page can afford a looser mix; a light one cannot — solar's foreground is already a muted blue-grey, and at the
   // dark theme's ratio its comments came within 8 of the removal wash.

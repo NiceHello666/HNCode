@@ -61,22 +61,28 @@ const wait = (ms) => new Promise((r) => setTimeout(r, ms));
 // the flag
 // ---------------------------------------------------------------------------
 
-test('interactive refuses a foreground run', async () => {
-  // A foreground command has nobody to type at it; opening a pipe there would only risk the deadlock the
-  // /dev/null default exists to prevent.
-  const r = await bash.execute({ command: 'echo hi', interactive: true }, ctx);
-  assert.match(String(r), /requires `run_in_background/);
+test('a foreground run gets a stdin pipe it can be typed into', async () => {
+  // It used to REFUSE `interactive` outright, on the reasoning that a foreground command has nobody to type at it.
+  // That is true of the agent but not of the user: a program that prompts sat on /dev/null until the timeout killed
+  // it. The pipe is open for every run now, and the foreground hook exposes a `write` the composer can reach.
+  const p = bash.execute({ command: startEcho(), description: 'foreground echo' }, ctx);
+  for (let i = 0; i < 60 && !(ctx._foreground && ctx._foreground.write); i++) await wait(50);
+  assert.ok(ctx._foreground && typeof ctx._foreground.write === 'function', 'the foreground hook can accept a line');
+  assert.equal(ctx._foreground.write('hello\n'), true, 'and reports that the line landed');
+  await p;
 });
 
-test('an interactive task has a stdin pipe; a plain one does not', async () => {
+test('TaskInput reaches a background task through its stdin pipe', async () => {
+  // EVERY run has a pipe now; `interactive` is what registers it for TaskInput to find. A plain background task
+  // keeps the pipe open but is not addressable, which is the distinction these two assertions draw.
   const a = await bash.execute({ command: startEcho(), run_in_background: true, interactive: true }, ctx);
   const aId = Object.keys(ctx.tasks)[0];
-  assert.ok(ctx.tasks[aId].stdin, 'interactive opens a pipe');
+  assert.ok(ctx.tasks[aId].stdin, 'interactive registers the pipe for TaskInput');
   void a;
 
   await bash.execute({ command: 'echo plain', run_in_background: true }, ctx);
   const plainId = Object.keys(ctx.tasks).find((k) => k !== aId);
-  assert.equal(ctx.tasks[plainId].stdin, undefined, 'a plain background task gets none');
+  assert.equal(ctx.tasks[plainId].stdin, undefined, 'a plain background task is not addressable');
 });
 
 // ---------------------------------------------------------------------------

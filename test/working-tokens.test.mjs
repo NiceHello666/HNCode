@@ -136,8 +136,9 @@ test('summing stream deltas does not inflate the count', () => {
 test('the elapsed tail is built in one place', () => {
   // Three rows draw it — the steady row, the reduced-motion row and the start animation — plus
   // the final `[turn took …]`. Four call sites of one helper is what keeps them from drifting.
-  const src = fs.readFileSync(new URL('../src/tui.js', import.meta.url), 'utf8');
-  assert.match(src, /^function elapsedTail\(ms, tokens\) \{/m, 'elapsedTail must exist');
+  const src = fs.readFileSync(new URL('../src/tui.js', import.meta.url), 'utf8')
+    + fs.readFileSync(new URL('../src/format.js', import.meta.url), 'utf8');
+  assert.match(src, /^export function elapsedTail\(ms, tokens\) \{/m, 'elapsedTail must exist');
   const uses = (src.match(/elapsedTail\(/g) || []).length;
   assert.ok(uses >= 5, `elapsedTail has ${uses} mentions; expected the definition plus four uses`);
   // And nothing else may assemble the brackets by hand.
@@ -146,8 +147,8 @@ test('the elapsed tail is built in one place', () => {
 });
 
 test('a token count of exactly 1 is the only singular', () => {
-  // Guarded here rather than in the row test so a pluralisation change is caught once.
-  const src = fs.readFileSync(new URL('../src/tui.js', import.meta.url), 'utf8');
+  // Guarded here rather than in the row test so a pluralisation change is caught once. The rule lives in the formatter.
+  const src = fs.readFileSync(new URL('../src/format.js', import.meta.url), 'utf8');
   assert.match(src, /v === 1 \? '' : 's'/, 'the plural rule');
 });
 
@@ -164,7 +165,9 @@ test('every token formatter in the product agrees on the same value', () => {
     assert.ok(i > 0, `${decl} exists`);
     return src.slice(i, src.indexOf('\n}', i) + 2);
   };
-  const tui = fs.readFileSync(new URL('../src/tui.js', import.meta.url), 'utf8');
+  // The formatters live in src/format.js now; the context bar keeps its own copy of the scaling rule, which is exactly
+  // what this test compares.
+  const tui = fs.readFileSync(new URL('../src/format.js', import.meta.url), 'utf8');
   const barSrc = fs.readFileSync(new URL('../src/context-bar.js', import.meta.url), 'utf8');
 
   const tuiScale = new Function(`${grab(tui, 'function scaleUnit(')}; return scaleUnit;`)();

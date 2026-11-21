@@ -155,15 +155,10 @@ export const spec = {
     const def = bg ? DEFAULT_BACKGROUND_TIMEOUT_S : DEFAULT_TIMEOUT_S;
     const timeoutMs = args.disable_timeout ? undefined : Math.min(args.timeout ?? def, cap) * 1000;
 const command = args.command;
-    // stdin is 'ignore' by default (NUL / /dev/null): leaving it as an open pipe made any command that
-    // reads stdin (`cat`, `npm init`, …) block until the timeout.
-    //
-    // `interactive` OPTS INTO A PIPE, and only for a background run: a foreground command has nobody to
-    // type at it, while a background one can be fed through TaskInput. The pipe is closed by that tool
-    // when it is done, which is what keeps `cat` and friends from hanging.
-    if (args.interactive && !args.run_in_background) {
-      return 'Error: `interactive` requires `run_in_background: true` — a foreground run has no way to receive input.';
-    }
+    // STDIN IS A PIPE FOR EVERY RUN. The agent never types into it, but the USER can: a program that prompts
+    // (`npm init`, a REPL, a script reading a line) used to sit on /dev/null until the timeout killed it, with
+    // no way to answer. A background run is fed through TaskInput, a foreground one through the composer's
+    // Ctrl+G mode. When nobody writes, the command blocks exactly as it would in a terminal.
     let shell;
     try { shell = shellSpawnArgs(command); } catch (e) { return `Error: ${e.message}`; }
     // Check the turn's signal BEFORE spawning. The check below ran only after the
@@ -172,7 +167,7 @@ const command = args.command;
     // and Esc could not stop it.
     if (ctx.signal && ctx.signal.aborted) return 'Interrupted by user';
     const child = cp.spawn(shell.bin, shell.args, {
-      cwd, stdio: [args.interactive ? 'pipe' : 'ignore', 'pipe', 'pipe'], env: { ...process.env },
+      cwd, stdio: ['pipe', 'pipe', 'pipe'], env: { ...process.env },
     });
 
     const chunks = [];
@@ -284,6 +279,12 @@ if (child.stdout) child.stdout.on('data', push);
           command: args.command,
           description: args.description || args.command,
           child, chunks,
+          // The TUI reaches this to answer a prompt the command is waiting on.
+          stdin: child.stdin,
+          write: (s) => {
+            if (settled || !child.stdin || child.stdin.destroyed || !child.stdin.writable) return false;
+            try { child.stdin.write(s); return true; } catch { return false; }
+          },
           detach: () => {
             if (settled) return null;
             settled = true;

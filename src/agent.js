@@ -453,6 +453,11 @@ const filtered = (Array.isArray(cfg.toolFilter) && cfg.toolFilter.length
     this.ctx.onOutput = (chunk) => {
       if (chunk && this._currentToolId) this.onEvent({ type: 'tool_output', id: this._currentToolId, chunk });
     };
+    // A command whose output ended mid-line and then went quiet is most likely sitting at a prompt. The tool
+    // cannot answer it for the user, so it says so and the UI offers the composer.
+    this.ctx.onStdinWaiting = (waiting) => {
+      if (this._currentToolId) this.onEvent({ type: 'tool_stdin_waiting', id: this._currentToolId, waiting: !!waiting });
+    };
     // The Read snapshot pool lives ON THE AGENT, not on a per-turn ctx. It records
     // what the model has read (and the hashes at that moment) so a later Edit can
     // refuse to act on a stale snippet. /undo rewinds files on disk, i.e. it makes

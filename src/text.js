@@ -1,0 +1,149 @@
+// Text measurement, colouring and wrapping.
+//
+// These are the leaves of the renderer: they take a string and some numbers and return a string. Nothing here knows
+// what a transcript is, so the same helpers serve a chat row, a popup and the composer.
+
+import { C } from './colors.js';
+import { visualWidth, expandTabs } from './term.js';
+
+// The ESC byte, as its own string. Every escape scan starts by comparing against this rather than writing '\x1b',
+// which keeps the regexes and the string walks recognisably the same test.
+export const ESC = '\x1b';
+
+export { expandTabs };
+
+export function stripAnsi(s) {
+  return String(s)
+    .replace(/\x1b\[[0-9;?]*[a-zA-Z]/g, '')
+    .replace(/\x1b\[[0-9;?]* [a-zA-Z]/g, '')
+    .replace(/\x1b\][^\x07\x1b]*(?:\x07|\x1b\\)/g, '');
+}
+
+// Make UNTRUSTED text safe to paint: file contents from Read, command output from Bash, diff bodies, tool arguments.
+//
+// The goal is to keep the content as ORIGINAL as possible while stopping the terminal from OBEYING it. Only the ESC
+// byte is rewritten — every following byte (the `[31m`, the `[10;20H` parameters) is shown verbatim, so nothing is
+// lost:
+//
+//     file contains:  ESC [ 3 1 m E R R O R ESC [ 0 m
+//     screen shows :  ^[ [ 3 1 m E R R O R ^[ [ 0 m
+//
+// A terminal cannot act on a sequence whose ESC has been split into `^[`, so `ESC[31m` no longer recolours half the
+// transcript, `ESC[0m` no longer resets the row mid-line, and `ESC[10;20H` no longer moves the cursor.
+//
+// `^[` is the convention `cat -v`, `less` and `bat` use for ESC, so it reads as "there is an escape here" rather
+// than as content.
+export function sanitizeText(s) {
+  return String(s == null ? '' : s)
+    .replace(/\x1b/g, '^[')
+    .replace(/\x07/g, '^G')
+    .replace(/\x08/g, '^H')
+    .replace(/[\x0b\x0c]/g, ' ')
+    .replace(/[\x00-\x06\x0e-\x1f\x7f]/g, '');
+}
+
+/**
+ * How much of a running command's output to KEEP, not just display.
+ *
+ * This string is mirrored into the hub row (and so into the SSE patch the browser applies on every frame), which
+ * means an unbounded buffer grows the terminal's row, the hub's row and the browser's copy at the same time. Only
+ * the tail is ever drawn, so only the tail is worth holding.
+ */
+export const LIVE_OUTPUT_MAX_CHARS = 64 * 1024;
+
+/** The last `max` CHARACTERS of `s`, cut on a line boundary so the tail never starts mid-line. */
+export function tailChars(s, max) {
+  const str = String(s == null ? '' : s);
+  if (str.length <= max) return str;
+  const cut = str.slice(str.length - max);
+  const nl = cut.indexOf('\n');
+  return nl >= 0 ? cut.slice(nl + 1) : cut;
+}
+
+/** Visible width of a string that may carry ANSI escapes. */
+export function visualCol(s) { return visualWidth(stripAnsi(String(s))); }
+
+/** Wrap `text` in colour `c`, closing with a full reset. */
+export function col(text, c) { return c + String(text) + C.reset; }
+
+/**
+ * Pad or truncate to exactly `w` VISIBLE columns, carrying escapes through untouched.
+ *
+ * Padding is what makes a row's background reach the edge; truncation keeps a long line from wrapping and pushing
+ * the layout down a row.
+ */
+export function fitAnsi(s, w) {
+  const str = String(s);
+  const v = visualCol(str);
+  if (v < w) return str + ' '.repeat(w - v);
+  if (v === w) return str;
+  let out = '';
+  let n = 0;
+  let i = 0;
+  while (i < str.length) {
+    if (str[i] === ESC) {
+      const m = /^\x1b\[[0-9;?]*[a-zA-Z]/.exec(str.slice(i))
+        || /^\x1b\[[0-9;?]* [a-zA-Z]/.exec(str.slice(i))
+        || /^\x1b\][^\x07\x1b]*(?:\x07|\x1b\\)/.exec(str.slice(i));
+      if (m) { out += m[0]; i += m[0].length; continue; }
+    }
+    const cp = str.codePointAt(i);
+    const ch = String.fromCodePoint(cp);
+    const cw = visualWidth(ch);
+    if (n + cw > w) break;
+    n += cw;
+    out += ch;
+    i += cp > 0xffff ? 2 : 1;
+  }
+  if (n < w) out += ' '.repeat(w - n);
+  return out;
+}
+
+/**
+ * Greedy word wrap to `width` VISIBLE columns.
+ *
+ * The running width is ACCUMULATED rather than re-measured. Recomputing `visualCol(line + ' ' + w)` per word is O(line)
+ * per word and therefore O(n²) per paragraph — a single long streamed paragraph cost ~46ms at 20KB and froze the UI on
+ * every markdown chunk. Widths are additive for the plain text this receives, because no ANSI is present until
+ * `inlineMarkdown` runs later.
+ *
+ * A word longer than the line is hard-split BY VISUAL COLUMNS, not by `.length`: CJK characters occupy two cells, so
+ * slicing by length emitted lines twice as wide as the box and let the terminal wrap them.
+ */
+export function wrapWords(str, width) {
+  width = Math.max(1, width | 0);
+  const out = [];
+  let line = '';
+  let lineW = 0;
+  // Tabs are expanded first: `visualCol` counts '\t' as 0 columns while the terminal advances to the next stop, which
+  // made the row wider than computed and wrapped it onto the following line.
+  const words = expandTabs(str).split(' ');
+  for (const w of words) {
+    const wW = visualCol(w);
+    if (wW > width) {
+      if (line) { out.push(line); line = ''; lineW = 0; }
+      let chunk = '';
+      let cw = 0;
+      for (const ch of w) {
+        const chw = visualCol(ch);
+        if (cw + chw > width) { out.push(chunk); chunk = ''; cw = 0; }
+        chunk += ch; cw += chw;
+      }
+      if (chunk) { line = chunk; lineW = cw; }
+      continue;
+    }
+    const sep = line ? 1 : 0;
+    if (lineW + sep + wW <= width) {
+      line = line ? line + ' ' + w : w;
+      lineW += sep + wW;
+    } else {
+      if (line) out.push(line);
+      line = w;
+      lineW = wW;
+    }
+  }
+  if (line) out.push(line);
+  else if (out.length === 0) out.push('');
+  return out;
+}
+

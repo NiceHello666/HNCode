@@ -22,6 +22,111 @@ import {
 } from './colors.js';
 import { copyText, readText, warmClipboard, readClipboardContentAsync, readClipboardTextOnly, imageUrlFromClipboardText, cleanupPastedImages, stopClipboardHelper } from './clipboard.js';
 import { visualWidth, estimateTokens, estimateTokensFloat, estimateMessagesTokens, estimateMessageTokens, messageTokens, expandTabs } from './term.js';
+// The extracted modules are pulled in as NAMESPACES and unpacked into local bindings. That way adding a helper to
+// one of them is a one-line change there, rather than an edit to a long named-import list that silently leaves a
+// name out and fails at runtime with "X is not defined".
+import * as text from './text.js';
+import * as anim from './animate.js';
+import * as comp from './composer.js';
+import * as diffMod from './diff.js';
+
+const {
+  ESC, stripAnsi, sanitizeText, tailChars, LIVE_OUTPUT_MAX_CHARS,
+  visualCol, col, fitAnsi, wrapWords,
+} = text;
+const {
+  SPINNER, REDUCED_MOTION_DOT, REDUCED_MOTION_CYCLE_MS, SPIN_PLACEHOLDER,
+  reducedMotionOn, spinnerFrame, sweepSettle, sweepPulse,
+  LIGHT_FRACTION, SPIN_TICK_MS, lightWidth, TAIL_CHARS, ANIM_FPS, FRAME_MS,
+  STEP_MS, TOOL_STEP_MS, ENTRY_EXIT_CHARS, lightMargin, crossMs, REST_MS, cycleMs,
+  lightOrigin, lightAt, shimmerText, STEP_CHARS, SWEEP_TICKS, SWEEP_TRAVEL_PAD, bandCharsFor, framesPerChar,
+} = anim;
+const {
+  composerInput, pasteMarker, PASTE_MARKER_RE, expandPastes, highlightPasteMarkers,
+  pasteMarkerIdAt, expandPasteMarkerAt, highlightSelection, adjacentPasteMarker,
+} = comp;
+const {
+  DIFF_CONTEXT_LINES, paintCode, alignLines, elideContext, editDiffRows, lineDiff,
+} = diffMod;
+
+// RE-EXPORTED SO THE SPLIT IS INVISIBLE TO CALLERS.
+//
+// These names were `export function` declarations in this file until they moved into the modules above. Anything that
+// imported them from here — tests, the SDK's target list, a plugin — must keep working, so the same names are surfaced
+// again from their new home. Adding a helper to one of those modules does NOT need a line here; this list only has to
+// cover what used to be public.
+export {
+  DIFF_CONTEXT_LINES, paintCode, alignLines, elideContext, editDiffRows, lineDiff,
+} from './diff.js';
+export {
+  composerInput, pasteMarker, PASTE_MARKER_RE, expandPastes, highlightPasteMarkers,
+  pasteMarkerIdAt, expandPasteMarkerAt, highlightSelection, adjacentPasteMarker,
+} from './composer.js';
+export {
+  SPINNER, REDUCED_MOTION_DOT, REDUCED_MOTION_CYCLE_MS, SPIN_PLACEHOLDER,
+  reducedMotionOn, spinnerFrame, sweepSettle, sweepPulse,
+  LIGHT_FRACTION, SPIN_TICK_MS, lightWidth, TAIL_CHARS, ANIM_FPS, FRAME_MS,
+  STEP_MS, TOOL_STEP_MS, ENTRY_EXIT_CHARS, lightMargin, crossMs, REST_MS, cycleMs,
+  lightOrigin, lightAt, shimmerText, STEP_CHARS, SWEEP_TICKS, bandCharsFor, framesPerChar,
+} from './animate.js';
+export {
+  ESC, stripAnsi, sanitizeText, tailChars, LIVE_OUTPUT_MAX_CHARS,
+  visualCol, col, fitAnsi, wrapWords, expandTabs,
+} from './text.js';
+
+import * as md from './markdown.js';
+
+const {
+  MD_RENDER_VERSION, renderMdIncremental, splitBlocks, renderMdText, renderTable,
+  markdownLineToRows, mathImageCapable, MATH_INK, mathCellHeight, mathBlockRows,
+  stripMathDelimiters, placeTex, looksLikeInlineMath, inlineMarkdown,
+} = md;
+
+export {
+  MD_RENDER_VERSION, renderMdIncremental, splitBlocks, renderMdText, renderTable,
+  markdownLineToRows, mathImageCapable, MATH_INK, mathCellHeight, mathBlockRows,
+  stripMathDelimiters, placeTex, looksLikeInlineMath, inlineMarkdown,
+} from './markdown.js';
+
+import * as toolLine from './tool-line.js';
+
+const { msgColorFor, keyArgument, formatToolLine } = toolLine;
+
+export { msgColorFor, keyArgument, formatToolLine } from './tool-line.js';
+
+import * as panelMod from './panels.js';
+
+const {
+  TODO_MAX_VISIBLE, QUEUE_MAX_VISIBLE, selectVisibleTodos, todoRow, todosAllComplete,
+  todoListFinished, todoRowCount, todoPanelHeight, renderTodoPanel,
+  queueRowCount, queuePanelHeight, renderQueuePanel,
+  renderTitleBar, titleRowsNeeded, titleRowCount,
+} = panelMod;
+
+export {
+  TODO_MAX_VISIBLE, QUEUE_MAX_VISIBLE, selectVisibleTodos, todoRow, todosAllComplete,
+  todoListFinished, todoRowCount, todoPanelHeight, renderTodoPanel,
+  queueRowCount, queuePanelHeight, renderQueuePanel,
+  renderTitleBar, titleRowsNeeded, titleRowCount,
+} from './panels.js';
+
+import { planRows, bgTaskRows } from './rows-plan-bg.js';
+import { compactionRows, thinkingRows } from './rows-status.js';
+import { toolResultRows } from './rows-tool-result.js';
+
+import * as fmt from './format.js';
+
+const {
+  trimDecimal, scaleUnit, fmtTokens, fmtCount, moneyAmount, formatCost, sparkChart,
+  usagePercent, fmtDuration, fmtTokensShort, proseSummary, elapsedTail, justify,
+  stallIntensity, STALL_AFTER_MS, STALL_FADE_MS,
+} = fmt;
+
+export {
+  trimDecimal, scaleUnit, fmtTokens, fmtCount, moneyAmount, formatCost, sparkChart,
+  usagePercent, fmtDuration, fmtTokensShort, proseSummary, elapsedTail, justify,
+  stallIntensity, STALL_AFTER_MS, STALL_FADE_MS,
+} from './format.js';
 import { highlightLine, langForPath } from './highlight.js';
 // The picker is composited onto the frame as a cell layer rather than assigned over
 // it (see src/cell-buffer.js), so the transcript BESIDE the card survives.
@@ -116,7 +221,6 @@ import { killLspClientsSync } from './tools/diagnostics.js';
 import { startControlServer } from './ci.js';
 import { attachToDaemon } from './web-daemon-client.js';
 
-const ESC = '\x1b';
 const VERSION = localVersion();
 
 // Well-known base URLs for catalog providers that do not publish an `api` field
@@ -553,519 +657,6 @@ const MAX_PICKER = 200;            // max picker list rows shown at once
 // which costs one layout pass instead of permanent memory.
 const CACHE_KEEP = 300;
 const TIP_INTERVAL = 15000;
-// Braille spinner frames for the "Working" indicator (orange).
-const SPINNER = ['⠋', '⠙', '⠹', '⠸', '⠼', '⠴', '⠦', '⠧', '⠇', '⠏'];
-// The REDUCED-MOTION spinner: a single dot that breathes on a slow cycle, rather
-// than a rotating glyph. Claude Code does this (`REDUCED_MOTION_CYCLE_MS = 2000`,
-// "1s visible, 1s dim") and the reasoning is worth keeping: a fully static glyph
-// reads as "hung", so the slow brightness change is what says "still working"
-// without any motion. Two seconds is slow enough not to draw the eye.
-const REDUCED_MOTION_DOT = '●';
-const REDUCED_MOTION_CYCLE_MS = 2000;
-// Stand-in for the LIVE spinner glyph inside a CACHED row. A pending thinking
-// block must not be re-wrapped by the 80ms spin tick (see renderChatLines), so
-// its preview is cached with this sentinel and the real frame is substituted in
-// afterwards. It occupies 0 columns, so the swap never disturbs the layout.
-const SPIN_PLACEHOLDER = '\u0000';
-
-/** Is reduced motion on for this session? Read from config, or the env override. */
-export function reducedMotionOn(state) {
-  if (!state) return false;
-  if (state.reducedMotion !== undefined) return !!state.reducedMotion;
-  const env = process.env.HNCODE_REDUCED_MOTION;
-  if (env !== undefined) return /^(1|true|yes|on)$/i.test(env);
-  return !!(state.cfg && state.cfg.reducedMotion);
-}
-
-/**
- * The frames a SPINNER-style animation shows: { glyph, dim }.
- *
- * In normal mode the glyph rotates and is never dim. In reduced motion the glyph is
- * a constant dot whose brightness flips once per second — the same 2-second cycle
- * Claude uses. Returning both pieces means every caller (the Working row, a pending
- * tool, a thinking preview) gets the same treatment from one place.
- */
-export function spinnerFrame(state, tick) {
-  if (reducedMotionOn(state)) {
-    const t = tick !== undefined ? tick : (state && state.spin) || 0;
-    return { glyph: REDUCED_MOTION_DOT, dim: Math.floor(t / (REDUCED_MOTION_CYCLE_MS / 80)) % 2 === 1 };
-  }
-  const n = SPINNER.length;
-  const i = ((tick !== undefined ? tick : (state && state.spin) || 0) % n + n) % n;
-  return { glyph: SPINNER[i], dim: false };
-}
-
-/**
- * A sweep that SETTLES: a character the band has passed stays at 1.
- *
- * This is the shape the Working row's colour phase needs, and the two previous
- * attempts both got it wrong by reusing a travelling PULSE:
- *
- *   * the original `(head - charAt) / BAND` ramps DOWN as the head passes, so a
- *     character lit up and then went DARK again — the phrase never became orange;
- *   * the cosine `0.5 * (1 + cos(PI * d / half))` is a bell centred on the band, so
- *     every character dimmed again once the band left it. Measured over one colour
- *     phase it animated `[ ] -> [ :#@#: ] -> [ :#] -> [ ]`: a light sweeping across
- *     and leaving nothing behind.
- *
- * The convention that fixes it, stated once here:
- *
- *   `dist >= 0`          the band is past this character -> 1 (settled)
- *   `-half < dist < 0`   the band is on it -> ramp 0 -> 1
- *   `dist <= -half`      not reached yet -> 0
- *
- * `dist` is `head - position`, so a LARGER `dist` means "further behind the head".
- * `edge` shapes only the transition band:
- *   `cosine` — a raised cosine, so both ends of the ramp are gentle;
- *   `linear` — a straight ramp, sharpest at the settle point.
- */
-export function sweepSettle(dist, half, edge = 'cosine') {
-  const h = Math.max(1e-6, half);
-  if (dist >= 0) return 1;              // passed: stays lit
-  if (dist <= -h) return 0;             // not yet reached
-  const x = (dist + h) / h;             // 0 at the far edge, 1 at the settle point
-  return edge === 'linear' ? x : 0.5 * (1 - Math.cos(Math.PI * x));
-}
-
-/**
- * A sweep that PASSES: a character lights up under the band and returns to 0 after it.
- *
- * The counterpart to `sweepSettle`, and the difference is the whole point:
- *
- *   sweepSettle  a character the band has passed STAYS at 1 — paint being laid down
- *   sweepPulse   a character returns to 0 once the band leaves — a light moving over
- *
- * `half` is the HALF-width of the light, so `2 * half` is its full width, and `flat` is the half-width
- * of its FULLY LIT CORE. The shape is:
- *
- *   |dist| <= flat   the core, at 1
- *   flat < |dist| < half   a shoulder, falling from 1 to 0
- *
- * Both outer ends reach 0, which is what makes the light arrive and leave without a seam. `flat = 0`
- * ramps across the whole width and leaves a single bright point in the middle; `flat = half` is a solid
- * block with no fade at all.
- *
- * `dist` is `head - position`, the same convention `sweepSettle` uses.
- */
-export function sweepPulse(dist, half, edge = 'cosine', flat = 0) {
-  const h = Math.max(1e-6, half);
-  if (dist <= -h || dist >= h) return 0;   // outside the light
-  // A FLAT CORE: the middle `2 * flat` of the light is fully lit, and the cosine shapes only the
-  // shoulders either side of it. `flat` is a half-width, so `flat = h` is the old behaviour — a ramp
-  // across the whole light with a single bright point in the middle.
-  const core = Math.max(0, Math.min(h, flat));
-  const a = Math.abs(dist);
-  if (a <= core) return 1;
-  const x = (a - core) / (h - core);       // 0 where the core ends, 1 at the outer edge
-  if (edge === 'linear') return 1 - x;
-  return 0.5 * (1 + Math.cos(Math.PI * x)); // raised cosine from 1 down to 0
-}
-
-/**
- * The geometry of a passing light, shared by the Working row and the Using row.
- *
- * Both rows show the same gesture — a light running left to right, then a pause — so the numbers live
- * here rather than being repeated at each row and drifting apart.
- *
- * The light is a QUARTER OF THE ROW at full brightness, with a cosine fade either side, and it scales
- * with the text: `Working...` is ten characters, so its core is two; a 60-character line gets fifteen.
- *
- * It crosses in a fixed `CROSS_MS` whatever the row, so a long line is swept faster — see that constant
- * for why, and for what it costs.
- */
-
-/**
- * The light's CORE width as a fraction of the row, floored to one character.
- *
- * Claude Code's shimmer has no core at all — a single index is bright. The floor of 1 is the same idea: a
- * glint is a point travelling along the row, not a wash sweeping over it. It stops at one rather than
- * shrinking to zero because a two-character row still needs something to see.
- */
-export const LIGHT_FRACTION = 1 / 4;
-
-/**
- * Milliseconds per unit of `state.spin`.
- *
- * The spinner advances `spin` every 80ms (see the spinTimer in startTUI). The light's geometry is in
- * real time, so a caller holding only a tick count needs this to convert — named here so the two
- * cannot drift apart silently: the timer and this constant describe the same interval.
- */
-export const SPIN_TICK_MS = 80;
-
-/**
- * The light's FULLY LIT CORE, in characters: a quarter of the row, rounded down.
- *
- * Rounding down is deliberate: `Working...` is ten characters, so its core is two. Rounding up would make
- * it grow on rows where it should not, and a fractional width is something no terminal draws.
- *
- * The floor of 2 keeps a short row visible — a three-character row would otherwise round to one, and a
- * one-character core with a fade either side is a lit cell that barely registers.
- *
- * This is the core, NOT the total extent: `TAIL_CHARS` of cosine fade is added either side of it.
- */
-export function lightWidth(n) {
-  return Math.max(2, Math.floor(n * LIGHT_FRACTION));
-}
-/**
- * The fade either side of the core, in characters.
- * TWO, not one: a band of one character is wide enough in truecolor but vanishes under 256 colours, where
- * the light has only two indices and a single lit cell is a blink. Two keeps the sweep legible in both
- * palettes: the peak moves one letter at a time, and the row reads as a lamp travelling rather than as a
- * single pixel flashing.
- */
-export const TAIL_CHARS = 4;
-
-
-/**
- * The light's half-width, INCLUDING the fade. This is the extent `lightAt` sweeps.
- *
- * THE TAILS ARE CAPPED so the light stays narrower than the row: the total is held to `n - 1`, which
- * keeps at least one dark column at each end. Those dark columns are what make the light read as an
- * object with edges instead of as a row that brightens and dims.
- *
- * The CORE gives way first — `coreHalf` shrinks with the cap — because the fade is what makes the light
- * arrive and leave smoothly, and a short row needs that more than it needs a wide middle.
- */
-function totalHalf(n) {
-  const want = lightWidth(n) + 2 * TAIL_CHARS;
-  const capped = Math.min(want, Math.max(2, n - 1));
-  return capped / 2;
-}
-
-/** The half-width of the fully lit core, for `sweepPulse`'s `flat` parameter. */
-function coreHalf(n) {
-  // Never wider than the light itself, and never more than half the total: `sweepPulse` requires it.
-  return Math.min(lightWidth(n), totalHalf(n) * 2) / 2;
-}
-
-/**
- * The animation's frame rate: 30fps, the whole program's rate for animated rows.
- *
- * Rendering one frame measures 0.17ms, so a much higher rate is physically possible — the earlier tick
- * ran at 60fps — but the light's smoothness is not the only cost: every animated row redraws, and the
- * rate is a choice about the whole UI rather than about this one light.
- *
- * At 30fps a frame is 33ms, which is what makes the crossing in `CROSS_MS` six frames long.
- */
-export const ANIM_FPS = 30;
-export const FRAME_MS = 1000 / ANIM_FPS;
-
-/**
- * How long one step of the light lasts, in milliseconds.
- *
- * FIXED at 80ms — fast enough that a sweep reads as motion, slow enough that the eye is not chasing it.
- *
- * It followed the output rate for a while. That was tried and dropped: a model writing slowly got a
- * sweep so slow it looked stuck, a fast one got a blur, and the same row changed pace between turns for
- * no reason the reader could see. One rate is calmer and predictable, which is what an ambient
- * indicator needs to be.
- */
-export const STEP_MS = 65;
-
-/**
- * The step for a TOOL name, slower than the Working row's.
- *
- * A tool name is short — `Read` is four characters — so at the Working row's rate the light crosses it in
- * 560ms and the row is dark for the rest of the cycle. On screen that reads as a single flash, not as
- * movement. 150ms per character gives a four-character name a 1.4s round: slow enough to follow, still
- * obviously running.
- */
-const TOOL_STEP_MS = 150;
-
-/**
- * How long the light stays on one character, from how fast tokens are arriving.
- *
- * `tps` is output tokens per second for the step in flight. A fast stream should look fast — the row
- * keeping a leisurely 50ms step while tokens pour in reads as the animation lagging behind the text it
- * is supposed to accompany.
- *
- * The clamp is the important half. Under about 10 tok/s the model is thinking more than writing and the
- * sweep slows down so it does not look frantic over a trickle; above about 80 tok/s it is a wall of text
- * and the light moves quickly but never strobes. 28ms is just under a 33ms render frame, so a step is
- * always painted at least once; 200ms is slow enough to read as deliberate without looking stuck.
- */
-
-
-
-
-/**
- * How far outside the row the light starts and ends, in characters.
- *
- * TEN, exactly as Claude Code's `messageWidth + 20` splits into ten either side. This is what sets the
- * pace of a round: a 10-character row travels 30 cells, so a round is 1500ms — the same as Claude Code.
- *
- * A shorter margin made the sweep finish sooner and read as a twitch. It must not be shorter than the
- * light's own half-width either, or the light would still be lighting the last characters when the round
- * ended; `lightMargin` takes the larger of the two.
- */
-const ENTRY_EXIT_CHARS = 10;
-/**
- * The margin for a row of `n` characters: the target ten, or the light's half-width if that is larger —
- * but CAPPED so the light reaches the text in reasonable time.
- *
- * Ten cells either side is what makes the timing match Claude Code on a long row. On a SHORT row it is
- * most of the cycle: `Edit` is four characters, so the travel is 24 cells and the light spends the first
- * 500ms still outside the text, showing nothing. A row that looks frozen for half a second and then
- * blinks once reads as broken, which is exactly how the Using row was reported.
- *
- * The cap is `n + 4` per side at most, so a short row spends a few steps entering rather than ten, and a
- * long row is unchanged.
- */
-function lightMargin(n) {
-  const half = totalHalf(Math.max(1, n));
-  return Math.max(1, Math.min(ENTRY_EXIT_CHARS, Math.max(half, Math.ceil(Math.max(1, n) / 4))));
-}
-
-/**
- * The crossing time for a row of `count` characters — ONE FULL ROUND, entry and exit included.
- *
- * `(count + 2 * lightMargin(count)) * stepMs * SWEEP_TICKS / 10`. The light is over the visible text for only
- * `count * stepMs` of it; the rest is the entry and exit runs, which is what keeps the sweep from snapping on
- * and off.
- *
- * `SWEEP_TICKS` IS THE RESOLUTION KNOB. At the old value of 10 a ten-character row crossed in 1235ms — about
- * 19 frames at 65ms — and the light traversed its own five-character band in a third of that, so each glyph
- * took only five distinct brightness values and the fade read as a five-step ramp. Every doubling of the tick
- * count doubles the frames each glyph is under the light, which is the only way to make the fade finer without
- * changing its shape or its speed across the row.
- */
-export function crossMs(count, stepMs = STEP_MS) {
-  const cells = Math.max(1, count) + 2 * lightMargin(count);
-  return cells * stepMs * (SWEEP_TICKS / 10);
-}
-
-/**
- * The rest between rounds, in milliseconds.
- *
- * NOT zero. With `REST_MS = 0` the sweep wrapped straight back to the start the instant it left the right
- * edge, so the row went from "light on the last letter" to "light on nothing" to "light on the first
- * letter" within two frames — which reads as the animation resetting rather than restarting.
- *
- * Claude Code can use zero because its entry run is ten cells: the light is already off the row for a
- * second before it comes back. Ours enters from three cells away, too short to cover the wrap.
- */
-export const REST_MS = 300;
-
-/**
- * The full cycle for a row: one crossing, then the rest.
- *
- * `count` enters into it: a longer row has more characters to light, so its cycle is longer. It used to be
- * constant, because a fixed-time crossing spread itself over however many cells there happened to be.
- */
-export function cycleMs(count, stepMs = STEP_MS) {
-  return crossMs(count, stepMs) + REST_MS;
-}
-
-/**
- * The wall-clock time the light's animation began, for a row anchored at this tick.
- *
- * `spin` advances every SPIN_TICK_MS while the render path redraws far more often, so a phase taken
- * straight from the tick count steps in 80ms jumps. Converting the anchor ONCE to a wall-clock origin
- * lets every later frame measure real elapsed time instead.
- *
- * The store is MODULE-LEVEL, and deliberately not a field on `state`. The caller for a pending tool
- * row is `formatToolLine`, a module-level function with no access to `state` — reading it there threw
- * "state is not defined" and took the whole TUI down through the unhandledRejection handler. The key
- * is the anchor tick, so a new turn gets a new origin.
- */
-const lightOrigins = new Map();
-/**
- * @param {string} key     identifies the animation — `tool:12`, `work:12` — so two rows anchored on
- *                         the same tick keep separate origins.
- * @param {number} anchor  the tick the animation began on.
- * @param {number} now     the tick it is being drawn at.
- *
- * `key` and `anchor` are separate arguments on purpose. An earlier version took only the anchor and
- * derived the key from it, so a caller passing an already-prefixed `tool:0` produced
- * `(0 - 'tool:0') * 80` — arithmetic on a string, which is NaN. The origin then became NaN, every
- * colour became `38;5;NaN`, and the terminal drew the row in the default colour: a silent failure
- * that looked like the animation simply not running.
- */
-function lightOrigin(key, anchor, now) {
-  let origin = lightOrigins.get(key);
-  if (origin === undefined) {
-    // THE ORIGIN IS "NOW", NOT BACK-DATED FROM THE TICK COUNT.
-    //
-    // This used to be `Date.now() - (now - anchor) * SPIN_TICK_MS`, so a row that began mid-animation
-    // picked up the phase its anchor implied. That is wrong for this row: the first frame it is DRAWN is
-    // not the tick its anchor was set on — the start animation runs first, several ticks earlier. Back-
-    // dating by that gap made the sweep begin part-way across, so the light appeared to jump forward and
-    // then restart from the left.
-    //
-    // Starting at "now" means a new animation always begins at the left edge.
-    //
-    // `anchor` and `now` stay in the signature because callers pass them and the shape is part of the
-    // contract; the phase no longer depends on their difference.
-    void anchor;
-    void now;
-    origin = Date.now();
-    if (!Number.isFinite(origin)) origin = Date.now();
-    // EVICT THE OLDEST, never clear the map.
-    //
-    // This used to be `if (size > 32) clear()`. The anchor changes every turn and for every restored tool
-    // row, so the map filled quickly — and clearing it dropped the origin of the row currently on screen,
-    // which was then recreated with a FRESH timestamp. The light restarted from the left edge whenever the
-    // table filled, roughly once a second: the sweep looked cut off mid-stroke rather than moving.
-    //
-    // A Map iterates in insertion order, so the first key is the least recently added — exactly the entry
-    // no row is asking about any more.
-    if (lightOrigins.size > 64) {
-      const oldest = lightOrigins.keys().next().value;
-      lightOrigins.delete(oldest);
-    }
-    lightOrigins.set(key, origin);
-  }
-  return origin;
-}
-
-/**
- * How lit one character is, given its index and the row length.
- *
- * Returns 0..1. The position arrives as an INDEX and the row length rather than a pre-divided
- * fraction, because the light's width is itself a fraction of the row — both are then in the same
- * unit of "characters", so the light cannot be scaled twice by accident.
- *
- * `phaseMs` is MILLISECONDS within the cycle, not a tick count.
- *
- * Time is the right unit because the light's smoothness depends on how far it moves per RENDERED
- * frame, and the frame rate is not the caller's 80ms spinner tick. Stepping by that tick means the
- * crossing has to finish in a whole number of 80ms frames, so keeping each step small enough to look
- * smooth forced a many-second crossing on a long row — measured, 12 seconds for 60 characters, and
- * 1.9 seconds for `Working...`. Taking milliseconds decouples the two: the caller may redraw as often
- * as it likes, and the light's speed is stated directly rather than implied by a frame count.
- */
-export function lightAt(phaseMs, index, count, edge = 'cosine', stepMs = STEP_MS) {
-  const n = Math.max(1, count);
-  // Two widths, and the distinction is the shape of the light: `half` is the OUTER edge (core plus the
-  // fade either side) and `core` is the part that stays at full brightness.
-  const half = totalHalf(n);
-  const core = coreHalf(n);
-  // The character's centre, in characters from the start of the row. Measuring against the left edge
-  // would make the light peak BETWEEN characters, so each would flash at less than full strength.
-  const centre = index + 0.5;
-  // The centre crosses from fully off the left of the row to fully off its right, so the light slides
-  // in and out rather than popping into existence on the first character.
-  //
-  // THE REST HALF NEEDS NO SPECIAL CASE. Past the crossing the progress exceeds 1 and the head travels
-  // further past the row's right edge — where `sweepPulse` is already 0 — so the light is dark by the
-  // same arithmetic that makes it leave. A guard was written for this and then removed after 9450
-  // (phase, character) combinations showed it never once changed a value.
-  // THE HEAD IS CLAUDE CODE'S `glimmerIndex`, cell for cell, and the run matches its `messageWidth + 20`.
-  //
-  // Ten cells of margin at each end is what makes the timing match: a 10-character row takes 30 steps, so
-  // 1500ms a round — the same as Claude Code. An earlier version used the light's own half-width as the
-  // margin, which was tighter and faster, and read as a twitch rather than a sweep.
-  //
-  // The margin is `max(10, half)`: ten is the target, but the light must clear its own width or it would
-  // still be lighting the last characters when the round ended — the failure the half-width version was
-  // written to fix, and which a flat ten reintroduces on a wide band.
-  const margin = lightMargin(n);
-  const travel = n + 2 * margin;
-  // THE HEAD IS CONTINUOUS, NOT QUANTISED TO WHOLE STEPS.
-  //
-  // `Math.floor` here rounded the head to the last whole tick, so on a 65ms frame a ten-character row offered
-  // the light about twenty distinct positions and each glyph saw five brightness values — a five-step ramp
-  // where the eye can see twenty. The position is a FLOAT now: the pulse is already continuous in `dist`, so
-  // every frame lands the light somewhere between two cells and the fade is as fine as the frame rate allows.
-  // `STEP_CHARS` still scales how far one step moves, which is a shape decision, not a resolution one.
-  const progress = Math.max(0, Math.min(1, phaseMs / crossMs(n, stepMs)));
-  const head = (-margin + progress * travel) * STEP_CHARS;
-  // `edge` shapes the shoulder: a raised cosine leaves its outer end gentle, a linear one is sharpest
-  // where it meets the core. It arrives as a PARAMETER rather than being read from config, because this
-  // is a module-level function and the TUI state lives inside startTUI's closure — the trap that once
-  // made a pending tool row throw a ReferenceError and take the whole TUI down with it.
-  return sweepPulse(head - centre, half, edge, core);
-}
-
-/**
- * Paint `text` with the travelling light already mixed into each glyph.
- *
- * ONE FUNCTION FOR BOTH ANIMATED ROWS — the Working row and a pending tool's "Using <Tool>" — because they
- * were two hand-written copies of the same loop. That is how they drifted: the Working row passed `busy` to
- * `lightAt` and the tool row did not, so one stepped at 50ms/cell inside a 1050ms cycle while the other
- * stepped at 200ms/cell inside a 4050ms cycle. The slow row could not finish before its own modulus
- * wrapped, which is why its light only ever reached the fourth letter before restarting.
- *
- * Everything about the light is decided here — the rate, the shoulder shape, the band width — so a change to
- * the animation lands on both rows at once.
- *
- * @param {string}   text     the row's text
- * @param {number}   phaseMs  milliseconds into the cycle
- * @param {number[]} base     resting colour, [r, g, b]
- * @param {number[]} glint    the colour the light lifts the text toward
- * @param {string}   edge     shoulder shape: 'cosine' (default) or 'linear'
- * @returns {string}          ANSI, ready to splice into a row
- */
-function shimmerText(text, phaseMs, base, glint, edge = 'cosine', stepMs = STEP_MS) {
-  const s = String(text == null ? '' : text);
-  const n = s.length;
-  if (!n) return '';
-  const out = [];
-  for (let i = 0; i < n; i++) {
-    const t = Math.max(0, Math.min(1, lightAt(phaseMs, i, n, edge, stepMs)));
-    const r = Math.round(base[0] + (glint[0] - base[0]) * t);
-    const g = Math.round(base[1] + (glint[1] - base[1]) * t);
-    const b = Math.round(base[2] + (glint[2] - base[2]) * t);
-    out.push(col(s[i], lerpColor(r, g, b, r, g, b, 0)));
-  }
-  return out.join('');
-}
-// How far the light advances in one step, in characters.
-//
-// One character per step is the most literal reading of "move by letters", and it is the right shape:
-// the light lands on a glyph, lights it and its neighbours, then moves to the next. A larger step would
-// move in pairs, which reads as a coarser crawl without looking any more deliberate.
-export const STEP_CHARS = 1;
-
-
-// ---------------------------------------------------------------------------
-// Sweep parameters — ONE set of numbers for every animated row
-// ---------------------------------------------------------------------------
-// The parameter that decides whether a sweep reads as a GRADIENT or as a SNAP is
-// frames-per-character: how many 80ms ticks a character spends crossing the band.
-//
-//     framesPerChar = BAND * ticks / travel        (BAND = bandChars / n)
-//
-// With the old `travel = 1 + 2*BAND` this approached `ticks / 2` as the band grew, so
-// the half-sweep's tick count ALONE capped the smoothness: the previous values (band
-// 3.3 chars, 6 ticks) gave 1.20 frames per character, meaning each character changed
-// colour inside a single frame — a snap, not a fade. The comment claiming "a 3-char
-// band gives each char ~3 frames" was simply wrong.
-//
-// The geometry also wasted margin at both ends: the head only has to run from the far
-// edge of the band to the settle point, i.e. `travel = 1 + BAND`, not `1 + 2*BAND`.
-// Correcting that buys ~25% more frames for free, because the extra was spent sweeping
-// through empty space before and after the row.
-// FRAMES PER CHARACTER IS THE SMOOTHNESS. With `STEP_MS = 65` and a band of `n/2`, the light spends
-// `BAND * ticks / (1 + BAND)` frames on each character; at 10 ticks that is 3.3, so a glyph took only three
-// or four distinct brightness values and the fade read as a step. Doubling the tick count doubles that to
-// 6.7 — the light still crosses in the same ORDER, it just takes twice as long to do it, which is the only
-// way to buy resolution without changing the shape.
-export const SWEEP_TICKS = 20;          // ticks per half-sweep (1.3s at 65ms, so a 2.6s cycle)
-const SWEEP_TRAVEL_PAD = 1;             // head runs from -BAND to 1
-
-/**
- * Band width in characters, scaled to the row so every row is equally smooth.
- *
- * HALF THE ROW, with a floor of 3 characters. Because the band is then always `n/2`,
- * `BAND = 0.5` for every row of 6+ characters, so frames-per-character — and therefore
- * the visual smoothness — is the SAME for a 6-char tool name and a 60-char phrase.
- *
- * An earlier version capped the band at 6 characters, which made BAND shrink as the row
- * grew: a 30-char row got 1.67 frames per character and snapped, so the cap defeated the
- * very scaling it was part of. The floor matters for very short rows, where half the row
- * would be a 2-char band — a flash rather than a sweep.
- */
-export function bandCharsFor(n) {
-  return Math.max(3, n / 2);
-}
-
-/** Frames each character spends inside the band — the smoothness measure. */
-export function framesPerChar(n, ticks = SWEEP_TICKS) {
-  const BAND = bandCharsFor(n) / n;
-  return (BAND * ticks) / (1 + BAND * SWEEP_TRAVEL_PAD);
-}
-
 // How long a foreground Bash command runs before its card advertises Ctrl+B, and
 // the hint text itself. Mirrors kimi-code's tool-call card (DETACH_HINT_*).
 const DETACH_HINT_DELAY_MS = 10_000;
@@ -1322,66 +913,7 @@ const WORKING_MESSAGES = [
 ];
 
 // ---- ANSI helpers ----
-function stripAnsi(s) {
-  return String(s)
-    .replace(/\x1b\[[0-9;?]*[a-zA-Z]/g, '')
-    .replace(/\x1b\[[0-9;?]* [a-zA-Z]/g, '')
-    .replace(/\x1b\][^\x07\x1b]*(?:\x07|\x1b\\)/g, '');
-}
 
-// Make UNTRUSTED text safe to paint: file contents from Read, command output from
-// Bash, diff bodies, tool arguments.
-//
-// The goal is to keep the content as ORIGINAL as possible while stopping the
-// terminal from OBEYING it. Only the ESC byte is rewritten — every following byte
-// (the `[31m`, the `[10;20H` parameters) is shown verbatim, so nothing is lost:
-//
-//     file contains:  ESC [ 3 1 m E R R O R ESC [ 0 m
-//     screen shows :  ^[ [ 3 1 m E R R O R ^[ [ 0 m
-//
-// A terminal cannot act on a sequence whose ESC has been split into `^[`, so:
-//   * `ESC[31m`   no longer recolours half the transcript
-//   * `ESC[0m`    no longer resets the row's styling mid-line
-//   * `ESC[10;20H` / `ESC[2J` no longer move the cursor or clear the screen
-//
-// `^[` is the same convention `cat -v`, `less` and `bat` use for ESC, so it reads
-// as "there is an escape here" rather than as content. Tab is kept (the renderer
-// expands it) and newlines are the caller's business; only the dangerous C0
-// controls are defanged, and they are shown as their caret form so they remain
-// visible instead of silently vanishing.
-export function sanitizeText(s) {
-  return String(s == null ? '' : s)
-    // ESC -> "^[" . The rest of the sequence is untouched.
-    .replace(/\x1b/g, '^[')
-    // A bare BEL/BS/VT/FF would still be interpreted by some terminals.
-    .replace(/\x07/g, '^G')
-    .replace(/\x08/g, '^H')
-    .replace(/[\x0b\x0c]/g, ' ')
-    // Drop NUL and the remaining C0 controls (they have no visible form).
-    .replace(/[\x00-\x06\x0e-\x1f\x7f]/g, '');
-}
-
-/**
- * How much of a running command's output to KEEP, not just display.
- *
- * This string is mirrored into the hub row (and so into the SSE patch the
- * browser applies on every frame), which means an unbounded buffer grows the
- * terminal's row, the hub's row and the browser's copy at the same time. Only
- * the tail is ever drawn, so only the tail is worth holding.
- */
-export const LIVE_OUTPUT_MAX_CHARS = 64 * 1024;
-
-/** The last `max` CHARACTERS of `s`, cut on a line boundary so the tail never
-    starts mid-line. */
-export function tailChars(s, max) {
-  const str = String(s == null ? '' : s);
-  if (str.length <= max) return str;
-  const cut = str.slice(str.length - max);
-  const nl = cut.indexOf('\n');
-  return nl >= 0 ? cut.slice(nl + 1) : cut;
-}
-
-function visualCol(s) { return visualWidth(stripAnsi(String(s))); }
 // The width the category strip wants if it is not wrapped: `Categories: ` plus every label,
 // joined by a space. Used to size the picker card, so a strip that FITS stays on one line.
 function catStripWidth(b) {
@@ -1399,8 +931,6 @@ function catStripWidth(b) {
   return n;
 }
 
-function col(text, c) { return c + String(text) + C.reset; }
-
 // A message the USER actually typed, as opposed to one the harness injected with
 // role 'user'. `beginTurn` (file-history) runs once per real prompt, and /undo's
 // picker lists them, so both must agree on what counts. Harness notes are marked
@@ -1413,81 +943,6 @@ export function isRealUserPrompt(m) {
   const text = typeof m.content === 'string' ? m.content : '';
   if (/^<system-reminder>/.test(text.trim())) return false;
   return true;
-}
-
-function fitAnsi(s, w) {
-  const str = String(s);
-  const v = visualCol(str);
-  if (v < w) return str + ' '.repeat(w - v);
-  if (v === w) return str;
-  let out = '';
-  let n = 0;
-  let i = 0;
-  while (i < str.length) {
-    if (str[i] === ESC) {
-      const m = /^\x1b\[[0-9;?]*[a-zA-Z]/.exec(str.slice(i))
-        || /^\x1b\[[0-9;?]* [a-zA-Z]/.exec(str.slice(i))
-        || /^\x1b\][^\x07\x1b]*(?:\x07|\x1b\\)/.exec(str.slice(i));
-      if (m) { out += m[0]; i += m[0].length; continue; }
-    }
-    const cp = str.codePointAt(i);
-    const ch = String.fromCodePoint(cp);
-    const cw = visualWidth(ch);
-    if (n + cw > w) break;
-    n += cw;
-    out += ch;
-    i += cp > 0xffff ? 2 : 1;
-  }
-  if (n < w) out += ' '.repeat(w - n);
-  return out;
-}
-
-function wrapWords(str, width) {
-  width = Math.max(1, width | 0);
-  const out = [];
-  let line = '';
-  // Running width of `line`. It used to be recomputed with
-  // `visualCol(line + ' ' + w)` on EVERY word, which is O(line) per word and so
-  // O(n²) per paragraph — a single long line (a streamed paragraph, a wide table
-  // row) cost ~46ms at 20KB and froze the UI on every markdown chunk. Widths are
-  // additive for the plain text this receives (no ANSI is present until
-  // inlineMarkdown runs later), so accumulate instead of re-measuring.
-  let lineW = 0;
-  // Expand tabs first: visualCol counts '\t' as 0 columns but the terminal
-  // advances to the next tab stop, which made the row wider than computed and
-  // wrapped it onto the following line.
-  const words = expandTabs(str).split(' ');
-  for (const w of words) {
-    const wW = visualCol(w);
-    // A word longer than the line must be hard-split. This MUST measure visual
-    // columns (not string length): CJK characters occupy two cells, so slicing
-    // by `.length` would emit lines twice as wide as the box and the terminal
-    // would wrap them onto the next row, corrupting the layout.
-    if (wW > width) {
-      if (line) { out.push(line); line = ''; lineW = 0; }
-      let chunk = '';
-      let cw = 0;
-      for (const ch of w) {
-        const chw = visualCol(ch);
-        if (cw + chw > width) { out.push(chunk); chunk = ''; cw = 0; }
-        chunk += ch; cw += chw;
-      }
-      if (chunk) { line = chunk; lineW = cw; }
-      continue;
-    }
-    const sep = line ? 1 : 0;              // the single space we would add
-    if (lineW + sep + wW <= width) {
-      line = line ? line + ' ' + w : w;
-      lineW += sep + wW;
-    } else {
-      if (line) out.push(line);
-      line = w;
-      lineW = wW;
-    }
-  }
-  if (line) out.push(line);
-  else if (out.length === 0) out.push('');
-  return out;
 }
 
 // Extract a (possibly still-streaming) JSON string value by key from a partial
@@ -1526,191 +981,7 @@ export function extractJsonString(json, key) {
   return out;
 }
 
-// Line diff for the Edit tool, rendered as a unified diff with context:
-//     <n>   unchanged line      (dim)
-//     <n> - removed line
-//     <n> + added line
-//
-// FIVE unchanged lines are kept on each side of a change so the edit can be LOCATED in the file.
-// Three was too few to place a change among near-identical neighbours — several small functions,
-// or two `}` a couple of rows apart, look the same inside a three-row window — and the rows just
-// past the window are exactly what a reader uses to tell one site from another.
-const DIFF_CONTEXT_LINES = 5;
-
-// Syntax foreground is applied inside the row's diff background. Every token reset must restore that background,
-// otherwise the first run of each coloured line paints on the page instead of the change wash.
-/**
- * Syntax-colour a line, inside a background, and report whether the row ended inside a comment.
- *
- * The comment state is carried across rows: a block comment that opens on one row and closes on the next left the
- * second row looking like ordinary code, and `extends` and `const` inside a comment were coloured as keywords.
- *
- * @param {string} text The row.
- * @param {object} lang The language entry, or null.
- * @param {string} bg The background colour, or '' for none.
- * @param {boolean} [inComment] Whether the previous row ended inside a block comment.
- * @returns {{text: string, inComment: boolean}}
- */
-function paintCode(text, lang, bg, inComment = false) {
-  const result = lang ? highlightLine(text, lang, inComment) : { text: String(text), inComment: false };
-  const raw = result.text;
-  if (!bg) return result;
-  // THE BACKGROUND GOES ON BEFORE ANY TOKEN COLOUR AND COMES BACK AFTER EVERY RESET.
-  //
-  // Prefixing only after `\x1b[0m` left the run of text BEFORE the first token uncoloured — a comment line has its
-  // whole body inside one token, so it drew with no wash at all while the code below it was washed, and the block
-  // looked striped. Seeding the background at the front covers that first run; the replacement covers every run
-  // after it, because each token closes with a reset that would otherwise drop back to the page background.
-  // ESC[39m, NOT ESC[0m: a bare reset clears the background too, and the row's wash must survive past the last
-  // token. The final glyph is still inside the coloured run, so nothing is left over to clear.
-  return { text: bg + raw.replace(/\x1b\[0m/g, `\x1b[0m${bg}`) + '\x1b[39m', inComment: result.inComment };
-}
-
-/**
- * Rows for an Edit, from the tool's own diff payload.
- *
- * The tool KNOWS what it replaced, so there is nothing to infer: the surrounding lines it reports
- * are context, its `old` is what went, its `new` is what arrived. Running the spliced text through
- * `lineDiff`'s LCS instead made it MIS-READ them — a context block prepended to the old text and
- * appended to the new has a different shape on each side, so the LCS paired the wrong lines and
- * rendered five unchanged context rows as `-`/`+` pairs.
- *
- * Rows are numbered from the real file: `before` carries its own line numbers, and the change
- * starts at `startLine`.
- */
-export function editDiffRows(diff) {
-  if (!diff || typeof diff.old !== 'string' || typeof diff.new !== 'string') return [];
-  // An empty string is ZERO lines: `''.split('\n')` is `['']`, which would draw a phantom blank row.
-  // An empty side is ZERO lines and a trailing newline is not a line: `''.split('\n')` is `['']`,
-  // which drew a phantom blank row, and `'a\n'` split to `['a', '']`, which drew one past the end.
-  const split = (s) => {
-    const t = String(s).replace(/\r\n/g, '\n').replace(/\n$/, '');
-    return t === '' ? [] : t.split('\n');
-  };
-  const ctx = diff.context || {};
-  const before = Array.isArray(ctx.before) ? ctx.before : [];
-  const after = Array.isArray(ctx.after) ? ctx.after : [];
-  const startLine = Number(diff.startLine) > 0 ? Number(diff.startLine) : 1;
-
-  // AN EDIT THAT CHANGED ONE LINE SHOWS ONE LINE CHANGED.
-  //
-  // This used to emit every old line as `del` and every new line as `add`, so replacing three lines whose last
-  // one changed produced three deletions and three additions — the two identical lines scrolled past as noise
-  // and the one real change was buried. Aligning the two sides and emitting the unchanged pairs as CONTEXT is
-  // what a diff is.
-  const oldLines = split(diff.old);
-  const newLines = split(diff.new);
-
-  const out = [];
-  for (const c of before) out.push({ type: 'ctx', text: String(c.text), no: c.n });
-  let oldNo = startLine;
-  let newNo = startLine;
-  const steps = alignLines(oldLines, newLines);
-  for (let k = 0; k < steps.length; k++) {
-    const step = steps[k];
-    if (step.op === 'same') { out.push({ type: 'ctx', text: oldLines[step.a], no: newNo }); oldNo++; newNo++; continue; }
-    if (step.op === 'del') { out.push({ type: 'del', text: oldLines[step.a], no: oldNo++ }); continue; }
-    out.push({ type: 'add', text: newLines[step.b], no: newNo++ });
-  }
-  for (const c of after) out.push({ type: 'ctx', text: String(c.text), no: c.n });
-  // THE LANGUAGE TRAVELS WITH THE ROWS. The renderer draws a diff several layers away from the tool call, with no
-  // path of its own, so resolving the highlighter here — from the diff's own `path` — is the only place that still
-  // knows what file this is.
-  const lang = diff.path ? langForPath(diff.path) : null;
-  if (lang) for (const r of out) r.lang = lang;
-  return elideContext(out);
-}
-
-/**
- * Align two line arrays into `same` / `del` / `add` steps (longest common subsequence).
- *
- * The table is O(n*m), which is right for the block an edit replaces — a handful of lines — and wrong for a
- * whole file. Past LCS_MAX_LINES on either side it falls back to "everything replaced", which is exactly what
- * the old code always did, so a pathological case is no worse than before and the common one is much better.
- *
- * @param {string[]} a Old lines.
- * @param {string[]} b New lines.
- * @returns {Array<{op:'same'|'del'|'add', a:number, b:number}>}
- */
-function alignLines(a, b) {
-  const n = a.length;
-  const m = b.length;
-  const MAX = 400;
-  const all = () => [
-    ...a.map((_, i) => ({ op: 'del', a: i, b: 0 })),
-    ...b.map((_, j) => ({ op: 'add', a: 0, b: j })),
-  ];
-  if (n * m > MAX * MAX) return all();
-
-  // `dp[i][j]` is the LCS length of a[i..] against b[j..], filled from the bottom right.
-  const dp = Array.from({ length: n + 1 }, () => new Uint32Array(m + 1));
-  for (let i = n - 1; i >= 0; i--) {
-    for (let j = m - 1; j >= 0; j--) {
-      dp[i][j] = a[i] === b[j] ? dp[i + 1][j + 1] + 1 : Math.max(dp[i + 1][j], dp[i][j + 1]);
-    }
-  }
-  const steps = [];
-  let i = 0;
-  let j = 0;
-  while (i < n && j < m) {
-    if (a[i] === b[j]) { steps.push({ op: 'same', a: i, b: j }); i++; j++; }
-    else if (dp[i + 1][j] >= dp[i][j + 1]) { steps.push({ op: 'del', a: i, b: j }); i++; }
-    else { steps.push({ op: 'add', a: i, b: j }); j++; }
-  }
-  while (i < n) { steps.push({ op: 'del', a: i, b: j }); i++; }
-  while (j < m) { steps.push({ op: 'add', a: i, b: j }); j++; }
-  return steps;
-}
-
-/**
- * Drop context rows further than DIFF_CONTEXT_LINES from any change, one `gap` per run.
- *
- * Shared by both diff builders so a change can never be shown with one amount of surrounding
- * context in the model's tool result and another on screen.
- */
-function elideContext(raw) {
-  const isChange = (k) => raw[k] && raw[k].type !== 'ctx';
-  const out = [];
-  for (let k = 0; k < raw.length; k++) {
-    if (raw[k].type !== 'ctx') { out.push(raw[k]); continue; }
-    // Distance to the NEAREST change on either side; keep when within the window.
-    let dist = Infinity;
-    for (let t = k - 1; t >= 0 && t >= k - DIFF_CONTEXT_LINES; t--) { if (isChange(t)) { dist = Math.min(dist, k - t); break; } }
-    for (let t = k + 1; t < raw.length && t <= k + DIFF_CONTEXT_LINES; t++) { if (isChange(t)) { dist = Math.min(dist, t - k); break; } }
-    if (dist <= DIFF_CONTEXT_LINES) { out.push(raw[k]); continue; }
-    // Elide this context row, marking the gap once.
-    if (out.length && out[out.length - 1].type !== 'gap') out.push({ type: 'gap' });
-  }
-  return out;
-}
-
-export function lineDiff(oldStr, newStr, startLine = 1) {
-  const a = String(oldStr == null ? '' : oldStr).replace(/\r\n/g, '\n').split('\n');
-  const b = String(newStr == null ? '' : newStr).replace(/\r\n/g, '\n').split('\n');
-  // LCS table (inputs are edit snippets, so sizes stay small).
-  const n = a.length, m = b.length;
-  const dp = Array.from({ length: n + 1 }, () => new Uint16Array(m + 1));
-  for (let i = n - 1; i >= 0; i--) {
-    for (let j = m - 1; j >= 0; j--) {
-      dp[i][j] = a[i] === b[j] ? dp[i + 1][j + 1] + 1 : Math.max(dp[i + 1][j], dp[i][j + 1]);
-    }
-  }
-  const raw = [];
-  let i = 0, j = 0;
-  // Line numbers as they appear in the real file (startLine = first old line).
-  let oldNo = startLine, newNo = startLine;
-  while (i < n && j < m) {
-    if (a[i] === b[j]) { raw.push({ type: 'ctx', text: a[i], no: oldNo }); i++; j++; oldNo++; newNo++; }
-    else if (dp[i + 1][j] >= dp[i][j + 1]) { raw.push({ type: 'del', text: a[i], no: oldNo }); i++; oldNo++; }
-    else { raw.push({ type: 'add', text: b[j], no: newNo }); j++; newNo++; }
-  }
-  while (i < n) { raw.push({ type: 'del', text: a[i], no: oldNo }); i++; oldNo++; }
-  while (j < m) { raw.push({ type: 'add', text: b[j], no: newNo }); j++; newNo++; }
-  // Same window rule as `editDiffRows`, from the one helper: a change must never be shown with a
-  // different amount of surrounding context on screen and in the model's tool result.
-  return elideContext(raw);
-}
-
+// (Diff construction and its syntax colouring live in src/diff.js.)
 // Word-wrap a string that may contain ANSI colour codes, measuring VISIBLE
 // width only. Escape sequences are carried over to the line they belong to.
 function wrapAnsiWords(str, width) {
@@ -1809,157 +1080,7 @@ function wrapWithOffsets(text, width) {
 //   - the caret never has to step over a marker it is not editing
 //   - submit never has to strip anything
 // The mode ends on Esc/Backspace while the buffer is empty, or on submit.
-export function composerInput(state) {
-  const shell = state.inputMode === 'bash';
-  return { text: state.input || '', caret: state.caret || 0, prefix: shell ? '! ' : '> ' };
-}
-
-// Marker text for a collapsed paste. Only a multi-line TEXT paste collapses; an
-// IMAGE always collapses (its payload is a temp file path, which should never be
-// shown as if the user typed it).
-//   text, multi-line : [paste #1 +12 lines]
-//   text, one line   : [paste #1 1 lines]
-//   image            : [paste #1 image]
-// The `image` form keeps the same `paste #N` prefix on purpose: expandPastes,
-// highlightPasteMarkers and adjacentPasteMarker all key off it, so images get the
-// chip styling and atomic caret/delete behaviour for free.
-export function pasteMarker(id, lineCount, kind = 'paste') {
-  if (kind === 'image') return `[paste #${id} image]`;
-  return lineCount > 1 ? `[paste #${id} +${lineCount} lines]` : `[paste #${id} ${lineCount} lines]`;
-}
-// The tail of any collapsed-paste marker: `+L lines`, `L lines`, or `image`.
-const PASTE_MARKER_RE = /\[paste #(\d+) (?:\+\d+ lines|\d+ lines|image)\]/g;
-
-// Expand every `[paste #N …]` marker in `text` back to its real content.
-export function expandPastes(text, pastes) {
-  if (!pastes || !text || !text.includes('[paste #')) return text;
-  return text.replace(PASTE_MARKER_RE, (whole, id) => {
-    const entry = pastes.get(Number(id));
-    return entry ? entry.text : whole;
-  });
-}
-
-// Wrap each collapsed-paste marker in the composer row with a selection background
-// so it renders as one block chip (foreground preserved). Non-marker text is left
-// untouched.
-//
-// The chip ends with `C.bgReset` (ESC[49m), NOT `C.reset` (ESC[0m). A bare reset clears EVERY
-// style, so it also wiped the foreground the composer had already applied to the text AFTER the
-// chip — the rest of the line came out in the terminal's default grey instead of the prompt's
-// colour. `highlightSelection` below documents this exact hazard; this function was missing it.
-//
-// `hoverId` is the paste number the pointer is over, when it is over one. That chip keeps its
-// `surface` is the background the CALLER is about to paint under this row, or '' when the row has none. The
-// chip's own fill ends with a background reset, which would otherwise drop the rest of the row to the terminal
-// default; re-asserting the caller's surface right after keeps the row whole.
-export function highlightPasteMarkers(row, hoverId = null, surface = C.bg) {
-  const s = String(row);
-  if (!s.includes('[paste #')) return s;
-  // `C.bgReset` alone drops the rest of the row to the terminal's default background, because the caller has not
-  // applied the surface yet. Re-asserting it right after the reset keeps the chip a chip and leaves the row whole.
-  return s.replace(PASTE_MARKER_RE, (m, id) => {
-    const after = C.bgReset + surface;
-    if (Number(id) === hoverId) return C.hover + C.selBg + m + after;
-    return C.selBg + m + after;
-  });
-}
-/**
- * Which paste number, if any, occupies this input index. Returns null when none does.
- * Which paste number, if any, occupies this input index. Returns null when none does.
- *
- * The companion to `expandPasteMarkerAt`: that one acts on the chip under the pointer, this one merely
- * names it so the row can be drawn differently. Both need the same bounds, and a chip is inclusive of its
- * end because the caret index rounds to the position after the last character.
- */
-export function pasteMarkerIdAt(input, idx) {
-  const cur = String(input == null ? '' : input);
-  if (!cur.includes('[paste #')) return null;
-  for (const m of cur.matchAll(PASTE_MARKER_RE)) {
-    const at = m.index;
-    if (idx >= at && idx <= at + m[0].length) return Number(m[1]);
-  }
-  return null;
-}
-
-
-/**
- * Expand the collapsed paste the caret index lands on, in place. Returns true when one was expanded.
- *
- * Takes the ALREADY-CONVERTED index. An earlier version took the row and column and called
- * `composerTextIndexAt` itself, which subtracts the row's prefix width — but the caller had already
- * subtracted it, so every click landed two columns to the left of where the pointer was and a click on
- * the chip's first character expanded nothing.
- *
- * `state.pastes` keeps its entry: `expandPastes` is a no-op for text with no marker, so leaving it costs
- * nothing, and dropping it would break a later marker that still refers to the same paste.
- */
-export function expandPasteMarkerAt(state, idx) {
-  const cur = state.input || '';
-  if (!cur.includes('[paste #')) return false;
-
-  for (const m of cur.matchAll(PASTE_MARKER_RE)) {
-    const at = m.index;
-    const end = at + m[0].length;
-    // The caret index is where the click landed, and clicking any character of the chip targets it —
-    // including the character after the last one, which is where a click on the closing bracket rounds to.
-    if (idx < at || idx > end) continue;
-    const entry = state.pastes && state.pastes.get(Number(m[1]));
-    if (!entry) return false;
-    state.input = cur.slice(0, at) + entry.text + cur.slice(end);
-    // The caret goes AFTER the expanded text, so the next keystroke continues where it ends rather than
-    // landing in the middle of the paste the user just revealed.
-    state.caret = at + entry.text.length;
-    state.composerSel = null;
-    refreshMenu(state);
-    return true;
-  }
-  return false;
-}
-
-// Apply selection background to the text portion of a composer row.
-// `text` is the visible text on this row (after the prefix), `textStart`
-// is the character offset of `text[0]` in the full input string, and
-// `[selAnchor, selHead]` is the selection range in the full input.
-export function highlightSelection(text, textStart, selAnchor, selHead) {
-  if (!text) return text;
-  const a = Math.min(selAnchor, selHead);
-  const h = Math.max(selAnchor, selHead);
-  let out = '';
-  let inSel = false;
-  for (let i = 0; i < text.length; i++) {
-    const globalIdx = textStart + i;
-    const want = globalIdx >= a && globalIdx < h;
-    // Selection only changes the BACKGROUND; the foreground keeps its own colour.
-    // Leaving the selection resets just the background (bgReset = ESC[49m), NOT the
-    // whole style — a bare reset would also kill the foreground, so a cyan/white
-    // run after the highlight reverted to grey.
-    if (want && !inSel) { out += C.selBg; inSel = true; }
-    else if (!want && inSel) { out += C.bgReset; inSel = false; }
-    out += text[i];
-  }
-  if (inSel) out += C.reset;
-  return out;
-}
-
-// The composer treats a collapsed-paste marker as ONE atomic unit: moving the
-// caret across it jumps over the whole marker, and deleting it removes the entire
-// marker. `dir` = -1 (look left of the caret) or +1 (right). Covers both the text
-// (`+L lines`) and image (`image`) forms.
-const MARKER_LEFT_RE = /\[paste #(\d+) (?:\+\d+ lines|\d+ lines|image)\]$/;
-const MARKER_RIGHT_RE = /^\[paste #(\d+) (?:\+\d+ lines|\d+ lines|image)\]/;
-export function adjacentPasteMarker(text, caret, dir) {
-  const s = String(text || '');
-  const c = Math.max(0, Math.min(s.length, caret));
-  if (dir < 0) {
-    const m = MARKER_LEFT_RE.exec(s.slice(0, c));
-    if (m) return { start: c - m[0].length, end: c, id: Number(m[1]) };
-  } else {
-    const m = MARKER_RIGHT_RE.exec(s.slice(c));
-    if (m) return { start: c, end: c + m[0].length, id: Number(m[1]) };
-  }
-  return null;
-}
-
+// (The composer's own helpers live in src/composer.js.)
 // Apply the hover highlight to the visible columns [col0, col1) of an ANSI row.
 // The highlight is an explicit bright style (C.hover), and it is RE-APPLIED
 // after every escape sequence inside the span: a row is built from several
@@ -2178,296 +1299,35 @@ export function failureReason(text, toolName) {
   return line;
 }
 
-function msgColorFor(role, text) {
-  // 'rich' output (e.g. /context, /usage panels) carries its OWN ANSI colours — do
-  // not wrap it in a single role colour, or the whole panel comes out one shade.
-  if (role === 'rich') return '';
-  if (role === 'system' && typeof text === 'string' && text.startsWith('[turn took')) return C.gray;
-  // System/status lines are NEUTRAL grey, not the brand teal: the deep teal showed
-  // up on every command result and one-line notice, and at that frequency it read
-  // as noise. Grey keeps them quiet; the accents stay for user/tool/working rows.
-  if (role === 'system') return C.gray;
-  if (role === 'user') return C.cyan;
-  if (role === 'bash') return C.shellMode;   // ! shell-mode echo: violet, like kimi
-  if (role === 'warn') return C.orange;    // unfinished-turn warning
-  if (role === 'queued') return C.gray;    // pending, not yet sent
-  if (role === 'steer') return C.yellow;   // injected into the running turn
-  if (role === 'tool') return C.blue;
-  if (role === 'tool_result') return C.gray;
-  if (role === 'skill') return C.blue;
-  if (role === 'image') return C.gray;   // the row names a file, it is not prose
-  // Default foreground color based on theme
-  return C.fg;
-}
+// (The tool line and the per-role colour live in src/tool-line.js.)
 
-// ---- tool call display: "Using Name (keyArg)" / "Used Name (keyArg) ----
-// Mirrors kimi-code's extractKeyArgument: pick the one argument that best
-// identifies the call, so a tool line reads `Using Read (src/tui.js)`.
-const KEY_ARG = {
-  Bash: ['command'],
-  Read: ['path', 'file_path'],
-  Write: ['path', 'file_path'],
-  Edit: ['path', 'file_path'],
-  Grep: ['pattern'],
-  Glob: ['pattern'],
-  FileLines: ['path', 'file_path'],
-  FetchURL: ['url'],
-  WebSearch: ['query'],
-  Agent: ['description', 'prompt'],
-  TaskOutput: ['task_id'],
-  TaskStop: ['task_id'],
-};
-const MAX_ARG = 60;
-/**
- * The one argument worth showing next to a tool's name. `expanded` lifts the length cut.
- *
- * The cut exists so the single `● Used Bash (…)` row stays readable: a `node -e "…"` one-liner is
- * routinely hundreds of characters, and printing it whole wrapped the row across the screen for
- * every call. Ctrl+O is the escape hatch — whoever expands tool output to read it wants to see the
- * command they are reading the output OF, and the command is what they asked for in the first place.
- */
-function keyArgument(name, args, workspace, expanded = false) {
-  if (!args || typeof args !== 'object') return '';
-  const keys = KEY_ARG[name] || Object.keys(args);
-  // Expanded: the whole value, with newlines kept, so a multi-line script shows as the lines it was
-  // written as rather than being flattened to its first line.
-  if (expanded) {
-    for (const k of keys) {
-      const v = args[k];
-      if (typeof v !== 'string' || !v.length) continue;
-      const full = sanitizeText(v).replace(/\r\n/g, '\n');
-      return (k === 'path' || k === 'file_path') ? full.replace(/\\/g, '/') : full;
-    }
-    return '';
-  }
-  for (const k of keys) {
-    const v = args[k];
-    if (typeof v !== 'string' || !v.length) continue;
-    // Neutralise escapes BEFORE measuring: sanitizeText turns ESC into the two
-    // visible characters `^[`, so truncating first and sanitizing after made a
-    // long command (a `node -e "…"` one-liner is the usual case) come out `+1`
-    // column wider than MAX_ARG — and a trailing ESC cut at the boundary left the
-    // row ending in a bare `^` instead of a proper `…`.
-    // A multi-line value shows its first line, an ELLIPSIS, and then the count of what was left.
-    //
-    // The ellipsis and the count say different things and both are wanted: the mark shows that the
-    // text was cut at all, and the count says how much is missing. Printing only the count reads as
-    // if the command ended there, and only the mark leaves the reader guessing by how much.
-    const valueLines = sanitizeText(v).replace(/\r\n/g, '\n').split('\n');
-    // A trailing blank line is not extra content: a command ending in a newline — how a heredoc is
-    // usually written — split into a final empty element, and counting it claimed `(+1 line)` for a
-    // command that had no second line at all.
-    while (valueLines.length > 1 && valueLines[valueLines.length - 1].trim() === '') valueLines.pop();
-    let text = valueLines[0];
-    const rest = valueLines.length > 1 ? valueLines.length - 1 : 0;
-    if (text.length > MAX_ARG) {
-      text = (k === 'path' || k === 'file_path')
-          ? '…' + text.slice(text.length - (MAX_ARG - 1))
-          : text.slice(0, MAX_ARG - 1) + '…';
-    } else if (rest) {
-      // Make room for the marker before adding it, so the row never overflows: the count is dropped
-      // first because the ellipsis already carries the important half of the message.
-      const withCount = `… (+${rest} line${rest === 1 ? '' : 's'})`;
-      text += text.length + withCount.length <= MAX_ARG
-        ? withCount
-        : '…';
-    }
-    // Display paths with forward slashes (consistent across platforms).
-    if (k === 'path' || k === 'file_path') text = text.replace(/\\/g, '/');
-    return text;
-  }
-  return '';
-}
-export function formatToolLine(msg, workspace, spin, pulseStart, shimmerEdge, expanded = false, reducedMotion = false, width = 0) {
-  const name = msg.toolName || '';
-  const arg = keyArgument(name, msg.toolArgs, workspace, expanded);
-  const verb = msg.pending ? 'Using' : 'Used';
-  // Pending tool calls have a sweep animation (like "Working...")
-  // Once the tool finishes (pending=false) the name shows in plain cyan.
-  let nameDisplay;
-  if (msg.pending) {
-    // A light flashes across the tool name roughly once a second: the name stays plain
-    // cyan, and a lamp slightly whiter than cyan runs over it from left to right.
-    //
-    // This replaces a two-phase colour sweep (cyan → pale cyan → back, then cyan →
-    // cyan-blue → back) whose band was half the row wide. That band left every character
-    // changed colour behind it, so the name ended up entirely pale or entirely blue — a
-    // wash rather than a highlight, and on a long tool name the moving edge was hard to
-    // see at all because so much of the row was lit at once.
-    //
-    // The light is now a QUARTER of a character wide, which is what makes it read as a
-    // glint travelling along the name rather than a region changing colour.
-    //
-    // Phase is measured from the tick the row began on, so a spinner already running does
-    // not drop the light into the middle of its travel.
-    //
-    // `??`, NOT `||`: `pulseStart` is legitimately 0 at the START of a turn (that is where
-    // the spinner begins), and `0 || spin` evaluates to `spin`, making `spin - spin === 0`
-    // forever — the light would then sit still instead of moving. Only `null`/`undefined`
-    // mean "no anchor yet".
-    // The phase comes from a WALL CLOCK, not from the tick count.
-    //
-    // That is what makes the light smooth. The spinner advances `spin` every 80ms while the render path
-    // redraws far more often, so a phase derived from `spin` steps in 80ms jumps however often it is
-    // redrawn — which is exactly the per-cell hopping this replaced. The tick count still says WHERE the
-    // animation began (a spinner already running must not drop the light into mid-travel); it is turned
-    // once into a wall-clock origin that later frames measure against.
-    //
-    // The origin is held in a module-level WeakMap keyed by nothing but the anchor, rather than on
-    // `state`. This function is module-level and `state` lives inside startTUI's closure: reading it
-    // here threw "state is not defined" the moment a pending tool row painted, surfaced as an
-    // unhandledRejection that exited the whole TUI. The origin is the only per-row animation state, and
-    // it belongs to the module for exactly that reason.
-    //
-    // `??`, NOT `||`: tick 0 is a legitimate anchor, and `0 || spin` would collapse the elapsed time to
-    // zero so the light never moved at all.
-    const anchorSpin = pulseStart ?? spin;
-    // THE KEY IS THE ROW'S OWN IDENTITY, and nothing else.
-    //
-    // It used to carry `anchorSpin` as well, on the reasoning that the same message re-animated on a new
-    // tick should get a new origin. The opposite happened: `anchorSpin` is `pulseStart ?? spin`, and when
-    // the caller passes no `pulseStart` it IS the tick counter — it changes every 80ms, so every frame
-    // built a new key, `lightOrigin` created a fresh origin for it, and `elapsedMs` stayed at 0. The light
-    // sat still, except for the one frame after the row content changed and the message object was
-    // replaced.
-    //
-    // A row animates from the moment it appears until it stops being pending, and its id is stable across
-    // that whole life: one origin, and elapsed grows from there.
-    const rowKey = msg && (msg.id || msg.toolId) ? `tool:${msg.id || msg.toolId}` : `tool:${name}`;
-    const elapsedMs = Math.max(0, Date.now() - lightOrigin(rowKey, anchorSpin, spin));
-    // ONE shimmer for both rows — see `shimmerText`.
-    const phaseMs = elapsedMs % cycleMs(name.length, TOOL_STEP_MS);
+// (The title strip, the todo panel and the queue pane live in src/panels.js.)
 
-    // The same restraint as the Working row's glint: the light is the base colour with a small lift in
-    // the SAME hue, not a jump to white. `[150, 255, 255]` against `[0, 215, 255]` read as "the name is
-    // now pale" — a state change — where this reads as a sheen passing over it.
-    const BASE = [0, 215, 255];      // cyan: the name's resting colour
-    const GLINT = [110, 240, 255];   // the same hue, a shade brighter
-
-    // The same setting the Working row honours: a pending tool's name is decoration too.
-    if (reducedMotion) {
-      nameDisplay = col(name, C.cyan);
-    } else {
-      nameDisplay = shimmerText(name, phaseMs, BASE, GLINT, shimmerEdge || 'cosine', TOOL_STEP_MS);
-    }
-  } else {
-    // Non-pending: show in plain cyan
-    nameDisplay = col(name, C.cyan);
-  }
-  // Show streamed size for Write tool
-  let sizeStr = '';
-  if (name === 'Write' && typeof msg.streamContent === 'string' && msg.streamContent.length) {
-    const bytes = Buffer.byteLength(msg.streamContent, 'utf8');
-    sizeStr = bytes >= 1048576 ? ` ${(bytes / 1048576).toFixed(1)}MB`
-      : bytes >= 1024 ? ` ${(bytes / 1024).toFixed(1)}KB`
-      : ` ${bytes}B`;
-  }
-  // Show +xx -xx diff counts for Edit tool when done. The diff itself is rendered
-  // under the `↳` receipt, so prefer the counts the tool_result handler copied over.
-  let diffStr = '';
-  const edDiff = (Array.isArray(msg.diff) && msg.diff.length) ? msg.diff : msg._diffCounts;
-  if (name === 'Edit' && !msg.pending && Array.isArray(edDiff) && edDiff.length) {
-    const adds = edDiff.filter((d) => d.type === 'add').length;
-    const deletes = edDiff.filter((d) => d.type === 'del').length;
-    if (adds || deletes) {
-      diffStr = ' ' + (adds ? col(`+${adds}`, C.green) : '') + ' ' + (deletes ? col(`-${deletes}`, C.red) : '');
-    }
-  }
-  // COLORED PER LINE, not around the whole string.
-  //
-  // `col(text)` writes one escape pair around everything, so a multi-line argument — exactly what Ctrl+O
-  // reveals, the body of a script — had its colour open on line 1 and, after the newline, no colour at all:
-  // the terminal's reset made every line below the first render in the DEFAULT foreground, one shade
-  // brighter than the grey the parentheses were given. Splitting on the newline and colouring each piece
-  // keeps the whole block the same grey. The parentheses still wrap the WHOLE value, so a multi-line script
-  // reads as one bracketed argument rather than as several.
-  let argText = '';
-  if (arg) {
-    const lines = `${arg}`.split('\n');
-    const painted = lines.map((l, i) => col(
-      (i === 0 ? '(' : '') + l + (i === lines.length - 1 ? ')' : ''),
-      C.gray,
-    ));
-    argText = ' ' + painted.join('\n');
-  }
-  return col(verb, C.white) + ' ' + nameDisplay + argText + col(sizeStr, C.gray) + diffStr;
-}
-
-// ---- live TODO panel (kimi-code's todo-panel) ----
-// Renders above the input box: a rule, a "Todo" heading, up to 5 rows, and a
-// "+N more · ctrl+t to expand" hint. Ctrl+T expands the full list.
-const TODO_MAX_VISIBLE = 5;
-
-/**
- * The first `max` entries, in the order they were written.
- *
- * This used to RANK: in-progress first, then one done item, then pending. On a status change the panel therefore
- * reshuffled — the item being worked on jumped to the top and a finished one followed it — and the list stopped
- * describing the order the work was planned in. A task list is a sequence; a view that reorders it is showing
- * something other than what was written.
- *
- * `counts` still reports what the window is hiding, so the "+N more" hint stays informative.
- */
-export function selectVisibleTodos(todos, max = TODO_MAX_VISIBLE) {
-  const list = Array.isArray(todos) ? todos : [];
-  const limit = Number.isFinite(max) ? Math.max(0, Math.round(max)) : TODO_MAX_VISIBLE;
-  if (list.length <= limit) return { rows: list, hidden: 0, counts: {} };
-  const rows = list.slice(0, limit);
-  const counts = { done: 0, in_progress: 0, pending: 0 };
-  for (let i = limit; i < list.length; i++) {
-    const s = list[i] && list[i].status;
-    counts[s] = (counts[s] || 0) + 1;
-  }
-  return { rows, hidden: list.length - rows.length, counts };
-}
-
-function todoRow(todo, w) {
-  const mark = todo.status === 'in_progress' ? col('●', C.cyan + C.bold)
-    : todo.status === 'done' ? col('✓', C.green)
-    : col('○', C.gray);
-  const title = todo.status === 'in_progress' ? col(todo.title, C.white + C.bold)
-    : todo.status === 'done' ? col(todo.title, C.gray)
-    : col(todo.title, C.white);
-  return '  ' + mark + ' ' + fitAnsi(title, Math.max(1, w - 4));
-}
-
-// The unselected completion row, and its match. Fixed light greys rather than theme entries: the theme grey is
-// tuned to sit quiet against the page, and at menu size it read as disabled rather than as a list to choose from.
-const MATCH_BASE = '\x1b[38;2;153;153;153m';             // #999999
+// The unselected completion row, and its match. Fixed light greys rather than theme entries: the theme grey is tuned
+// to sit quiet against the page, and at menu size it read as disabled rather than as a list to choose from.
+const MATCH_BASE = '\x1b[38;2;153;153;153m';          // #999999
 const MATCH_HIT = '\x1b[38;2;173;173;173m\x1b[1m';    // #adadad, bold
 
 /**
  * A completion row with every occurrence of the typed text picked out.
  *
- * THE MATCH IS POSITIONAL, NOT A PREFIX. `/he` lights the `he` in `/help`, the `he` in `/theme` and every `he` in
- * either description, because a user typing `he` is looking for those LETTERS — a command must not be excluded from
- * the highlight just because it does not begin with them.
+ * THE MATCH IS POSITIONAL, NOT A PREFIX. `/he` lights the `he` in `/help`, the `he` in `/theme` and every `he` in either
+ * description, because a user typing `he` is looking for those LETTERS — a command must not be excluded from the
+ * highlight just because it does not begin with them.
  *
  * THE BASE COLOUR CARRIES THE SELECTION STATE, and the match is that same colour in BOLD:
  *
  *   selected      theme cyan   +  bold cyan match
  *   unselected    #999999      +  #adadad bold match
  *
- * The hue never changes, so a row's identity does not move when the cursor leaves it — only the weight does. A
- * separate colour for the match made an unselected row's highlight the brightest thing in the menu, which pulled
- * the eye to rows the cursor was not on.
- *
- * @param {string} text The command name or description.
- * @param {string} query What the user has typed, lower-case, without the leading slash.
- * @param {boolean} selected Whether this is the cursor row.
- * @returns {string} The text with ANSI codes inserted.
+ * The hue never changes, so a row's identity does not move when the cursor leaves it — only the weight does.
  */
-function highlightMatches(text, query, selected) {
+export function highlightMatches(text, query, selected) {
   const src = String(text);
-  // The unselected pair is a fixed light grey rather than the theme grey, which is too dark to read comfortably at
-  // this size: #999999 for the row and #adadad for its match are two steps a reader can tell apart, without either
-  // being brighter than the selected row.
   const base = selected ? C.cyan : MATCH_BASE;
   if (!query) return col(src, base);
   const q = query.toLowerCase();
   const lower = src.toLowerCase();
-  // The match is the SAME hue, in bold: the colour identifies the row and the weight identifies the match, so a
-  // row does not change colour when the cursor leaves it.
   const hit = selected ? (C.cyan + C.bold) : MATCH_HIT;
   let out = '';
   let at = 0;
@@ -2483,221 +1343,6 @@ function highlightMatches(text, query, selected) {
   return out;
 }
 
-// `hoverTop` / `dragTop` drive the top rule's hover and press colours: that rule
-// is a drag handle for resizing the panel.
-/**
- * The title strip along the top of the screen.
- *
- * `maxRows` is how many rows of name to show. A name that fits on one row uses one; a longer one WRAPS, and the
- * rows it needs are reserved for it — a terminal is narrow, and cutting a session name to its first forty
- * characters loses the part that told them apart. The last visible row ends in `…` when the name continues below.
- *
- * `state.titleRows` is the height the user dragged the rule to. `0` or unset means "as many as the name needs,
- * up to the room available", which is what a fresh session wants.
- *
- * The rule is always the LAST row, so it is always in the same place to grab.
- */
-function renderTitleBar(state, w, hover, maxRows) {
-  const title = String(state.sessionTitle || '').trim();
-  // A NAMELESS SESSION IS NOT A BLANK BAND. `Untitled` says the strip is there and can be clicked; an empty row
-  // reads as a rendering gap.
-  const label = title || 'Untitled';
-  const out = [];
-  // ONE LEADING SPACE, matching the transcript's own left margin so the name lines up with the messages below.
-  const PAD = ' ';
-  const room = Math.max(1, w - PAD.length);
-  const rows = Math.max(1, Math.round(maxRows) || 1);
-  // Wrap the name to the width, keeping ANSI out of it — the colour is applied per row below.
-  const wrapped = wrapWords(label, room);
-  const shownRows = wrapped.slice(0, rows);
-  // A name with more rows than the band can show ends in `…` on its last visible row.
-  const more = wrapped.length > shownRows.length;
-  // THE PLACEHOLDER IS THE SAME COLOUR AS A REAL NAME. It used to be `C.muted`, which made a fresh session's band
-  // look disabled — as if the strip were not there to be clicked. The word already says the session has no name;
-  // dimming it as well says something different and wrong.
-  const textColor = hover ? C.heading : C.cyan;
-  const ruleColor = hover ? C.cyan : C.border;
-  for (let i = 0; i < shownRows.length; i++) {
-    let line = shownRows[i];
-    if (i === shownRows.length - 1 && more) {
-      // Trim one column so the ellipsis fits inside the width instead of pushing the row over.
-      line = fitAnsi(line, room - 1).trimEnd() + '…';
-    }
-    out.push(fitAnsi(PAD + col(line, textColor + C.bold), w));
-  }
-  out.push(col('─'.repeat(w), ruleColor));
-  return out;
-}
-
-/** How many rows the title needs at this width, ignoring any drag. */
-function titleRowsNeeded(state, w) {
-  const title = String(state.sessionTitle || '').trim() || 'Untitled';
-  const room = Math.max(1, w - 1);
-  return Math.max(1, wrapWords(title, room).length);
-}
-
-/**
- * Name rows currently shown: the dragged height when set, otherwise as many as the name needs.
- *
- * The band is `titleRowCount` name rows plus the rule. Reading it from `state.titleRows` rather than from the
- * frame keeps the drag arithmetic independent of what was last painted.
- */
-function titleRowCount(state) {
-  const need = titleRowsNeeded(state, state.cols || process.stdout.columns || 80);
-  const set = Math.round(Number(state.titleRows) || 0);
-  return set > 0 ? Math.min(set, need) : need;
-}
-
-function renderTodoPanel(state, w, hoverTop, dragTop) {
-  const todos = state.todos || [];
-  if (!todos.length) return [];
-  // A finished list draws NOTHING, matching `todoPanelHeight` returning 0 for the same state. Both ask
-  // the same question, so the reserved height and the drawn rows cannot disagree — a mismatch would
-  // shift every row below the panel.
-  if (todoListFinished(state)) return [];
-  const out = [];
-  const ruleColor = dragTop ? C.scrollThumbActive : (hoverTop ? C.hover : C.border);
-  out.push(col('─'.repeat(w), ruleColor));
-  out.push(col('  Todo', C.cyan + C.bold));
-  const want = todoRowCount(state);
-  // CREATION ORDER, ALWAYS.
-  //
-  // The panel used to draw `selectVisibleTodos` first — which ranks in-progress ahead of pending and pulls done
-  // items up — and then top up from the original list. The result read as a reshuffle on every status change: the
-  // item being worked on jumped to the top and a finished one followed it, so the list no longer described the
-  // order the work was planned in. A task list is a SEQUENCE; showing it in a different sequence than it was
-  // written in is what made it hard to follow.
-  //
-  // Which rows fit is still the panel's decision — it takes the first `want` in order.
-  const rows = todos.slice(0, want);
-  for (const t of rows) out.push(todoRow(t, w));
-  const hidden = todos.length - rows.length;
-  if (hidden > 0) {
-    const counts = { done: 0, in_progress: 0, pending: 0 };
-    for (const t of todos) if (!rows.includes(t)) counts[t.status] = (counts[t.status] || 0) + 1;
-    const dist = [['done', 'done'], ['in_progress', 'in progress'], ['pending', 'pending']]
-      .filter(([k]) => counts[k] > 0).map(([k, label]) => `${counts[k]} ${label}`).join(', ');
-    // The hint appears exactly when rows are hidden — which is exactly when Ctrl+T
-    // is useful — so this is where the key has to be discoverable.
-    out.push(col(`  … +${hidden} more${dist ? ` (${dist})` : ''} · ctrl+t to expand · drag the top rule to resize`, C.gray));
-  }
-  return out;
-}
-
-// --- queue pane (kimi-code's QueuePane) -------------------------------------
-// One rule line, one line per queued message, one dim hint line. Queued input is
-// held while the agent is streaming and is injected by Ctrl-S (or by the agent
-// itself at the next tool boundary).
-// Supports auto-collapse and drag-to-resize like the todo panel.
-const QUEUE_MAX_VISIBLE = 5;
-function renderQueuePanel(state, w, hoverTop, dragTop) {
-  const queued = state.queued || [];
-  if (!queued.length) return [];
-  
-  const out = [];
-  const ruleColor = dragTop ? C.scrollThumbActive : (hoverTop ? C.hover : C.border);
-  out.push(col('─'.repeat(w), ruleColor));
-  out.push(col('  Queue', C.cyan + C.bold));
-  
-  const want = queueRowCount(state);
-  const rows = queued.slice(0, want);
-  for (const text of rows) {
-    // Collapse to a single line, like kimi's queue pane does.
-    const single = String(text).replace(/\s+/g, ' ').trim();
-    out.push(col('  ', C.cyan) + col('> ', C.cyan) + col(fitAnsi(single, Math.max(1, w - 6)), C.white));
-  }
-  
-  const hidden = queued.length - rows.length;
-  if (hidden > 0) {
-    const hint = state.running 
-      ? `… +${hidden} more · ↑ to edit · ctrl-s to steer immediately · drag top rule to resize`
-      : `… +${hidden} more · ↑ to edit · will send now · drag top rule to resize`;
-    out.push(col('  ' + hint, C.gray));
-  } else {
-    const hint = state.running ? '↑ to edit · ctrl-s to steer immediately' : '↑ to edit · will send now';
-    out.push(col('  ' + hint, C.gray));
-  }
-  
-  return out;
-}
-
-// How many queue ROWS the panel shows.
-//   * `state.queueRows` (set by dragging the top rule) wins when present;
-//   * otherwise show all items up to QUEUE_MAX_VISIBLE.
-// Always clamped to [1, queued.length]: at least ONE row, never more than exist.
-export function queueRowCount(state) {
-  const queued = state.queued || [];
-  if (!queued.length) return 0;
-  const manual = state.queueRows;
-  let rows;
-  if (typeof manual === 'number' && Number.isFinite(manual)) {
-    rows = Math.round(manual);
-  } else {
-    rows = Math.min(queued.length, QUEUE_MAX_VISIBLE);
-  }
-  return Math.max(1, Math.min(queued.length, rows));
-}
-
-// Height (in rows) the queue panel will occupy, for layout math.
-export function queuePanelHeight(state) {
-  const queued = state.queued || [];
-  if (!queued.length) return 0;
-  const rows = queueRowCount(state);
-  const extra = queued.length > rows ? 1 : 0; // the "… +N more" hint
-  return 2 + rows + extra; // rule + heading + rows (+ hint)
-}
-
-// How many todo ROWS the panel shows.
-//   * `state.todoRows` (set by dragging the top rule) wins when present;
-//   * otherwise the automatic heuristic (selectVisibleTodos) decides.
-// Always clamped to [1, todos.length]: at least ONE row, never more than exist.
-/**
- * Is this list FINISHED — every item done, and at least one item?
- *
- * A finished list is DROPPED, not merely hidden: it has stopped being a list of what is left to do, so
- * the data goes as well as the panel. Hiding alone left the array to be persisted with the session and
- * handed back to the model as `cfg.todoState`, which is a finished plan being described as current work.
- *
- * `every` on an EMPTY array is true, so the length check is load-bearing: this must not fire for "no
- * todos", which is a different state with its own handling everywhere else.
- */
-export function todosAllComplete(list) {
-  const todos = Array.isArray(list) ? list : [];
-  return todos.length > 0 && todos.every((t) => t && t.status === 'done');
-}
-
-/** The same question, asked of a TUI state object rather than a bare array. */
-export function todoListFinished(state) {
-  return todosAllComplete(state && state.todos);
-}
-
-export function todoRowCount(state) {
-  const todos = state.todos || [];
-  if (!todos.length) return 0;
-  // A finished list has no rows: see `todoListFinished`.
-  if (todoListFinished(state)) return 0;
-  const manual = state.todoRows;
-  let rows;
-  if (typeof manual === 'number' && Number.isFinite(manual)) {
-    rows = Math.round(manual);
-  } else {
-    rows = state.todosExpanded ? todos.length : selectVisibleTodos(todos).rows.length;
-  }
-  return Math.max(1, Math.min(todos.length, rows));
-}
-
-// Height (in rows) the todo panel will occupy, for layout math.
-export function todoPanelHeight(state) {
-  const todos = state.todos || [];
-  if (!todos.length) return 0;
-  // Zero once everything is done, so the chrome shrinks by the panel's whole height rather than leaving
-  // a blank gap where it used to be. Both this and the renderer ask the same predicate, so the reserved
-  // height and the drawn rows cannot disagree — a mismatch there shifts every row below.
-  if (todoListFinished(state)) return 0;
-  const rows = todoRowCount(state);
-  const extra = todos.length > rows ? 1 : 0; // the "… +N more" hint
-  return 2 + rows + extra; // rule + heading + rows (+ hint)
-}
 
 // Render one chat message into display lines.
 // Returns { lines: [{text, ind, color}] } (ind = indent string for continuation).
@@ -2809,6 +1454,20 @@ function messageLines(msg, width, workspace, expanded, spin, pulseStart, rawMode
       }
     }
 
+    // THE HINT IS ALWAYS THERE WHILE THE COMMAND RUNS, and it is grey.
+    //
+    // Always, because nothing here can tell a command that waits for input from one that is merely slow: the
+    // output-shape guess does not hold (a Python `input()` prompt ends in a newline like any other line), and
+    // the OS exposes no portable "blocked in read". A line that is true either way — this key sends what you
+    // type to the command — is the honest form, and grey keeps it a footnote rather than a warning.
+    if (msg.pending && msg.toolName === 'Bash') {
+      const stdinHintW = Math.max(1, width - visualCol('  '));
+      out.push({
+        text: C.termBg + fitAnsi(col('Ctrl+G: send a line to this command', C.gray), stdinHintW) + C.bgReset,
+        ind: '  ', raw: true,
+      });
+    }
+
     // Ctrl+B detach hint (mirrors kimi-code). A foreground Bash/Agent call that
     // has been running a while advertises the shortcut that moves it to the
     // background; the hint disappears the moment the result lands. Bash waits
@@ -2891,410 +1550,22 @@ function messageLines(msg, width, workspace, expanded, spin, pulseStart, rawMode
   // single-column TABLE — the same ╭─┬─╮ / ├─┼─┤ / ╰─┴─╯ vocabulary the Markdown
   // table renderer uses, so a plan reads as structured data rather than as prose
   // or as a second composer box.
-  if (msg.role === 'plan') {
-    // `width` is the transcript's inner width (the caller already removed the
-    // one-column margin); the wrapped user boxes land at `width - 2`.
-    const tableW = Math.max(12, width - 2);
-// Body rows.
-    // NOTE: rows must be {text, ind, raw} OBJECTS — messageLines' contract. Pushing
-    // plain strings here made rowToLine read `undefined` and the whole block rendered as
-    // blank lines.
-    const out = [];
-    const bar = (ch) => col(ch, C.border);
-    const inner = Math.max(1, tableW - 2);
-    const full = (l, r) => bar(l + '─'.repeat(inner) + r);
-    // Header: the table's single column is captioned "Plan".
-    out.push({ text: full('╭', '╮'), ind: '', raw: true });
-    out.push({ text: bar('│') + fitAnsi(col(' Plan', C.cyan + C.bold), inner) + bar('│'), ind: '', raw: true });
-    out.push({ text: bar('├' + '─'.repeat(inner) + '┤'), ind: '', raw: true });
-    const lines = String(msg.text || '').replace(/\r\n/g, '\n').split('\n');
-    while (lines.length && lines[lines.length - 1].trim() === '') lines.pop();
-    const textW = Math.max(1, inner - 2);
-    for (const raw of lines) {
-      if (raw.trim() === '') {
-        out.push({ text: bar('│') + ' '.repeat(inner) + bar('│'), ind: '', raw: true });
-        continue;
-      }
-      // Headings are emphasised; everything else renders as Markdown body text so
-      // **bold**, `code` and bullets work.
-      const isHead = /^\s*#{1,6}\s/.test(raw);
-      const shown = isHead ? raw.replace(/^\s*#{1,6}\s*/, '') : raw;
-      for (const r of renderMdText(shown, textW, isHead ? (C.cyan + C.bold) : C.white, C.cyan)) {
-        out.push({ text: bar('│') + ' ' + fitAnsi(r, textW) + ' ' + bar('│'), ind: '', raw: true });
-      }
-    }
-    out.push({ text: full('╰', '╯'), ind: '', raw: true });
-    return out;
-  }
+  if (msg.role === 'plan') return planRows(msg, width);
 
-  // A BACKGROUND TASK lifecycle card (kimi-style):
-  //     ● agent task completed in background (review the diff)
-  //     ✗ bash task failed in background (npm test · exit 1)
-  // The bullet is `●` normally and `✗` for a failure; the colour follows the
-  // phase. The task's conclusion sits underneath, indented, and is capped like
-  // a tool result so one chatty subagent cannot flood the transcript.
-  if (msg.role === 'bg_task') {
-    const card = msg.card || { phase: 'completed', headline: 'background task finished', detail: undefined };
-    const tone = card.phase === 'started' ? C.cyan : card.phase === 'completed' ? C.green : C.red;
-    const bullet = card.phase === 'failed' ? '✗ ' : '● ';
-    const out = [];
-    const detail = card.detail ? col(` (${card.detail})`, C.gray) : '';
-    out.push({ text: col(bullet, tone) + col(card.headline, tone) + detail, ind: '', raw: true });
-    const body = String(msg.text || '').trim();
-    if (body) {
-      const indent = '  ';
-      const avail = Math.max(1, width - visualCol(indent));
-      const lines = body.replace(/\r\n/g, '\n').split('\n');
-      // No cap once expanded. 200 was a silent ceiling: a long result stopped there with a hint telling
-      // the user to press the key they had already pressed.
-      const MAX = expanded ? lines.length : 6;
-      for (const ln of lines.slice(0, MAX)) {
-        for (const w of (ln === '' ? [''] : wrapWords(ln, avail))) {
-          out.push({ text: col(w, C.gray), ind: indent, raw: true });
-        }
-      }
-      if (lines.length > MAX) {
-        // Only reachable while COLLAPSED: expanded, `MAX` is the whole list and this cannot fire.
-        out.push({ text: col(`… ${lines.length - MAX} more lines, ctrl+o to expand`, C.gray), ind: indent, raw: true });
-      }
-    }
-    return out;
-  }
+  // A BACKGROUND TASK lifecycle card (kimi-style).
+  if (msg.role === 'bg_task') return bgTaskRows(msg, width, expanded);
 
   // Tool output: a single "↳ " marker on the first line, then the output
   // indented by 2 columns. Long output is capped (kimi caps result previews
   // too) so one command cannot flood the whole transcript.
-  if (msg.role === 'tool_result') {
-    // The marker sits in the SAME COLUMN as the tool bullet `●` (rendered as
-    // '● ', i.e. columns 0-1), so `↳ ` starts at column 0 and the output text
-    // is indented to the tool text column. ONE `↳` per result, however many
-    // lines it has.
-    const pre = '↳ ';
-    const cont = '  ';
-    const bodyW = Math.max(1, width - visualCol(cont));
-    // Strip escapes BEFORE splitting: a file or a command can emit raw SGR /
-    // cursor codes, and letting them through made the terminal OBEY them —
-    // recolouring the transcript, resetting styles mid-row, moving the cursor or
-    // clearing the screen over the composer.
-    const rawLines = sanitizeText(msg.text).replace(/\r\n/g, '\n').split('\n');
-    // A TAB counts as ZERO columns in our width maths but advances to the next tab stop in a real terminal.
-    // A row containing one was therefore padded short and the terminal kept the old frame's glyphs in the gap —
-    // the "residue" under tool output. Read rows are the exception: their first tab is the line-number separator
-    // and is handled in the Read branch below, where the CONTENT half is expanded too.
-    if (!msg.readPath) for (let k = 0; k < rawLines.length; k++) rawLines[k] = expandTabs(rawLines[k]);
-    // Trim blank lines at BOTH ends: commands typically emit a trailing
-    // newline, and some tools emit a leading one. A stray blank line would
-    // render as a lone "↳ " with no content.
-    while (rawLines.length && rawLines[0].trim() === '') rawLines.shift();
-    while (rawLines.length && rawLines[rawLines.length - 1].trim() === '') rawLines.pop();
-    const MAX_RESULT_LINES = expanded ? Infinity : 12;
-    // The exit-code line is bookkeeping for the AGENT (it stays in the tool
-    // result the model receives) and is NEVER shown to the user — success or
-    // failure. A failure is already legible from the RED result text below.
-    // `[error: …]` is kept: it carries the message, not just a code.
-    const visible = rawLines.filter((ln) => !/^\[exit code:/.test(ln.trim()));
-    const failed = msg.failed === true;
-    // A silent Bash keeps the ONE empty output row it had while running. Only Bash has this special area: an empty
-    // Read/Grep result must not grow a phantom line merely because the command itself printed nothing.
-    const shown = visible.length ? visible.slice(0, MAX_RESULT_LINES) : (msg.toolName === 'Bash' ? [''] : []);
+  if (msg.role === 'tool_result') return toolResultRows(msg, width, expanded);
 
-    // ---- DISPLAY ORDER -----------------------------------------------------
-    // The row reads as a block under the tool line, with ONE `↳` marker:
-    //   ● Used Edit (a.js) +1 -1        <- status bullet
-    //   ↳ 3 - old line                  <- `↳` rides the FIRST body row
-    //     3 + new line
-    //   Edited a.js: replaced 1 occurrence(s).   <- receipt LAST
-    // For an Edit the DIFF is the body (and carries the marker); the receipt text
-    // moves to the bottom. For every other tool the tool output IS the body, so
-    // the marker sits on its first line, exactly as before.
-    const diffRows = [];
-    const receiptRows = [];
-    const hasDiff = Array.isArray(msg.diff);   // empty array => receipt-only (Write)
+  // Compaction block. Expanded state is the SHARED Ctrl+O one, so one key reveals tool output and compaction summaries
+  // alike.
+  if (msg.role === 'compaction') return compactionRows(msg, width, expanded, spin);
 
-    if (hasDiff) {
-      // Same collapse rule as the tool output and thinking blocks above: a short
-      // preview by default, everything once Ctrl+O expands. 16 rows (not 12)
-      // because a change renders as a PAIR: `- old` then `+ new`.
-      const MAX = expanded ? Infinity : 16;
-      // Show the unified diff WITH context rows (ctx = dim, marked by a space in
-      // the sign column) so a change is not two orphaned blocks; `gap` rows mark
-      // where unchanged lines were elided.
-      const total = msg.diff.length;
-      const wNo = Math.max(1, ...msg.diff.map((d) => String(d.no || 0).length));
-      // THE COMMENT STATE TRAVELS BETWEEN THE ROWS of one diff, so a block comment that opens on a context row and
-      // closes on a changed one stays grey across both.
-      let inComment = false;
-      let emitted = 0;
-      for (const d of msg.diff) {
-        if (emitted >= MAX) break;
-        if (d.type === 'gap') {
-          diffRows.push({ text: col('  ⋮', C.gray), ind: cont, raw: true });
-          emitted++;
-          continue;
-        }
-        const no = String(d.no || 0).padStart(wNo);
-        const mark = d.type === 'add' ? '+' : d.type === 'del' ? '-' : ' ';
-        // TABS ARE EXPANDED FIRST: `visualCol` counts one as zero columns, so an indented row measured short
-        // and its background stopped before the right edge — the strip of page colour seen on Go diffs.
-        const text = expandTabs(sanitizeText(d.text));
-
-        // The sign, line number and content share the line's addition/deletion background; syntax highlighting
-        // changes only the foreground. The wash runs to the right edge so adjacent changed rows read as one block.
-        const isAdd = d.type === 'add';
-        const isDel = d.type === 'del';
-        const lineBg = isAdd ? C.diffAddBg : isDel ? C.diffDelBg : '';
-        const fg = isAdd ? C.diffAddFg : isDel ? C.diffDelFg : C.white;
-        const lead = col(`${no} ${mark} `, lineBg ? fg + lineBg : fg);
-
-        if (!lineBg) {
-          // CONTEXT LINES ARE CODE TOO. They are the most of a diff and the part a reader scans to place the
-          // the change, so they get the same highlighter, on the CODE SURFACE rather than the raw page — a changed
-          // block sits on one recessed field. The +/- rows around it keep their green/red wash.
-          const ctxPainted = paintCode(text, d.lang, '', inComment);
-          inComment = ctxPainted.inComment;
-          const ctxRow = (lead + ctxPainted.text).replace(/\x1b\[0m/g, `\x1b[0m${C.codeBg}`);
-          diffRows.push({ text: C.codeBg + fitAnsi(ctxRow, bodyW) + C.bgReset, ind: cont, raw: true });
-          emitted++;
-          continue;
-        }
-
-        // Keep only the line-level addition/deletion wash and syntax foreground. Positional word pairing can
-        // highlight the wrong token when lines are reordered or punctuation changes, so no word tint is applied.
-        const painted = paintCode(text, d.lang, lineBg, inComment);
-        inComment = painted.inComment;
-        const used = visualCol(`${no} ${mark} `) + visualCol(painted.text);
-        const pad = ' '.repeat(Math.max(0, bodyW - used));
-        // The padding is INSIDE the wash, so it must not end with a bare reset: `col()` closes with ESC[0m, which
-        // would drop the background on the last column and leave a strip of page colour at the right edge.
-        diffRows.push({ text: lead + painted.text + lineBg + pad + '\x1b[39m', ind: cont, raw: true });
-        emitted++;
-      }
-      if (total > emitted) {
-        diffRows.push({
-          text: col(`… (${total - emitted} more lines, ctrl+o to expand)`, C.gray),
-          ind: cont, raw: true,
-        });
-      }
-      if (total === 0) diffRows.push({ text: col('(no changes)', C.gray), ind: cont, raw: true });
-      // The receipt: one line per source line of the tool's own message.
-      for (const ln of shown) {
-        const color = failed ? C.red : C.gray;
-        for (const t of (ln === '' ? [''] : wrapWords(ln, bodyW))) {
-          receiptRows.push({ text: t, ind: cont, color });
-        }
-      }
-    } else {
-      // No diff: the tool's own output is the body.
-      //
-      // A READ RESULT IS SOURCE CODE, so its numbered lines are syntax-coloured — the file's own language, carried
-      // on the message by the tool_result handler, which is the last place that still knows the path. The header
-      // and any error keep the plain grey: those are the tool's own words, not the file's.
-      //
-      // The comment state travels between the rows, so a block comment that opens on one line and closes on the
-      // next stays grey all the way down.
-      const readLang = msg.readPath ? langForPath(msg.readPath) : null;
-      // THE GUTTER IS ONE WIDTH FOR THE WHOLE BLOCK. The tool sends `N<TAB>text`, and the tab is what used to
-      // place the code — so `1` and `10` started their text at different columns once the tab was expanded.
-      // Padding the NUMBER to the widest one in this block keeps the digits left-aligned and the code aligned
-      // under itself.
-      const numW = shown.reduce((w, ln) => {
-        const m = /^(\d+)\t/.exec(ln);
-        return m ? Math.max(w, m[1].length) : w;
-      }, 0);
-      let inComment = false;
-      shown.forEach((ln, idx) => {
-        const isErr = /^\[error:/.test(ln.trim());
-        // A failed run is red throughout so it cannot be skimmed past.
-        const color = isErr ? C.red : (failed ? C.red : C.gray);
-        // `N<TAB>text` is the Read tool's own line format; only those rows are file content.
-        const numbered = readLang && !isErr ? /^(\d+)\t([\s\S]*)$/.exec(ln) : null;
-        if (numbered) {
-          // `wrapAnsiWords` measures VISIBLE columns, so the colour codes do not count towards the wrap.
-          // THE FILE'S OWN INDENTATION IS OFTEN TABS. Left as tabs, `visualCol` counted them as zero columns
-          // while the terminal advanced to the next stop: the row was padded short and the previous frame's
-          // glyphs stayed visible behind it. Expand before measuring, but keep the first tab as the separator
-          // — the regex above already split on it.
-          // tell the highlighter the first visible row is a comment — it coloured `of`, `switch`, `from` in a JSDoc
-          // paragraph as keywords. A row that is plainly part of a block comment (` * …`, an opening `/**`, or the
-          // closing `*/`) is painted as a comment on its own merits; the opener also seeds the rows that follow.
-          const content = expandTabs(numbered[2]);
-          const isBlockCommentRow = /^\s*(?:\/\*|\*|\*\/|\*\*)/.test(content);
-          const painted = paintCode(content, readLang, '', inComment || isBlockCommentRow);
-          if (/\/\*/.test(content) && !/\*\//.test(content)) inComment = true;
-          else if (/\*\//.test(content)) inComment = false;
-          // THE SEPARATOR IS A TAB, AND `visualCol` COUNTS A TAB AS ZERO COLUMNS. A terminal advances it to the
-          // next stop, so the row was measured several columns short, the terminal wrapped it itself, and the tail
-          // advances it to the next stop, so the row measured short and the terminal wrapped it itself. The
-          // THE SEPARATOR IS TWO SPACES, NOT A TAB: `visualCol` counts a tab as zero columns while a terminal
-          const text = `${col(numbered[1].padStart(numW), C.white)} ${painted.text}`;
-          // A Read row is TRUNCATED, not wrapped. `wrapAnsiWords` used to fold an overlong line onto a second
-          // row, and that second row — padded to full width by the frame, without a line number — was exactly
-          // what a differential painter could not reconcile with the previous frame: the leftover glyphs stayed
-          // under it as residue. One source line is one display row.
-          //
-          // THE CODE SURFACE: the whole row sits on `codeBg`, one step off the page. The number keeps its grey,
-          // the content keeps its syntax colours, and the wash reaches the right edge. Diff `+`/`-` rows are
-          // NOT affected — they keep their green/red.
-          //
-          // The background has to survive the row's own resets: every syntax token closes with `ESC[0m`, and the
-          // padding `fitAnsi` adds sits AFTER the last one. Re-asserting after each reset — the same trick
-          // `paintCode` uses for a diff wash — keeps the surface on the padding too, so the block reads solid.
-          const surfaced = text.replace(/\x1b\[0m/g, `\x1b[0m${C.codeBg}`);
-          diffRows.push({ text: C.codeBg + fitAnsi(surfaced, bodyW) + C.bgReset, ind: idx === 0 ? pre : cont, raw: true });
-          return;
-        }
-        const wrapped = ln === '' ? [''] : wrapWords(ln, bodyW);
-        // BASH OUTPUT SITS ON THE TERMINAL SURFACE, like text inside a real terminal emulator: the darkest recess
-        // on screen. Other tools keep the plain page background, so a command's output reads as "a terminal ran
-        // this" rather than as an ordinary result. The row keeps its grey text and the surface survives its own
-        // resets the same way the code surface does.
-        const termSurface = msg.toolName === 'Bash' || msg.toolName === 'Shell';
-        wrapped.forEach((t, i) => {
-          if (termSurface) {
-            const surfaced = t.replace(/\x1b\[0m/g, `\x1b[0m${C.termBg}`);
-            diffRows.push({ text: C.termBg + fitAnsi(surfaced, bodyW) + C.bgReset, ind: idx === 0 && i === 0 ? pre : cont, raw: true });
-          } else {
-            diffRows.push({ text: t, ind: idx === 0 && i === 0 ? pre : cont, color });
-          }
-        });
-      });
-      if (visible.length > MAX_RESULT_LINES) {
-        // The hint says HOW to see the rest. It used to read only "… N more lines", so a truncated result gave
-        // the user no way to know Ctrl+O would reveal it — the key existed and was undiscoverable from the one
-        // place that needed it. Only reachable while COLLAPSED: expanded, `MAX_RESULT_LINES` is Infinity.
-        diffRows.push({
-          text: `… ${visible.length - MAX_RESULT_LINES} more lines, ctrl+o to expand`,
-          ind: cont,
-          color: failed ? C.red : C.gray,
-        });
-      }
-    }
-
-    const out = [];
-    for (const r of diffRows) out.push(r);
-    for (const r of receiptRows) out.push(r);
-    // Put the `↳` on the FIRST rendered row (diff or output) — never on the
-    // receipt, which now sits last.
-    if (out.length && out[0].ind === cont && Array.isArray(msg.diff) && msg.diff.length > 0) {
-      out[0] = { ...out[0], ind: pre };
-    }
-    // The TOOL ROW may already have drawn this result's body — a Write streams the
-    // file's content up there ("↳ 1 line one …") — in which case the receipt below is
-    // the whole result and must NOT open a second `↳` block:
-    //     ● Used Write (a.txt) 1.3KB
-    //     ↳  1 <content>                     <- the body, marked on the tool row
-    //     ↳ File written: a.txt (1372 bytes) <- the stray second `↳`, now plain
-    // One body, one marker. `bodyOnToolRow` is set by the tool_result handler, which
-    // is the only place that knows whether the tool row had content to show.
-    if (msg.bodyOnToolRow && out.length && out[0].ind === pre) {
-      out[0] = { ...out[0], ind: cont };
-    }
-    // Nothing to show (empty output) -> render no row at all rather than a
-    // dangling "↳ ".
-    return out;
-    // Nothing to show (empty output) -> render no row at all rather than a
-    // dangling "↳ ".
-    return out;
-  }
-
-  // Compaction block, matching kimi-code's CompactionComponent:
-  //   running   -> blinking bullet + "Compacting context…" (+ optional instruction)
-  //   done      -> solid green bullet + "Compaction complete (X → Y tokens)"
-  //                + " (Ctrl-O to show/hide compaction summary)"
-  //   cancelled -> warning bullet + "Compaction cancelled"
-  // Expanded state is the SHARED Ctrl+O one, so one key reveals tool output and
-  // compaction summaries alike.
-  if (msg.role === 'compaction') {
-    const INDENT = '  ';
-    const done = msg.phase === 'done';
-    const canceled = msg.phase === 'cancelled';
-    const bulletColor = done ? C.green : canceled ? C.yellow : C.white;
-    // Blink off `spin` — the same monotonic tick the tool-call bullets use. It has
-    // to be a STATE-driven phase, NOT `Date.now()`: the render cache is validated
-    // against `spinKey`, so a clock-derived phase changes without invalidating the
-    // cache and the bullet renders once and then freezes.
-    const on = ((spin || 0) >> 3) % 2 === 0;
-    const bullet = (!done && !canceled && !on) ? '  ' : col('● ', bulletColor);
-    let head;
-    if (done) {
-      const detail = (msg.tokensBefore != null && msg.tokensAfter != null)
-        ? col(` (${fmtTokens(msg.tokensBefore)} → ${fmtTokens(msg.tokensAfter)} tokens)`, C.gray) : '';
-      const hint = (msg.text || '').trim()
-        ? col(` (Ctrl-O to ${expanded ? 'hide' : 'show'} compaction summary)`, C.gray) : '';
-      head = bullet + col('Compaction complete', C.green + C.bold) + detail + hint;
-    } else if (canceled) {
-      head = bullet + col('Compaction cancelled', C.yellow + C.bold)
-        + (msg.reason ? col(' (' + msg.reason + ')', C.gray) : '');
-    } else {
-      head = bullet + col('Compacting context…', C.cyan + C.bold);
-    }
-    const out = [{ text: head, ind: '', raw: true }];
-    if (msg.instruction) {
-      out.push({ text: INDENT + col(String(msg.instruction), C.gray), ind: INDENT, raw: true });
-    }
-    if (done && expanded && (msg.text || '').trim()) {
-      const bodyW = Math.max(1, width - visualCol(INDENT));
-      for (const ln of String(msg.text).replace(/\r\n/g, '\n').split('\n')) {
-        if (ln === '') { out.push({ text: '', ind: INDENT, raw: true }); continue; }
-        for (const w of wrapWords(ln, bodyW)) {
-          out.push({ text: INDENT + col(w, C.gray), ind: INDENT, raw: true });
-        }
-      }
-    }
-    return out;
-  }
-
-  // Reasoning ("thinking") block, matching kimi-code's ThinkingComponent:
-  //   live      -> "<spinner> thinking…" then the LAST 2 content lines, indented
-  //   finalized -> "● " marker on the first line, up to 2 preview lines, then a
-  //                "… (N more lines)" hint
-  // All of it is dim text.
-  if (msg.role === 'thinking') {
-    const INDENT = '  ';
-    const bodyW = Math.max(1, width - visualCol(INDENT));
-    const contentLines = [];
-    for (const ln of String(msg.text || '').replace(/\r\n/g, '\n').split('\n')) {
-      if (ln === '') { contentLines.push(''); continue; }
-      for (const w of wrapWords(ln, bodyW)) contentLines.push(w);
-    }
-    // AN EMPTY REASONING BLOCK DRAWS NOTHING.
-    //
-    // A model may emit a `think` event with no text, and the block that spans a tool
-    // call can be left with nothing in it — the tool boundary finalises the block, so
-    // when the model reasons again it opens a NEW one. Either way the old code drew a
-    // bare `●` row (or a lone "thinking…" spinner), which reads as a rendering bug:
-    // there is no thought to show.
-    //
-    // Only the RENDERING is suppressed. The block stays in `state.chat`, so the next
-    // `think` event APPENDS to it rather than opening another one — the state machine
-    // (and the row cache that keys on it) is unchanged, and a block that later
-    // receives text appears with its full content.
-    if (!contentLines.some((l) => l.trim() !== '')) return [];
-    const PREVIEW = expanded ? Infinity : 2;
-    // The reasoning BODY is italic; the "thinking…" label and the "N more lines"
-    // hint are NOT. Closed with endItalic rather than reset, so the row keeps the
-    // dim gray it is drawn in.
-    const it = (s) => (s === '' ? s : C.italic + s + C.endItalic);
-    const out = [];
-    if (msg.pending) {
-      // The spinner frame is NOT baked in here: a glyph that changes every 80ms
-      // tick would invalidate this row's cache and re-wrap the whole reasoning
-      // block each time (measured ~44ms/frame vs ~6ms warm), which is what made
-      // long thinking look laggy while ordinary streamed text stayed smooth.
-      // renderChatLines substitutes the live frame outside the cache instead.
-      out.push({ text: SPIN_PLACEHOLDER + ' thinking…', ind: '', color: C.gray });
-      const vis = contentLines.length > PREVIEW ? contentLines.slice(-PREVIEW) : contentLines;
-      for (const l of vis) out.push({ text: it(l), ind: INDENT, color: C.gray });
-    } else {
-      const shown = contentLines.slice(0, PREVIEW);
-      shown.forEach((l, i) => out.push({ text: it(l), ind: i === 0 ? '● ' : INDENT, color: C.gray }));
-      if (contentLines.length > PREVIEW) {
-        out.push({ text: `… (${contentLines.length - PREVIEW} more lines, ctrl+o to expand)`, ind: INDENT, color: C.gray });
-      }
-    }
-    return out;
-  }
-
+  // Reasoning ("thinking") block. All of it is dim text.
+  if (msg.role === 'thinking') return thinkingRows(msg, width, expanded);
 
 
   let icon = '';
@@ -3445,575 +1716,8 @@ function messageLines(msg, width, workspace, expanded, spin, pulseStart, rawMode
   return lines;
 }
 
-// Block-level Markdown renderer. Produces pre-styled rows (each carries its own
-// ANSI). Supports: headings, thematic breaks, blockquotes, unordered/ordered and
-// INCREMENTAL markdown for a STREAMING assistant message.
-//
-// While a reply streams, `msg.text` grows every frame, and re-parsing the WHOLE
-// accumulated text each time measured 5ms/frame at 10 KB and ~20ms at 50 KB — a
-// visible stall at the 80ms tick ("the spinner freezes while it types").
-//
-// The unit of reuse is a top-level BLOCK: a run of lines up to the next blank line
-// that is not inside a code fence, with the blank lines attached to the FOLLOWING
-// block. Rendering block-by-block and concatenating produces byte-identical output
-// to rendering the whole document (verified across headings, lists, fenced code,
-// multiple fences, and consecutive blank lines), which is what makes the cache
-// safe. Only the LAST block can still be growing, so only it is re-rendered.
-//
-// (An earlier attempt cut the text at a blank line and rendered head/tail
-// separately. That is NOT equivalent — a trailing blank line contributes a row on
-// its own but acts as a separator inside the whole document — so the two renders
-// disagreed by a row. Blocks avoid the problem entirely.)
-/**
- * Version of the markdown renderer, part of the incremental cache key.
- *
- * That cache is validated on the INPUT — text, width, colours — which cannot see that the renderer
- * itself now produces different rows for the same input. A session that cached a block before a fence
- * type learned to draw kept showing the old output, so the change looked like it had not shipped.
- * Bump this whenever what `renderMdText` produces for the same input changes.
- */
-const MD_RENDER_VERSION = 7;   // 7: an image row carries the TeX that produced it
-
-export function renderMdIncremental(msg, text, width, fg, codeFg) {
-  const src = text.replace(/\r\n/g, '\n');
-  let c = msg._mdCache;
-  // Layout identity: same width/colours and the same text. Comparing the text (not
-  // just its length) is required — a same-length replacement must re-render.
-  if (c && c.v === MD_RENDER_VERSION && c.width === width && c.fg === fg && c.codeFg === codeFg && c.text === src) {
-    return { headRows: c.headRows, tailRows: c.tailRows, headCut: c.headCut };
-  }
-  if (!c || c.v !== MD_RENDER_VERSION || c.width !== width || c.fg !== fg || c.codeFg !== codeFg) {
-    c = msg._mdCache = { v: MD_RENDER_VERSION, width, fg, codeFg };
-  }
-
-  const parts = splitBlocks(src);
-  // A block is final once a LATER block exists; the last one is still growing.
-  const headCount = Math.max(0, parts.length - 1);
-  // THE CACHED BLOCKS BELONG TO A VERSION OF THE RENDERER. Without that check a request for the same text,
-  // width and colours reuses rows produced by an OLDER renderer: the fast path above rejects them on `c.v`,
-  // but it leaves `c` untouched (its width and colours still match), and this reuse test then finds the block
-  // texts identical and hands back the old rows. That is why an image row kept arriving without the TeX it
-  // was made from after the field was added.
-  const canReuse = c.v === MD_RENDER_VERSION
-    && Array.isArray(c.blocks)
-    && Array.isArray(c.blockTexts)
-    && c.blockTexts.length >= headCount
-    && parts.length >= headCount
-    && c.blockTexts.slice(0, headCount).every((t, i) => t === parts[i]);
-
-  const blocks = canReuse ? c.blocks.slice(0, headCount) : parts.slice(0, headCount).map((b) => renderMdText(b, width, fg, codeFg));
-  const headRows = [];
-  for (const b of blocks) for (const r of b) headRows.push(r);
-  const tailRows = renderMdText(parts.length ? parts[parts.length - 1] : '', width, fg, codeFg);
-  const headCut = parts.length > 1 ? parts.slice(0, headCount).join('\n').length : 0;
-
-  msg._mdCache = {
-    v: MD_RENDER_VERSION,
-    text: src, width, fg, codeFg,
-    blocks, blockTexts: parts.slice(0, headCount),
-    headRows, tailRows, headCut,
-  };
-  return { headRows, tailRows, headCut };
-}
-
-// Split at blank lines OUTSIDE a fence. The blank line(s) begin the NEXT block, so
-// every block renders the same whether or not later blocks exist — that is the
-// property the incremental cache depends on.
-export function splitBlocks(src) {
-  if (src === '') return [''];
-  const lines = src.split('\n');
-  const out = [];
-  let cur = [];
-  let fence = false;
-  for (const ln of lines) {
-    const isFence = /^\s*(```+|~~~+)/.test(ln);
-    const blank = ln.trim() === '';
-    if (blank && !fence) {
-      if (cur.length) { out.push(cur); cur = []; }
-      cur.push(ln);
-      continue;
-    }
-    if (isFence) fence = !fence;
-    cur.push(ln);
-  }
-  if (cur.length) out.push(cur);
-  return out.map((b) => b.join('\n'));
-}
-
-export function renderMdText(text, width, fg, codeFg) {
-  const src = String(text).replace(/\r\n/g, '\n');
-  const para = src.split('\n');
-  const out = [];
-  let i = 0;
-  const isTableSep = (l) => /^\s*\|?\s*:?-{2,}.*\|/.test(l) || /^\s*\|[-: ]+\|/.test(l);
-  const splitCells = (l) => {
-    const s = l.trim().replace(/^\|/, '').replace(/\|$/, '');
-    return s.split('|').map((c) => c.trim());
-  };
-
-  while (i < para.length) {
-    let line = para[i];
-    const t = line.replace(/\s+$/, '');
-    // DISPLAY MATH: `$$ ... $$` and `\[ ... \]`.
-    //
-    // A fence is what a model writes when it wants a code block, but a formula usually arrives as `$$`.
-    // It is laid out here as the formula it describes — stacked fractions, limits above a sum — and its
-    // source is what remains when the subset cannot express it, exactly as a math fence behaves.
-    // The opener has to start the line and the closer has to end one, so `cost is $$x$$ total` stays prose
-    // and is handled as inline math by the line renderer below.
-    const mathOpen = /^\s*(\$\$|\\\[)/.exec(t);
-    if (mathOpen) {
-      const open = mathOpen[1];
-      const close = open === '$$' ? '$$' : '\\]';
-      const after = t.slice(mathOpen.index + mathOpen[0].length);
-      let body = null;
-      let used = 0;
-      let closed = true;
-      // One-line form: `$$x = 1$$` with nothing but whitespace after the closer.
-      const oneLine = after.indexOf(close);
-      if (oneLine >= 0 && after.slice(oneLine + close.length).trim() === '') {
-        body = after.slice(0, oneLine);
-        used = 1;
-      } else if (after.trim() === '') {
-        // Multi-line form: everything up to the line that ends with the closer.
-        const collected = [];
-        let k = i + 1;
-        let found = false;
-        while (k < para.length) {
-          const cl = para[k].replace(/\s+$/, '');
-          if (cl.trimEnd().endsWith(close)) {
-            collected.push(cl.slice(0, cl.lastIndexOf(close)));
-            k++;
-            found = true;
-            break;
-          }
-          collected.push(para[k]);
-          k++;
-        }
-        body = collected.join('\n');
-        used = k - i;
-        // Still streaming: no closer yet, so the body is prose plus half a formula.
-        closed = found;
-      }
-      if (body !== null && closed) {
-        i += used;
-        // Same three fallbacks as a math fence: bitmap, Unicode layout, then the source.
-        const rows = mathBlockRows(body, width, true);
-        if (rows) {
-          out.push(...rows);
-        } else {
-          // Unsupported: show the TeX so the reader still gets the formula's meaning.
-          for (const l of body.split('\n')) out.push(col('  ' + l.slice(0, Math.max(1, width - 2)), C.white));
-        }
-        continue;
-      }
-    }
-    // Fenced code block. Rendered with a rule ABOVE (labelled with the language)
-    // and a matching full-width rule BELOW, so the block is visibly delimited.
-    const fm = /^\s*(`{3,}|~{3,})\s*(\S*)/.exec(t);
-    if (fm) {
-      const lang = fm[2] || '';
-      i++;
-      const buf = [];
-      const fenceChar = fm[1][0];
-      const fenceLen = fm[1].length;
-      const isCloser = (s) => {
-        const m = /^\s*(`{3,}|~{3,})\s*$/.exec(s);
-        return !!m && m[1][0] === fenceChar && m[1].length >= fenceLen;
-      };
-      while (i < para.length && !isCloser(para[i])) { buf.push(para[i]); i++; }
-      // Whether the closing fence was actually reached: an open fence means the text is still streaming.
-      const fenceClosed = i < para.length;
-      i++; // closing fence (no-op when the fence is still open)
-      const rule = (s) => col(s, C.gray);
-      // MATH FENCES ARE TYPESET. A `latex`/`tex`/`math` fence is TeX, not code: it is drawn as the formula
-      // it describes, and when the terminal speaks an image protocol it is drawn as a TYPESET BITMAP rather
-      // than as flattened Unicode — the same pipeline dsh-tui uses, with STIX Two Math.
-      //
-      // Three fallbacks, in order, and each one keeps the formula: the bitmap; the Unicode layout when the
-      // picture cannot be placed (no protocol, no cell size, too wide, too tall); the SOURCE when the subset
-      // cannot express the TeX at all.
-      if (/^(latex|tex|math)$/i.test(lang)) {
-        const tex = buf.join('\n').trim();
-        const rendered = mathBlockRows(tex, width, fenceClosed);
-        if (rendered) {
-          out.push(...rendered);
-          continue;
-        }
-        // Falls through to the plain code block: the source is all we have.
-      }
-      if (/^mermaid$/i.test(lang)) {
-        const src = buf.join('\n');
-        let art = null;
-        try { art = renderMermaid(src); } catch { art = null; }
-        // Wider than the panel: the frame is the honest answer, since truncating art
-        // would cut a box in half rather than say the diagram does not fit.
-        if (art && art.width <= width) {
-          // `styled` keeps the role of every span, so the frame stays dim and the
-          // connectors cyan instead of the whole diagram arriving as plain white text.
-          const coloured = mermaidAnsi(art);
-          for (const l of coloured) out.push(l);
-          continue;
-        }
-        try {
-          for (const l of mermaidSourceBox(src, width).plain) out.push(col(l, C.white));
-          continue;
-        } catch { /* fall through to the plain code block */ }
-      }
-      // Opening rule: `─ <lang> ` then `─` padding out to the FULL width.
-      // (The old version subtracted 4 and was 2 columns short of the panel.)
-      if (lang) {
-        const head = `\u2500 ${lang} `;
-        out.push(rule(head + '─'.repeat(Math.max(1, width - visualCol(head)))));
-      } else {
-        out.push(rule('─'.repeat(Math.max(1, width))));
-      }
-      // Fenced code block CONTENT is plain body text — render it in the
-      // default terminal colour (white), not the theme's cyan. The cyan is
-      // reserved for UI chrome and the language label; a large code block in
-      // cyan reads as "everything is the theme colour".
-      for (const cl of buf) out.push(col(cl.slice(0, width), C.white));
-      // Closing rule, matching the opening one.
-      out.push(rule('─'.repeat(Math.max(1, width))));
-      continue;
-      }
-    // Table: a header line followed by a separator line
-    if (t.includes('|') && i + 1 < para.length && isTableSep(para[i + 1])) {
-      const header = splitCells(t);
-      const sep = splitCells(para[i + 1]);
-      const body = [];
-      i += 2;
-      while (i < para.length && para[i].trim().includes('|') && !isTableSep(para[i])) { body.push(splitCells(para[i])); i++; }
-      renderTable(out, header, body, sep.length, width, fg);
-      continue;
-    }
-    // Fall through to single-line renderer
-    const rows = markdownLineToRows(t, width, fg, codeFg, false);
-    out.push(...rows);
-    i++;
-  }
-  return out;
-}
-
-// Render a Markdown table as aligned columns. Header bolded, rows readable.
-function renderTable(out, header, body, colCount, width, fg) {
-  const cols = Math.max(header.length, colCount, ...body.map((r) => r.length));
-  const B = C.border;
-  const val = (r, c) => (r && r[c] !== undefined ? String(r[c]) : '');
-  // Per-column natural width (visual columns), reserving 2 padding each side.
-  const natural = Array.from({ length: cols }, (_, c) => {
-    let m = 0;
-    const consider = (v) => { m = Math.max(m, visualCol(v)); };
-    consider(val(header, c));
-    for (const r of body) consider(val(r, c));
-    return m;
-  });
-  // Cap total table width to the available width (minus borders).
-  const availInner = Math.max(cols, width - (cols + 1));
-  const totalNatural = natural.reduce((a, b) => a + 2 + b, 0);
-  let widths;
-  if (totalNatural <= availInner) {
-    widths = natural;
-  } else {
-    // Scale down proportionally, but never below MIN_COL. A column squeezed to 1 is a column whose content is
-    // unreadable, so the shrink stops at a width a word can still use and the ROW grows taller instead.
-    const MIN_COL = 4;
-    const over = totalNatural - availInner;
-    const surplus = natural.reduce((a, b) => a + (b > MIN_COL ? b - MIN_COL : 0), 0);
-    widths = natural.map((n) => {
-      const shrink = over > 0 && surplus > 0 ? Math.round((Math.max(0, n - MIN_COL)) * (over / surplus)) : 0;
-      return Math.max(Math.min(MIN_COL, n), n - shrink);
-    });
-  }
-  // WRAP, DO NOT TRUNCATE. A cell whose text does not fit its column used to be emitted at full length, which
-  // pushed every border after it to the right and broke the table's alignment for the rest of the row. The
-  // row now grows taller: each cell is wrapped to its column, and every line is padded to the same width.
-  const wrapCell = (text, w) => {
-    if (!text) return [''];
-    return wrapWords(text, Math.max(1, w));
-  };
-  // A cell renders its INLINE MARKDOWN (bold, code, links) — a table of `**name**` and `\`value\`` used to show
-  // the asterisks and backticks verbatim, which is not what the author wrote.
-  const styled = (text, w, bold) => {
-    const plain = wrapCell(text, w);
-    const paint = bold ? C.white + C.bold : C.gray;
-    return plain.map((line) => {
-      // Render the markdown FIRST, then pad the RESULT.
-      //
-      // The pad has to be measured on what the cell will actually PRINT, not on the source: `` `--verbose` ``
-      // is 11 characters of source but 9 on screen once the backticks become a colour, so padding by the source
-      // width left the column short by two and every border after it moved left.
-      const md = inlineMarkdown(line, C.gray, bold ? C.white : C.gray);
-      const printed = visualCol(String(md).replace(/\x1b\[[0-9;]*m/g, ''));
-      const pad = Math.max(0, w - printed);
-      return col(' ', paint) + col(md, paint) + col(' '.repeat(pad) + ' ', paint);
-    });
-  };
-  const rule = (left, mid, right) => col(left + widths.map((w) => '─'.repeat(w + 2)).join(mid) + right, B);
-  // One logical row, as several physical lines when any cell wraps.
-  const oneRow = (cells, bold) => {
-    const rendered = [];
-    for (let c = 0; c < cols; c++) rendered.push(styled(val(cells, c), widths[c], bold));
-    const height = Math.max(1, ...rendered.map((r) => r.length));
-    for (let line = 0; line < height; line++) {
-      const parts = rendered.map((r, c) => (r[line] !== undefined
-        ? r[line]
-        : col(' ' + ' '.repeat(widths[c]) + ' ', bold ? C.white + C.bold : C.gray)));
-      out.push(col('│', B) + parts.join(col('│', B)) + col('│', B));
-    }
-  };
-  out.push(rule('╭', '┬', '╮'));
-  oneRow(header, true);
-  out.push(rule('├', '┼', '┤'));
-  for (const r of body) oneRow(r, false);
-  out.push(rule('╰', '┴', '╯'));
-}
-function markdownLineToRows(line, width, fg, codeFg, isContinuation) {
-  const out = [];
-  const t = line.replace(/\s+$/, '');
-
-  // Headings: `# Title`
-  let m = /^(\s*)(#{1,6})\s+(.*)$/.exec(t);
-  if (m && !isContinuation) {
-    const hashCount = m[2].length;
-    // h1 is bold white, h2 is plain white, h3+ is gray. Only h1 carries BOLD.
-    const size = hashCount === 1 ? C.white + C.bold : hashCount === 2 ? C.white : C.gray;
-    for (const w of wrapWords(m[3], width)) {
-      out.push(col(w, size));
-    }
-    return out;
-  }
-  // Thematic break
-  if (/^\s*(-{3,}|\*{3,}|_{3,})$/.test(t)) {
-    out.push(col('─'.repeat(Math.min(width, Math.max(8, width))), C.gray));
-    return out;
-  }
-  // Blockquote
-  //
-  // THE RULE AND THE TEXT ARE DIFFERENT COLOURS. The rule takes the theme colour, so a quote reads as a distinct
-  // block in the transcript; the text takes the comment grey, so quoted material is visibly not the reply's own
-  // voice. Colouring both the same made a quote indistinguishable from an indented paragraph.
-  if (/^\s*>\s?/.test(t)) {
-    const content = t.replace(/^\s*>\s?/, '');
-    for (const w of wrapWords(content, Math.max(1, width - 2))) {
-      out.push(col('▍ ', C.cyan) + col(w, C.comment));
-    }
-    return out;
-  }
-  // Unordered/ordered list — bold the bullet, keep content plain. Also handles
-  // task checkboxes `- [ ] xxx` / `- [x] xxx`.
-  {
-    const task = /^(\s*)([-*+]\s+)?\[( |x|X)\]\s+(.*)$/.exec(t);
-    if (task && !isContinuation) {
-      const checked = task[3] !== ' ';
-      const box = checked ? col('✓', C.green) : col('○', C.gray);
-      const content = col(' ' + inlineMarkdown(task[4], codeFg, fg), fg);
-      for (const w of wrapWords(task[4], Math.max(1, width - 4))) {
-        out.push(col('  ', C.gray) + box + (w === task[4] ? content : col(' ' + w, fg)));
-      }
-      return out;
-    }
-    const li = /^(\s*)([-*+]|\d+[.)])\s+(.*)$/.exec(t);
-    if (li && !isContinuation) {
-      const isOrdered = /^\d/.test(li[2]);
-      const bullet = isOrdered ? col(li[2], C.cyan) : col('•', C.cyan);
-      const pad = isOrdered ? ' '.repeat(visualCol(li[2])) + ' ' : '  ';
-      let first = true;
-      for (const w of wrapWords(inlineMarkdown(li[3], codeFg, fg), Math.max(1, width - 2))) {
-        out.push((first ? col('', C.gray) + bullet + ' ' : col(pad, C.gray)) + col(w, fg));
-        first = false;
-      }
-      return out;
-    }
-  }
-  // Inline styles: **bold**, *italic*, `code`, [text](url), $math$
-  if (/[*`\[$]|\\\(/.test(t)) {
-    for (const w of wrapWords(t, width)) out.push(col(inlineMarkdown(w, codeFg, fg), fg));
-    return out;
-  }
-  // Plain - apply default foreground color
-  for (const w of wrapWords(t, width)) out.push(col(w, fg));
-  return out;
-}
-
-/**
- * Whether the terminal can receive a formula as a picture.
- *
- * Both halves are required: a protocol the terminal reported (Sixel today) and a cell size it reported
- * (XTWINOPS 16). Without the cell size the picture would be measured in guessed cells, which is what put a
- * formula on the wrong rows before — so a missing cell size falls back to text rather than guess.
- */
-function mathImageCapable() {
-  const caps = terminalCaps();
-  if (!caps) return null;
-  // KITTY FIRST. A terminal that speaks both (Kitty can be built with Sixel support) handles Kitty far
-  // better: the pixels are uploaded once and every later frame is a placement, while a Sixel has to be
-  // retransmitted and moves the cursor when it is drawn.
-  const protocol = caps.kittyGraphics
-    ? 'kitty'
-    : (Array.isArray(caps.extensions) && caps.extensions.includes('sixel') ? 'sixel' : null);
-  if (!protocol) return null;
-  const cell = caps.cell && caps.cell.w > 0 && caps.cell.h > 0 ? caps.cell : null;
-  return cell ? { protocol, cell } : null;
-}
-
-/** Ink colour for a typeset formula: the body text colour, so a picture sits in the text rather than beside it. */
-const MATH_INK = { r: 220, g: 220, b: 220 };
-
-/**
- * The terminal's cell height in pixels, for cropping a picture that straddles the top of the window.
- *
- * A crop has to convert CELL ROWS to six-pixel BANDS; without the cell height the two units get confused and
- * the image is drawn from the wrong point in its own payload. 20 is the conventional monospace cell height and
- * matches the fallback `src/tex/` uses when the terminal never answers XTWINOPS 16.
- *
- * @returns {number}
- */
-function mathCellHeight() {
-  const caps = terminalCaps();
-  const cell = caps && caps.cell;
-  return cell && cell.h > 0 ? cell.h : 20;
-}
-
-/**
- * Rows for one display formula: a typeset bitmap when the terminal can show one, the Unicode layout when it
- * cannot, and nothing when the TeX is outside the subset (the caller then shows the source).
- *
- * @param {string} tex TeX without delimiters.
- * @param {number} width Columns available.
- * @param {boolean} closed The closing delimiter arrived. A formula still streaming keeps to the text form: a
- *   picture of half a formula is worse than the TeX of half a formula.
- * @returns {string[]|null}
- */
-function mathBlockRows(tex, width, closed) {
-  const src = stripMathDelimiters(tex);
-  if (!src) return null;
-  // A picture sits where the text form does: one column of indent, and no wider than the panel.
-  const room = Math.max(8, width - 2);
-  if (closed) {
-    const placed = placeTex(src, room);
-    if (placed) return placed;
-  }
-  const rendered = renderLatex(src, { display: true });
-  if (rendered === undefined) return null;
-  return rendered
-    .split('\n')
-    .map((l) => col(l.slice(0, width), C.white));
-}
-
-/**
- * Remove the delimiters a formula may still be wrapped in.
- *
- * A `$$…$$` block and a ```latex fence both reach the typesetter, and the fence's content may carry the
- * delimiters too — a model writes the fence around `$$…$$` often enough that it is the common case, not the
- * odd one. Typesetting the delimiters along with the formula draws them as glyphs inside the picture, which
- * is what a literal `$$` in the middle of an integral looks like.
- *
- * Only a delimiter that spans the WHOLE body is removed: a `$$` in the middle is TeX the author meant, and
- * stripping it would change the formula. The loop runs because a doubled wrapper (`\n$$\n…\n$$\n` inside a
- * fence) leaves one pair behind after the first pass.
- *
- * @param {string} tex
- * @returns {string}
- */
-function stripMathDelimiters(tex) {
-  let s = String(tex || '').trim();
-  for (;;) {
-    const before = s;
-    if (s.startsWith('$$') && s.endsWith('$$') && s.length > 4) {
-      s = s.slice(2, -2).trim();
-    } else if (s.startsWith('\\[') && s.endsWith('\\]') && s.length > 4) {
-      s = s.slice(2, -2).trim();
-    } else if (s.startsWith('\\(') && s.endsWith('\\)') && s.length > 4) {
-      s = s.slice(2, -2).trim();
-    }
-    if (s === before) return s;
-  }
-}
-
-
-/**
- * Typeset a formula into a frame row, or null when it cannot be placed as a picture here.
- *
- * The picture is one row of TEXT plus a payload: the row is the sentinel `image-row.js` understands, the
- * rows below it are blank, and the frame writer turns them into a cursor move and a Sixel sequence. Every
- * reason to decline is a reason the caller already has a text fallback for, so this never throws.
- *
- * @param {string} tex
- * @param {number} room Columns the picture may occupy.
- */
-function placeTex(tex, room) {
-  const capable = mathImageCapable();
-  if (!capable) return null;
-  try {
-    // Measured first, because laying out is what rejects TeX outside the subset: a raster would be paid for
-    // and then thrown away.
-    const measured = measureTex(tex, { cell: capable.cell });
-    if (!measured || measured.columns > room || measured.rows > TEX_MAX_ROWS) return null;
-    const image = encodeTexImage(tex, { protocol: capable.protocol, cell: capable.cell, colour: MATH_INK });
-    if (!image) return null;
-    // THE SOURCE TRAVELS WITH THE ROW. A picture that straddles the top of the window has to be redrawn from
-    // its first VISIBLE row, and only the TeX can produce that raster: cropping the encoded payload can only
-    // land on a six-pixel band boundary, which leaves up to a quarter of a cell of the formula above the
-    // window and makes it slide as the view scrolls. `paintCellFrame` reads this back and re-renders with
-    // `skipTop` when a picture needs cropping.
-    const rows = [encodeImageRowHelper(image.sequence, image.rows, image.columns, tex)];
-    for (let r = 1; r < image.rows; r++) rows.push('');
-    return rows;
-  } catch {
-    // A bitmap that cannot be drawn is a reason to show text, never a reason to lose the frame.
-    return null;
-  }
-}
-
-/**
- * Whether a `$...$` body is a formula rather than prose.
- *
- * Prices, shell variables and identifiers all use `$`: `costs $5 and $10`, `$HOME`, `${VAR}`. A body that
- * starts or ends with a space, is a bare number or an all-caps word is prose, and so is one with no TeX
- * command and no operator in it — `vitamin $C$` stays text while `$x^2$` becomes a formula.
- */
-function looksLikeInlineMath(body) {
-  if (/^\s/.test(body) || /\s$/.test(body)) return false;
-  if (body.startsWith('{') || body.includes('`')) return false;
-  if (/^\d+([.,]\d+)?$/.test(body)) return false;
-  if (/^[A-Z][A-Z0-9_]*$/.test(body)) return false;
-  return /\\[A-Za-z]+|[=+\-*/<>^_]/.test(body) || (/^[A-Za-z]$/.test(body));
-}
-
-// Apply inline markdown to a single line: `code`, **bold**, *italic*, ~~strike~~,
-// [text](url). Order matters so inner tokens are handled safely.
-// `base` is the surrounding foreground colour; every inline style re-asserts it
-// after its own reset, otherwise the bare `\e[0m` would cancel the base colour
-// for the REST of the line (plain text after a **bold** run used to lose its
-// colour and fall back to the terminal default).
-function inlineMarkdown(s, codeFg, base) {
-  const fb = base || '';
-  let r = s;
-  // Inline code first so it is not mangled by * [] ~.
-  r = r.replace(/`([^`]+)`/g, (_, c) => col(c, codeFg) + fb);
-  // INLINE MATH. After the code spans, so a formula inside backticks stays code, and before emphasis, so
-  // `*` and `_` inside TeX cannot turn into italics. `\(...\)` is the other inline form models use.
-  r = r.replace(/\$([^$\n]+?)\$|\\\(([^\n]+?)\\\)/g, (m, dollar, paren) => {
-    const tex = dollar !== undefined ? dollar : paren;
-    // A price or a shell variable is not math: `$5 and $10`, `$HOME`, `${VAR}`.
-    if (dollar !== undefined && !looksLikeInlineMath(tex)) return m;
-    const out = renderLatex(tex, { display: false });
-    // Unsupported or multi-line: the source stands, because inline math sits inside wrapped prose.
-    if (out === undefined || out.includes('\n')) return m;
-    return out;
-  });
-  // Bold
-  r = r.replace(/\*\*([^*]+)\*\*/g, (_, c) => C.bold + c + C.reset + fb);
-  // Strikethrough
-  r = r.replace(/~~([^~]+)~~/g, (_, c) => '\x1b[9m' + c + '\x1b[29m');
-  // Italic
-  r = r.replace(/(^|[^*])\*([^*\s][^*]*?)\*(?!\*)/g, (_, pre, c) => pre + '\x1b[3m' + c + '\x1b[23m');
-  // Links: [text](url) -> text (cyan); autolink bare http(s) urls
-  r = r.replace(/\[([^\]]+)\]\(([^)]+)\)/g, (_, txt) => col(txt, C.cyan) + fb);
-  r = r.replace(/(^|\s)(https?:\/\/[^\s]+)/g, (_, pre, url) => pre + col(url, C.cyan));
-  return r;
-}
+// Block-level Markdown rendering lives in src/markdown.js: headings, rules, quotes, lists, tables, fenced code, math
+// fences and the incremental block cache.
 
 // Flatten chat buffer into visible colored lines.
 // Render the chat to display lines. Each message caches its rendered rows keyed
@@ -4839,143 +2543,6 @@ function modeLabel(mode) {
   return 'Ask';
 }
 
-function trimDecimal(v) {
-  const s = v.toFixed(1);
-  return s.endsWith('.0') ? s.slice(0, -2) : s;
-}
-
-// Token counts use DECIMAL units, the same ones `fmtTokensShort` uses for the working row.
-//
-// This was 1024-based, on the reasoning that a context size is a power of two, so 262144 would read
-// as "256k" rather than "262.1k". Two things outweighed that:
-//
-//   * TOKENS ARE NOT BYTES. Dividing by 1024 turns a count of 97000 tokens into "94.7k", which is
-//     simply wrong — and the context window is not the only figure here, since /ctx and /usage also
-//     report live counts that are not powers of two.
-//   * IT DISAGREED WITH ITSELF ON SCREEN. The working row divided by 1000 and this divided by 1024,
-//     so one frame showed "97k" for the turn and "94.7k" for the context it was using.
-//
-// A model's window is advertised in decimal terms anyway (200k, 128k), so nothing is lost at the
-// size that matters. Suffixes are K/M/B/T, with only the kilo left lower-case.
-function fmtTokens(n) {
-  const v = Math.max(0, Math.floor(Number(n) || 0));
-  if (!Number.isFinite(v)) return '0';
-  const units = [
-    { at: 1e12, suffix: 'T' },
-    { at: 1e9, suffix: 'B' },
-    { at: 1e6, suffix: 'M' },
-    { at: 1e3, suffix: 'k' },
-  ];
-  for (let i = 0; i < units.length; i++) {
-    const u = units[i];
-    if (v < u.at) continue;
-    // The SAME scaling rule as `fmtTokensShort`, including the whole-number threshold: a tenth is
-    // information at `1.2k` and noise at `262.1k`. Sharing the rule is what keeps one frame from
-    // showing `262.1k` for the context and `262k` for the turn that filled it.
-    const shown = scaleUnit(v / u.at);
-    // Rounding can reach the next unit (`999999` is `1000k`, which is `1m`).
-    if (Number(shown) >= 1000 && i > 0) return scaleUnit(v / units[i - 1].at) + units[i - 1].suffix;
-    return shown + u.suffix;
-  }
-  return String(v);
-}
-
-/**
- * One unit's worth of a count: `1.2`, `97`, `262`.
- *
- * One decimal below 100, whole numbers at and above it. Used by every token formatter so the same
- * quantity cannot read two ways on one screen.
- */
-function scaleUnit(v) {
-  if (v < 100) return v.toFixed(1).replace(/\.0$/, '');
-  const r = Math.round(v);
-  // A value that ROUNDS to the whole number keeps its decimal: 1048576/1e6 is 1.048576, and printing `1` put it
-  // in the same bucket as a plain million. `v === r` is the exact case.
-  if (r >= 100 && Math.abs(v - r) <= 0.5) return String(r);
-  return v.toFixed(1).replace(/\.0$/, '');
-}
-
-// Thousands separators for a plain count. fmtTokens rounds to k/M, which is right
-// for a context gauge but wrong for a token BILL: "1.5M input tokens" hides
-// whether that is 1.45M or 1.54M, and the cost readout next to it is precise.
-function fmtCount(n) {
-  const v = Number(n);
-  if (!Number.isFinite(v)) return '0';
-  return Math.round(v).toLocaleString('en-US');
-}
-
-// A money amount, at a precision that stays readable across five orders of
-// magnitude: a single cheap request is fractions of a cent, a long session is
-// dollars. A bare `0.00` for a real cost is the failure to avoid, so anything
-// non-zero under a cent keeps its decimals rather than rounding away. The symbol
-// is the caller's business — the status row puts it AFTER the number.
-function moneyAmount(v, currency = 'USD') {
-  const n = Number(v);
-  if (!Number.isFinite(n)) return 'n/a';
-  // CNY is about 7x USD, so the same amount crosses these thresholds one step
-  // sooner; scaling the comparison keeps both currencies at the same precision.
-  const scale = currency === 'CNY' ? 7 : 1;
-  if (n === 0) return '0.00';
-  if (n * scale < 0.01) return n.toFixed(5);
-  if (n * scale < 1) return n.toFixed(4);
-  return n.toFixed(2);
-}
-
-/**
-
-/**
- * `$12.34` / `¥86.51` — the amount with its symbol in front, for a panel line
- * where there is room to spell the currency out too.
- */
-function formatCost(amount, currency = 'USD') {
-  const n = Number(amount);
-  if (!Number.isFinite(n)) return 'unknown';
-  return `${currency === 'CNY' ? '¥' : '$'}${moneyAmount(n, currency)}`;
-}
-
-// A tiny ASCII line chart for a numeric series (context growth over steps).
-// Renders `height` rows; each column is one sample, scaled to the series max.
-// No dependency — Claude Code pulls in `asciichart`, we do not need it.
-function sparkChart(values, width, height) {
-  const series = (values || []).filter((v) => Number.isFinite(v));
-  if (series.length < 2) return [];
-  // Downsample to `width` columns by taking evenly spaced samples.
-  const cols = Math.min(width, series.length);
-  const sampled = [];
-  for (let i = 0; i < cols; i++) {
-    sampled.push(series[Math.round(i / (cols - 1) * (series.length - 1))]);
-  }
-  const max = Math.max(...sampled, 1);
-  const min = Math.min(...sampled, 0);
-  const span = Math.max(1, max - min);
-  const rows = [];
-  const BLOCK = [' ', '▁', '▂', '▃', '▄', '▅', '▆', '▇', '█'];
-  // Single-row sparkline.
-  if (height <= 1) {
-    rows.push(sampled.map((v) => BLOCK[Math.min(8, Math.round((v - min) / span * 8))]).join(''));
-    return rows;
-  }
-  for (let r = height - 1; r >= 0; r--) {
-    let line = '';
-    for (const v of sampled) {
-      const level = (v - min) / span * (height - 1);
-      line += level >= r ? '█' : ' ';
-    }
-    rows.push(line);
-  }
-  return rows;
-}
-
-// Usage as a whole-number percentage of `max`, ceiled so any non-zero usage
-// shows at least 1%, clamped to [0, 100]. A non-positive or non-finite `max`
-// reports 0.
-function usagePercent(used, max) {
-  // `used` can be undefined on a session resumed before any usage was recorded. Without this guard the
-  // division produced NaN and the row printed `NaN%` where it should have printed `0%`.
-  if (!Number.isFinite(used)) return 0;
-  if (!Number.isFinite(max) || max <= 0) return 0;
-  return Math.min(100, Math.max(0, Math.ceil((used / max) * 100)));
-}
 
 // The session's spend, cached on `state` for the status bar. Called wherever its
 // inputs change — a usage event, a model switch, a resume, /new, a currency
@@ -5018,151 +2585,7 @@ export function costCurrency(cfg) {
   return normalizeCurrency(raw) || 'USD';
 }
 
-// Human-readable elapsed duration, omitting zero leading units:
-//   1y 1mon 1d 1h 1min 1s  /  2y 2mon 2d 2h 2min 2s
-// Units are NEVER pluralised with a trailing "s": the old code rendered 5
-// minutes as "5ms", which reads as 5 MILLISECONDS (and 2 hours as "2hs").
-// Minutes are "m", so months use "mon" to stay unambiguous.
-function fmtDuration(ms) {
-  ms = Math.max(0, Math.floor(ms));
-  const sec = Math.floor(ms / 1000) % 60;
-  const min = Math.floor(ms / 60000) % 60;
-  const hour = Math.floor(ms / 3600000) % 24;
-  const day = Math.floor(ms / 86400000) % 30;
-  const mon = Math.floor(ms / 2592000000) % 12;
-  const year = Math.floor(ms / 31536000000);
-  const parts = [];
-  if (year) parts.push(year + 'y');
-  if (mon) parts.push(mon + 'mon');
-  if (day) parts.push(day + 'd');
-  if (hour) parts.push(hour + 'h');
-  if (min) parts.push(min + 'm');
-  // Seconds are always shown (at least "0s").
-  parts.push(sec + 's');
-  return parts.join(' ');
-}
-
-// The turn's output tokens as `50k`, `1.2k`, `999`, or '' when nothing has arrived yet.
-// Singular only at exactly 1, which is the one count small enough to read as a word.
-function fmtTokensShort(n) {
-  const v = Math.max(0, Math.floor(Number(n) || 0));
-  if (v < 1000) return `${v} token${v === 1 ? '' : 's'}`;
-  // The same rule `Intl` compact notation applies, and the same one Claude Code shows, so a figure
-  // read in one tool is not read differently in the other:
-  //
-  //   1200    -> 1.2k     one decimal while it carries information
-  //   9999    -> 10k      compact rounds here, so the decimal falls away on its own
-  //   12400   -> 12.4k    STILL one decimal — whole thousands would lose the 400
-  //   1234567 -> 1.2M     and each thousand-group gets its own unit
-  //
-  // This used to switch to whole thousands at 10k and had no unit above `k`, so 1.2M read as
-  // `1235k`. `m` is not a rounding nicety: `1235k` makes the reader count digits to see the size.
-  const units = [
-    { at: 1e12, suffix: 'T' },
-    { at: 1e9, suffix: 'B' },
-    { at: 1e6, suffix: 'M' },
-    { at: 1e3, suffix: 'k' },
-  ];
-  for (let i = 0; i < units.length; i++) {
-    const u = units[i];
-    if (v < u.at) continue;
-    const scaled = v / u.at;
-    // One decimal, dropped when it is a zero — the shape `Intl` compact gives (`1k`, not `1.0k`),
-    // so 1000 and 1000000 do not read as `1.0k` and `1.0m`.
-    const shown = scaled < 100 ? scaled.toFixed(1).replace(/\.0$/, '') : String(Math.round(scaled));
-    // ROUNDING CAN REACH THE NEXT UNIT. 999999 is 999.999k, which rounds to `1000k`, and `1000k`
-    // is `1m` — showing the first makes the reader convert a unit themselves. Step up once when the
-    // rounded value has hit the next threshold; `units` is ordered largest-first, so `i - 1` is it.
-    if (Number(shown) >= 1000 && i > 0) {
-      const up = units[i - 1];
-      const upScaled = v / up.at;
-      const upShown = upScaled < 100 ? upScaled.toFixed(1).replace(/\.0$/, '') : String(Math.round(upScaled));
-      return `${upShown}${up.suffix} tokens`;
-    }
-    return `${shown}${u.suffix} tokens`;
-  }
-  return `${v} tokens`;
-}
-// The elapsed-and-tokens tail WITHOUT brackets, e.g. `6m 44s | 9.1k tokens`.
-//
-// The brackets belong to the caller, because the two rows want them in different places:
-//   Accelerating... [6m 44s | 9.1k tokens]      the live row wraps the TAIL
-//   [turn took 6m 44s | 9.1k tokens]            the settled row wraps word AND tail
-// Putting them here produced `[turn took [6m 44s | …]` on the settled row.
-//
-// The token count is always present, `0 tokens` included: an absent counter and a zero one
-// look identical to the user, and appearing partway through a turn makes the row jump width
-// under the eye.
-/**
- * A prose setting as one short cell, for a list that has room for about forty characters.
- *
- * A truncated paragraph fills that space with text nobody can read and pushes the label out of
- * line with every other row; the size is the fact worth showing at a glance.
- */
-function proseSummary(value) {
-  const text = String(value == null ? '' : value);
-  if (!text.trim()) return '(unset)';
-  if (text === '(unset)') return text;              // already a placeholder, not prose
-  const lines = text.split(/\r?\n/);
-  const first = lines[0].trim();
-  // One short line with no newline fits as-is — that IS the whole value.
-  if (lines.length === 1 && first.length <= 32) return first;
-  return `${lines.length} line${lines.length === 1 ? '' : 's'}, ${text.length} chars`;
-}
-
-/**
- * The `[2s | ↓40]` tail shown at the end of the Working row.
- *
- * The arrow says which direction the count is: tokens this turn has RECEIVED, as opposed to the context
- * gauge, which also counts what has been sent.
- */
-function elapsedTail(ms, tokens) {
-  // The token count is shown FROM THE FIRST FRAME, with a downward arrow to say what it is: what the
-  // turn has received. It used to be hidden for thirty seconds, on the theory that a small number is
-  // noise on a short turn — but the row is the only place that number exists, and a count that appears
-  // partway through reads as something that just started rather than as a running total.
-  return `${fmtDuration(ms)} | ↓ ${fmtTokensShort(tokens)}`;
-}
-
-/**
- * Has the turn gone quiet, and how much should that show?
- *
- * A turn that produces no tokens for a few seconds is either thinking, waiting on a tool, or stuck — and
- * from outside those look identical. The one case that matters is the last: a request that hangs leaves
- * the row cheerfully spinning forever with no way to tell it apart from a long answer.
- *
- * Mirrors Claude Code's `useStalledAnimation`: AFTER 3s with no new output, fade toward the warning colour
- * over another 2s, and NEVER while a tool is running — a `npm install` that takes a minute is working, not
- * stalled, and flashing red at it would train the user to ignore the signal.
- *
- * Returns 0 while healthy and 1 at full stall, so the caller can interpolate rather than switch abruptly.
- */
-const STALL_AFTER_MS = 3000;
-const STALL_FADE_MS = 2000;
-
-function stallIntensity({ sinceLastTokenMs, hasActiveTools }) {
-  if (hasActiveTools) return 0;
-  const quiet = Number(sinceLastTokenMs) || 0;
-  if (quiet <= STALL_AFTER_MS) return 0;
-  return Math.min((quiet - STALL_AFTER_MS) / STALL_FADE_MS, 1);
-}
-
-// Left/right justify: left text, then padding, then right text flush to `w`.
-// ANSI codes are ignored for width so colored segments still align exactly.
-// When both don't fit, the LEFT is preserved and the RIGHT (tip) is truncated.
-function justify(left, right, w) {
-  const lw = visualCol(left);
-  const rw = visualCol(right);
-  if (left && right) {
-    if (lw + rw + 1 <= w) return left + ' '.repeat(w - lw - rw) + right;
-    const room = w - lw - 1;
-    if (room > 0) return left + ' ' + fitAnsi(right, room);
-    return fitAnsi(left, w);
-  }
-  if (!left) return ' '.repeat(Math.max(0, w - rw)) + right;
-  if (!right) return left + ' '.repeat(Math.max(0, w - lw));
-  return fitAnsi(left, w);
-}
+// (Number, money and time formatting live in src/format.js.)
 
 // Height of the composer box (top border + content rows + bottom border).
 export function composerHeight(state, cols) {
@@ -5431,23 +2854,25 @@ function applySelectionToRow(lines, idx, sel, w) {
 function highlightAnsiRange(row, c0, c1, w) {
   const s = String(row);
   const cells = parseCells(s);
-  // The SGR for the background each column was drawn with, or '' when the row has none there.
+  // The background in force BEFORE the selection, so ending it can put that back instead of ESC[49m (which
+  // means "the terminal default" and shows through on any row painted on a surface of its own).
   const ownBg = cells.map((_, c) => {
     const rgb = cellBg(cells, c);
     return rgb ? `\x1b[48;2;${rgb[0]};${rgb[1]};${rgb[2]}m` : '';
   });
-  // The theme's selection colour, read from the SGR rather than hardcoded: a light theme has a pale one.
   const m = /48;2;(\d+);(\d+);(\d+)/.exec(C.selBg);
   const selRgb = m ? [Number(m[1]), Number(m[2]), Number(m[3])] : null;
   // The SELECTION WINS. A hint of the row's own wash stays in the mix so a selected deletion still reads as a
   // deletion, but nine parts selection to one part row — an earlier three-parts-row blend left the diff colour
   // dominating and the selected range looked like an unselected diff with a tint.
-  const selectedBg = (col) => {
-    const rgb = cellBg(cells, col);
-    if (!rgb || !selRgb) return C.selBg;
-    const mix = (a, b) => Math.round(a * 0.9 + b * 0.1);
-    return `\x1b[48;2;${mix(selRgb[0], rgb[0])};${mix(selRgb[1], rgb[1])};${mix(selRgb[2], rgb[2])}m`;
-  };
+  // ONE COLOUR. A blend with the row's own wash kept a selected deletion looking like a deletion, but on a diff
+  // it made the selected run indistinguishable from the added rows beside it — a selection is a state and has to
+  // be unmistakable.
+  const selectedBg = () => C.selBg;
+  // One past the last cell holding anything but a space. The frame pads every row to full width for the page
+  // colour, and those padding cells are not content — a drag reaching into them must not paint them as selected.
+  let contentEnd = 0;
+  for (let k = 0; k < cells.length; k++) if (cells[k].ch !== ' ' && cells[k].ch !== '') contentEnd = k + 1;
   const lo = Math.max(c0, 1);
   let out = '';
   let col = 0;
@@ -5465,8 +2890,10 @@ function highlightAnsiRange(row, c0, c1, w) {
         // after each `ESC[0m`. Those SGRs arrive here as ordinary escapes, not resets, so leaving them untouched
         // let the diff colour overwrite the selection mid-run. Inside the selection, ANY background escape that
         // follows is replaced by the selected one; outside it, only a reset needs the row's own wash restored.
-        const isBg = /^\x1b\[48;/.test(esc[0]);
-        if (inSel && (isBg || esc[0] === '\x1b[0m' || esc[0] === '\x1b[m')) out += selectedBg(col);
+        // A background SGR, a full reset, or a background-only reset (`ESC[49m`) all destroy the selection's
+        // fill; each has to be answered with the selected colour again.
+        const isBg = /^\x1b\[48;|^\x1b\[49m$/.test(esc[0]);
+        if (inSel && (isBg || esc[0] === '\x1b[0m' || esc[0] === '\x1b[m')) out += selectedBg();
         else if (!inSel && (esc[0] === '\x1b[0m' || esc[0] === '\x1b[m')) out += ownBg[col] || '';
         i += esc[0].length;
         continue;
@@ -5476,13 +2903,17 @@ function highlightAnsiRange(row, c0, c1, w) {
     const cp = s.codePointAt(i);
     const ch = String.fromCodePoint(cp);
     const cw = visualWidth(ch);
-    const want = col >= lo && col < c1;
+    const want = col >= lo && col < c1 && col < contentEnd;
 
-    if (want && !inSel) { out += selectedBg(col); inSel = true; }
+    if (want && !inSel) { out += selectedBg(); inSel = true; }
     else if (!want && inSel) {
-      // RESTORE the row's own background, not ESC[49m: a diff row is red or green all the way to the right edge,
-      // and clearing the background there left a strip of page colour in the middle of the wash.
-      out += ownBg[col] || C.bgReset;
+      // FALL BACK TO THE PAGE COLOUR, NOT TO ESC[49m.
+      //
+      // `ownBg[col]` is the fill that cell carried, and for a plain sentence it is EMPTY — the page colour is applied
+      // later, by `composeFrame`. The old `|| C.bgReset` therefore fired on every ordinary row, and `ESC[49m` hands
+      // the background back to the TERMINAL, so everything after the selection on that line showed the terminal's
+      // own colour instead of the theme's page.
+      out += ownBg[col] || C.bg;
       inSel = false;
     }
 
@@ -7501,7 +4932,9 @@ const queueH = takeover ? 0 : queuePanelHeight(state);
     // A SEPARATOR BETWEEN THE TRANSCRIPT AND THE INPUT. With the border gone, the last line of the conversation sat
     // directly on top of the composer, and a paragraph against a grey block reads as one crowded mass. One faint
     // rule says "the conversation ends here" without drawing a frame.
-    lines.push(col('─'.repeat(w), C.border));
+    // In a mode that sends the line somewhere other than the model, the rules carry the mode colour.
+    const ruleCol = state.stdinMode ? C.orange : (state.inputMode === 'bash' ? C.shellMode : C.border);
+    lines.push(col('─'.repeat(w), ruleCol));
     composerFirstRow = lines.length;
     // THE COMPOSER SPANS THE FULL WIDTH. It used to keep the transcript's 1-column left margin so its walls
     // lined up with a sent user message's box; with no walls there is nothing to line up, and a filled surface
@@ -7534,7 +4967,9 @@ const queueH = takeover ? 0 : queuePanelHeight(state);
           : textPart;
         // The `!` (shell mode) prefix is BOLD: it is a mode marker, not punctuation, and it should out-weigh
         // the `>` prompt glyph at a glance.
-        const preCol = state.inputMode === 'bash' ? (C.shellMode + C.bold) : C.cyan;
+        const preCol = state.stdinMode ? (C.orange + C.bold)
+          : state.inputMode === 'bash' ? (C.shellMode + C.bold)
+          : C.cyan;
         rowAnsi = ' ' + col(pre, preCol) + C.white
           + fitAnsi(highlighted, Math.max(1, textW - visualCol(pre))) + ' ';
       } else {
@@ -7555,7 +4990,7 @@ const queueH = takeover ? 0 : queuePanelHeight(state);
     }
     // AND THE RULE UNDER IT, mirroring the one above: the input is bounded by two faint rules, so it reads as a
     // field between the conversation and the status line rather than as a block touching both.
-    lines.push(col('─'.repeat(w), C.border));
+    lines.push(col('─'.repeat(w), ruleCol));
   }
   
   // NO LEFT MARGIN: the menu's rule sits in column 0, aligned with the composer's own edge, instead of one
@@ -7970,7 +5405,7 @@ const queueH = takeover ? 0 : queuePanelHeight(state);
   let padded = lines.map((l) => {
     if (isImageRow(l)) return l;   // a bitmap payload is not text; a trailing background would corrupt it
     const base = fitAnsi(l, w).replace(/\x1b\[0m/g, `\x1b[0m${C.bg}`);
-    return C.bg + base + C.bgReset;
+    return C.bg + base;
   });
   // Mixin seam: beforeRender - plugins may rewrite the painted lines. Runs before the
   // ANSI string is built so the change actually reaches the screen.
@@ -15479,6 +12914,13 @@ const agents = readAgentsMd(state.cwd || state.workspace || cfg.workspace, state
           // tool, not the tool's own duration.
           state.hasActiveTools = false;
           state.lastTokenAt = Date.now();
+          // The command stdin mode pointed at has finished. Staying in it would swallow the next typed line into a
+          // dead pipe.
+          if (state.stdinMode) {
+            state.stdinMode = false;
+            for (const m of state.chat || []) if (m._stdinMode) m._stdinMode = false;
+            viewCur.note('Command finished — input goes to the model again');
+          }
           const entry = [...state.chat].reverse().find((m) => m.role === 'tool' && m.pending && m.id === e.id)
             || [...state.chat].reverse().find((m) => m.role === 'tool' && m.pending && m.toolName === e.name);
           // A failed run must be visible on the TOOL line too: the status bullet
@@ -15486,6 +12928,9 @@ const agents = readAgentsMd(state.cwd || state.workspace || cfg.workspace, state
           const failedRun = isFailureResult(e.content, e.name);
           if (entry) {
             entry.pending = false; entry.id = undefined; entry.failed = failedRun;
+            // HOW LONG THE CALL TOOK, stamped where it becomes knowable. The pair `startAt`/`endedAt` is what the tool
+            // line renders as `(10m 1s)` next to the name; a resumed session carries both back.
+            entry.endedAt = Date.now();
             // The AUTHORITATIVE diff comes from the tool itself (`editDiff`): it
             // knows the text it really replaced, so this is the only source that
             // covers line-range edits. Fall back to the provisional diff built
@@ -18500,7 +15945,7 @@ export async function startTUI(opts) {
         // runs at submit either way, so the text that is SENT is identical.
         if (t && t.ctrl) {
           // `idx` is already the input index, so the helper does not convert again — see its comment.
-          const expanded = expandPasteMarkerAt(state, idx);
+          const expanded = expandPasteMarkerAt(state, idx, () => refreshMenu(state));
           if (expanded) { renderFrame(); return true; }
         }
 
@@ -20000,6 +17445,25 @@ export async function startTUI(opts) {
       return;
     }
 
+    if (t.key === 'c-g') {
+      // ANSWER A PROMPT. A foreground command reads from a pipe now; this points the composer at it. A TOGGLE,
+      // because the composer has to go back to the model when the answer is done.
+      const fg = state.agent && state.agent.ctx && state.agent.ctx._foreground;
+      if (!fg || typeof fg.write !== 'function') {
+        notice('Nothing is waiting for input — no command is running in the foreground', 'error');
+        renderFrame();
+        return;
+      }
+      state.stdinMode = state.stdinMode ? false : true;
+      // The renderer is module-level and cannot read `state`, so the mode rides on the RUNNING Bash message.
+      for (const m of state.chat || []) if (m.role === 'tool' && m.toolName === 'Bash' && m.pending) m._stdinMode = state.stdinMode;
+      notice(state.stdinMode
+        ? 'Input goes to the running command (Ctrl+G to stop)'
+        : 'Input goes back to the model', 'info');
+      renderFrame();
+      return;
+    }
+
     if (t.key === 'c-s' && !state.editor) {
       steerAll();
       return;
@@ -21139,6 +18603,24 @@ function wheelStep(state, family) {
     // Shell passthrough. The MODE is authoritative (the `!` never entered the
     // buffer); a leading `!` in the text is still honoured so a pasted line like
     // `!git status` behaves the same as typing it.
+    // STDIN MODE WRITES TO THE COMMAND. Checked first: a line typed at a prompt belongs to that prompt even if
+    // it looks like a slash command.
+    if (state.stdinMode) {
+      const fg = state.agent && state.agent.ctx && state.agent.ctx._foreground;
+      if (fg && typeof fg.write === 'function' && fg.write(text + '\n')) {
+        // Not echoed: the command's own output is the record of what it received.
+        state.input = '';
+        state.caret = 0;
+        renderFrame();
+        return;
+      }
+      // The command is gone; the write reported failure, so the line was NOT delivered.
+      state.stdinMode = false;
+      for (const m of state.chat || []) if (m._stdinMode) m._stdinMode = false;
+      notice('That command has finished — input goes to the model again', 'error');
+      renderFrame();
+      return;
+    }
     if (state.inputMode === 'bash' || text.startsWith('!')) {
       const cmd = text.replace(/^!+/, '').trim();
       state.inputMode = 'prompt';   // one command per activation, like kimi
@@ -21369,6 +18851,27 @@ function wheelStep(state, family) {
       const c = String(cmd || '').trim();
       if (!c) throw new Error('empty command');
       await runShellCommand(c);
+    };
+    // ANSWER A RUNNING COMMAND FROM THE BROWSER.
+    //
+    // The terminal has Ctrl+G for this; the web UI had no equivalent, so a command that prompted was simply stuck
+    // for anyone watching in a browser. Both go through the SAME foreground hook, so the two front ends cannot
+    // disagree about which process a line is going to.
+    hub.actions.stdinLine = async (line) => {
+      const fg = state.agent && state.agent.ctx && state.agent.ctx._foreground;
+      if (!fg || typeof fg.write !== 'function') throw new Error('no command is running in the foreground');
+      if (!fg.write(String(line == null ? '' : line) + '\n')) throw new Error('the command has finished');
+    };
+    // Move the running command to the background. Ctrl+B's equivalent.
+    hub.actions.detach = async () => {
+      const fg = state.agent && state.agent.ctx && state.agent.ctx._foreground;
+      if (!fg || typeof fg.detach !== 'function') throw new Error('nothing to background');
+      const id = fg.detach();
+      if (!id) throw new Error('the command has finished');
+      try { state.agent.ctx._foreground = null; } catch { /* the agent may already be gone */ }
+      notice(`Moved to background: ${id}`, 'info');
+      renderFrame();
+      return id;
     };
     // The two handshakes the agent blocks on. Resolving these from the browser is
     // what lets a phone answer an approval the terminal is showing.
