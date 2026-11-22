@@ -7,7 +7,7 @@ import fs from 'node:fs';
 import cp from 'node:child_process';
 import { resolvePath, truncateBuf } from './utils.js';
 import { createTask, appendTaskOutput, settleTask } from '../agent-task.js';
-import { shellSpawnArgs } from './shell.js';
+import { shellSpawnArgs, getShell } from './shell.js';
 
 // kimi-code's timeout policy (agent-core-v2/agent/tools/os/bash/bash.ts).
 export const DEFAULT_TIMEOUT_S = 60;
@@ -127,7 +127,13 @@ function killTree(child, opts = {}) {
 
 export const spec = {
   name: 'Bash',
-  description: 'Run a shell command via pwsh. Returns combined stdout+stderr. timeout default 60s (max 300s); run_in_background detaches and returns a task id.',
+  // The shell is named at runtime, not baked in: the model is told which syntax it is writing against, and on a POSIX
+  // box "via pwsh" was both wrong and an invitation to emit PowerShell.
+  get description() {
+    const shell = getShell();
+    const which = shell ? (shell.edition === 'posix' ? 'the POSIX shell' : shell.name) : 'the system shell';
+    return `Run a shell command via ${which}. Returns combined stdout+stderr. timeout default 60s (max 300s); run_in_background detaches and returns a task id.`;
+  },
   parameters: {
     type: 'object',
     properties: {
