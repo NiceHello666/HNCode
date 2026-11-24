@@ -60,8 +60,31 @@ export function tailChars(s, max) {
   return nl >= 0 ? cut.slice(nl + 1) : cut;
 }
 
-/** Visible width of a string that may carry ANSI escapes. */
-export function visualCol(s) { return visualWidth(stripAnsi(String(s))); }
+/**
+ * Visible width of a string that may carry ANSI escapes.
+ *
+ * THE PRINTABLE-ASCII FAST PATH IS THE COMMON CASE BY A WIDE MARGIN. Most rows in a frame are plain ASCII with no
+ * escapes — the filler, the padding, a notice, the composer's own text — and for those the width IS the length.
+ *
+ * The range is 0x20..0x7e, NOT everything below 0x7f. A first attempt accepted every code point under 0x7f and broke
+ * the frame: TAB (0x09) is below the bound but `visualWidth` counts it as zero columns while `length` counts one, so a
+ * row containing a tab was measured one column too wide and `fitAnsi` padded it short — the painted screen then
+ * diverged from the frame by exactly the tab's width. Control characters in general are zero-width, so they have to
+ * fall through.
+ */
+export function visualCol(s) {
+  const str = String(s);
+  const len = str.length;
+  let i = 0;
+  while (i < len) {
+    const c = str.charCodeAt(i);
+    // Printable ASCII only: below 0x20 is a control, 0x7f is DEL, above is non-ASCII.
+    if (c < 0x20 || c > 0x7e) break;
+    i++;
+  }
+  if (i === len) return len;
+  return visualWidth(stripAnsi(str));
+}
 
 /** Wrap `text` in colour `c`, closing with a full reset. */
 export function col(text, c) { return c + String(text) + C.reset; }

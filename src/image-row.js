@@ -56,6 +56,12 @@ export function encodeImageRow(sequence, rows, cols, source) {
  */
 export function isImageRow(line) {
   if (typeof line !== 'string') return false;
+  // `indexOf` IS THE CHEAP TEST HERE, and an earlier "fast path" in front of it could not help.
+  //
+  // IMAGE_MARK starts with U+0001, a control character. A guard on "the first character is printable" therefore rejects
+  // nothing an image row can look like — every row passed the guard and still ran `indexOf`, so the check was pure
+  // overhead. `String.prototype.indexOf` in V8 is already a vectorised scan with an early first-character reject, which
+  // is what the hand-written test was trying to reproduce.
   const at = line.indexOf(IMAGE_MARK);
   return at >= 0 && at < 8 && /^\s*$/.test(line.slice(0, at));
 }

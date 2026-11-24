@@ -275,15 +275,17 @@ export function applyTrim(messages, plan, sessionId) {
 export function trimToolResults(messages, opts = {}) {
   const plan = planTrim(messages, opts.keepRatio, opts.mustKeep);
   const mediaPlan = planMediaTrim(messages, opts.mediaKeep ?? 2);
-  if (!plan.elide.length && !mediaPlan.elide.length) return null;
+  const argPlan = planArgTrim(messages, opts.argKeepTail ?? 20);
+  if (!plan.elide.length && !mediaPlan.elide.length && !argPlan.elide.length) return null;
   const applied = plan.elide.length
     ? applyTrim(messages, plan, opts.sessionId)
     : { elided: 0, elidedBytes: 0, kept: plan.keep.length, keptBytes: plan.keepBytes };
   const mediaApplied = applyMediaTrim(messages, mediaPlan, opts.sessionId);
+  const argApplied = applyArgTrim(messages, argPlan, opts.sessionId);
   return {
     ...applied,
-    elided: applied.elided + mediaApplied.elided,
-    elidedBytes: applied.elidedBytes + mediaApplied.elidedBytes,
+    elided: applied.elided + mediaApplied.elided + argApplied.elided,
+    elidedBytes: applied.elidedBytes + mediaApplied.elidedBytes + argApplied.elidedBytes,
     plan,
   };
 }
@@ -322,6 +324,77 @@ function applyMediaTrim(messages, mediaPlan, sessionId) {
       + '. Re-run the tool if you need the image again.]';
     out.elided++;
     out.elidedBytes += bytes;
+  }
+  return out;
+}
+
+
+// ---- tool CALL arguments -----------------------------------------------------
+//
+// A TOOL CALL'S ARGUMENTS ARE ALSO HISTORY, AND THEY WERE NEVER TRIMMED.
+//
+// `planTrim` only ever looked at `role: 'tool'` messages, so the ARGUMENTS of a call — the full body a `Write` sent,
+// the old and new text of an `Edit` — stayed in the history at full size forever and were re-sent on every request. On
+// a real session that measured 1.27 MB of a 2.5 MB total, with one `Write` at 53 KB.
+//
+// The model has already acted on those arguments; the file on disk is the result. What it can still need is the SHAPE
+// of the call and a way back to the full text — exactly the contract `applyTrim` gives for result bodies: spill to
+// disk, leave a pointer.
+//
+// COMPATIBILITY, which is why this only rewrites VALUES:
+//
+//   * field names, call ids and the number of calls are untouched, so a reader expecting `{id, name, args}` still
+//     sees exactly that;
+//   * `args` stays an OBJECT and every replaced value stays a STRING, so `JSON.stringify(tc.args)` is still valid
+//     arguments for the provider;
+//   * `argsJson` is left alone — dropping a field an older build wrote is how a resume breaks.
+const ELIDE_ARG_BYTES = 4096;   // an argument string longer than this is worth a pointer
+
+function planArgTrim(messages, keepTail) {
+  const idx = [];
+  if (!Array.isArray(messages)) return { elide: idx };
+  for (let i = 0; i < messages.length; i++) {
+    const m = messages[i];
+    if (!m || m.role !== 'assistant' || !Array.isArray(m.toolCalls)) continue;
+    let big = false;
+    for (const tc of m.toolCalls) {
+      if (!tc || !tc.args || typeof tc.args !== 'object') continue;
+      for (const v of Object.values(tc.args)) {
+        if (typeof v === 'string' && Buffer.byteLength(v, 'utf8') > ELIDE_ARG_BYTES) { big = true; break; }
+      }
+      if (big) break;
+    }
+    if (big) idx.push(i);
+  }
+  // Only calls OLDER than the last `keepTail` messages: the current step's arguments are what the model is reasoning
+  // about, and the previous step's are plausibly still in view.
+  const cut = messages.length - Math.max(0, keepTail);
+  return { elide: idx.filter((i) => i < cut) };
+}
+
+function applyArgTrim(messages, argPlan, sessionId) {
+  const out = { elided: 0, elidedBytes: 0 };
+  for (const i of argPlan.elide) {
+    const m = messages[i];
+    let touched = false;
+    for (const tc of m.toolCalls) {
+      if (!tc || !tc.args || typeof tc.args !== 'object') continue;
+      for (const [k, v] of Object.entries(tc.args)) {
+        if (typeof v !== 'string' || Buffer.byteLength(v, 'utf8') <= ELIDE_ARG_BYTES) continue;
+        const bytes = Buffer.byteLength(v, 'utf8');
+        const spilled = spillResult(sessionId, `arg-${tc.id || i}-${k}`, v);
+        // THE VALUE STAYS A STRING and keeps naming itself, so a reader that shows the argument still shows which
+        // field it was and where the text went.
+        tc.args[k] = spilled
+          ? `[Argument elided to save context — ${fmtBytes(bytes)} of ${tc.name || 'tool'}.${k}.\n`
+            + `Full text saved to: ${spilled.file}\n`
+            + `Read that file if you need to see exactly what was sent.]`
+          : `[Argument elided to save context — ${fmtBytes(bytes)} of ${tc.name || 'tool'}.${k}; the full text could not be saved.]`;
+        out.elidedBytes += bytes;
+        touched = true;
+      }
+    }
+    if (touched) out.elided++;
   }
   return out;
 }

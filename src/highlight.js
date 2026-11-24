@@ -938,17 +938,31 @@ export function langForPath(p) {
 function colorFor(kind) {
   switch (kind) {
     case 'keyword': return C.cyan;
+    // NUMBERS ARE NOT LITERALS, and they are not comments either.
+    //
+    // This used to return `C.heading`, the same colour `literal` gets — so `42` and `true` were one family when one is
+    // a value you scan for and the other is a word. Worse, on the dark theme `heading` (200,210,220) sits within about
+    // 30 of `comment` (184,189,191) in every channel, so a number read as dim as a comment.
+    //
+    // Orange is already the theme's "attention without alarm" accent, and it is far enough from cyan, green and the
+    // comment grey to be picked out at a glance.
+    case 'number': return C.orange;
     case 'literal': return C.heading;
     case 'string': return C.diffAddFg;
     // COMMENTS ARE DERIVED FROM THE FOREGROUND, not from the theme's grey.
     //
-    // `C.gray` is tuned to sit quiet against the PAGE background, and in several themes it lands almost exactly on
-    // the diff wash — dracula and tokyo came out at a brightness difference of 3 to 5, which is invisible. A comment
-    // is the one token that has to stay readable ON the wash, so it comes from `C.comment`, which `setTheme` mixes
-    // from the palette's foreground: quiet, but always far enough from whatever is behind it.
+    // `C.gray` is tuned to sit quiet against the PAGE background, and in several themes it lands almost exactly on the
+    // diff wash — dracula and tokyo came out at a brightness difference of 3 to 5, which is invisible. A comment is the
+    // one token that has to stay readable ON the wash, so it comes from `C.comment`: quiet, but always far enough from
+    // whatever is behind it.
     case 'comment': return C.comment;
-    case 'number': return C.heading;
-    case 'func': return C.cyan;
+    // A FUNCTION NAME IS NOT A KEYWORD.
+    //
+    // Both were `C.cyan`, which made `function` and the name after it one undifferentiated run: the reader could not
+    // tell the syntax from the thing being called, and a call site (`foo(x)`) read as if `foo` were built in.
+    // `C.spring` is the palette's second cool accent — same family as the keyword colour, so the line still reads as
+    // code, and far enough from it to separate the two roles.
+    case 'func': return C.spring;
     case 'attr': return C.orange;
     default: return '';
   }

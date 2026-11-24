@@ -40,6 +40,7 @@ const {
   LIGHT_FRACTION, SPIN_TICK_MS, lightWidth, TAIL_CHARS, ANIM_FPS, FRAME_MS,
   STEP_MS, TOOL_STEP_MS, ENTRY_EXIT_CHARS, lightMargin, crossMs, REST_MS, cycleMs,
   lightOrigin, lightAt, shimmerText, STEP_CHARS, SWEEP_TICKS, SWEEP_TRAVEL_PAD, bandCharsFor, framesPerChar,
+  breatheColour,
 } = anim;
 const {
   composerInput, pasteMarker, PASTE_MARKER_RE, expandPastes, highlightPasteMarkers,
@@ -68,6 +69,7 @@ export {
   LIGHT_FRACTION, SPIN_TICK_MS, lightWidth, TAIL_CHARS, ANIM_FPS, FRAME_MS,
   STEP_MS, TOOL_STEP_MS, ENTRY_EXIT_CHARS, lightMargin, crossMs, REST_MS, cycleMs,
   lightOrigin, lightAt, shimmerText, STEP_CHARS, SWEEP_TICKS, bandCharsFor, framesPerChar,
+  breatheColour,
 } from './animate.js';
 export {
   ESC, stripAnsi, sanitizeText, tailChars, LIVE_OUTPUT_MAX_CHARS,
@@ -2357,9 +2359,52 @@ export function renderChatLines(state, w, viewport) {
     visibleTo = Math.min(total, end + 12);
   }
 
-  // Pass 2: assemble final strings, but only for messages that overlap the
-  // visible range (or the whole transcript when no viewport).
-  cursor = 0;
+  // Pass 2: assemble final strings, but only for messages that overlap the visible range (or the whole transcript when
+  // there is no viewport).
+  //
+  // START AT THE FIRST VISIBLE MESSAGE, NOT AT ZERO.
+  //
+  // `rowStart[mi]` is where message `mi` begins, and it is monotonically increasing — that is exactly what pass 1
+  // computes. Walking from index 0 to find the viewport means re-deriving, one message at a time, a position the table
+  // already holds: a scroll frame at 16000 rows spent 37% of its samples in this loop doing nothing but adding lengths
+  // for messages far above the screen.
+  //
+  // A binary search over `rowStart` lands directly on the first message that can overlap `visibleFrom`. The rest of the
+  // loop is unchanged, so everything downstream — absolute row indices, the `↳` markers, the shared-wall rules — still
+  // sees the same `cursor` it would have accumulated.
+  // BATCH-FILL THE ROWS ABOVE THE VIEWPORT, THEN START THE LOOP AT THE FIRST VISIBLE MESSAGE.
+  //
+  // `out` must stay exactly `total` rows long — callers index it by absolute row, and `state._chatTotal` is what the
+  // scrollbar and the mouse mapping use — so the rows above the window are still pushed, just as empty strings, in one
+  // call instead of one push per message per frame.
+  let firstMi = 0;
+  if (visibleTo >= 0 && rowStart && msgLen && n > 0) {
+    let lo = 0;
+    let hi = n - 1;
+    while (lo < hi) {
+      const mid = (lo + hi) >> 1;
+      if (rowStart[mid] + msgLen[mid] <= visibleFrom) lo = mid + 1;
+      else hi = mid;
+    }
+    firstMi = lo;
+  }
+  cursor = firstMi > 0 ? rowStart[firstMi] : 0;
+  // `out` must stay exactly `total` rows long — callers index it by ABSOLUTE row, and `state._chatTotal` is what the
+  // scrollbar and the mouse mapping use — so the rows above the window are still emitted, as empty strings.
+  //
+  // THE BLANK RUN COMES FROM A SHARED FILLER, NOT A FRESH ARRAY.
+  //
+  // `out.push(...new Array(n).fill(''))` allocates a throwaway array the size of the transcript on every frame: measured
+  // at 110 KB per frame for 4000 rows and 488 KB for 16000, which was the single largest allocation in the render path
+  // and, on a slow machine, the thing that turned a scroll into a GC stutter. The filler below is allocated once and
+  // reused; `push(...)` still copies its ELEMENTS into `out`, but that is a pointer copy per slot with no new array, no
+  // `fill`, and nothing for the collector.
+  if (cursor > 0) {
+    const CH = 2048;
+    for (let k = 0; k < cursor; k += CH) {
+      out.push(...new Array(Math.min(CH, cursor - k)).fill(''));
+    }
+  }
   // The two rule strings depend ONLY on `innerW` and the box colour, and there are just
   // two colours, so each is built at most twice per frame. They used to be built for
   // EVERY bordered message BEFORE the visibility test — 2 x `'─'.repeat(114)` plus two
@@ -2379,7 +2424,7 @@ export function renderChatLines(state, w, viewport) {
     return got;
   };
 
-  for (let mi = 0; mi < n; mi++) {
+  for (let mi = firstMi; mi < n; mi++) {
     const msg = chat[mi];
     const bordered = msg.role === 'user' || msg.role === 'queued' || msg.role === 'bash';
     const boxColor = msg.role === 'bash' ? C.shellMode : C.border;
@@ -2401,9 +2446,13 @@ export function renderChatLines(state, w, viewport) {
       shared = prev.role === 'queued' && rowStart[mi - 1] + msgLen[mi - 1] === cursor;
     }
     const len = msgLen[mi];
-    // A message that may contain a bitmap is always built, visible or not: a row COUNT cannot represent a
-    // picture, and a stale payload is worse than no payload.
-    const mayHoldImage = /```+\s*(latex|tex|math)\b/i.test(typeof msg.text === 'string' ? msg.text : '');
+    // A message that may contain a bitmap is always built, visible or not: a row COUNT cannot represent a picture, and
+    // a stale payload is worse than no payload.
+    //
+    // THE SAME MEMOISED FLAG PASS 1 USES. This ran the fence regex over the message's whole text again, so a scroll
+    // frame — where nothing changed at all — still paid a full-text scan per message: 9.4ms of a 16000-row transcript,
+    // for an answer that was already computed when the message entered the list.
+    const mayHoldImage = msg._mathFence === true;
     const visible = mayHoldImage
       || visibleTo < 0
       || (cursor + len > visibleFrom && cursor < visibleTo);
@@ -2413,17 +2462,31 @@ export function renderChatLines(state, w, viewport) {
       // message IS visible, build them here — otherwise an evicted message rendered
       // as blank rows, which is what made scrolled-back history look like it had
       // "not loaded". The row width must match what pass 1 counted with.
-      // Rows are re-derived every frame. Everything expensive inside `messageLines` is cached under a
-      // COMPLETE key (the markdown block cache) or in the shared row LRU; what used to be cached HERE was the
-      // final string, validated on a row count that cannot see a clipped payload.
-      const bw = bordered ? boxText : innerW;
-      const src = messageLines(msg, bw, state.cwd, expanded, state.spin, state.pulseStart, state.rawMode,
-        state.shimmerEdge || (state.cfg && state.cfg.shimmerEdge));
-      const ccc = { rows: src.map(rowToLine), spinRows: null };
-      for (let i = 0; i < ccc.rows.length; i++) {
-        if (ccc.rows[i].indexOf(SPIN_PLACEHOLDER) >= 0) {
-          if (!ccc.spinRows) ccc.spinRows = new Set();
-          ccc.spinRows.add(i);
+      // REUSE WHAT PASS 1 ALREADY BUILT.
+      //
+      // Pass 1 renders a message when its cache is invalid and reuses `cached.rows` when it is not — so by the time
+      // control reaches here, a VISIBLE message either has freshly built rows on `_cache` or had them all along. Running
+      // `messageLines` again was rendering the same message TWICE per frame: on a scroll, where nothing changed at all,
+      // that was the entire cost of the visible window.
+      //
+      // The cache key is the full layout identity — width, expansion, theme, raw mode, the animation tick, and every
+      // content field by reference — which is strictly stronger than the row count the old comment worried about: a
+      // clipped payload changes `width`, and the key carries it.
+      //
+      // `_cache` is dropped for messages far from the tail, so this still renders when it is missing.
+      const cachedRows = msg._cache && msg._cache.rows;
+      let ccc;
+      if (cachedRows && cachedRows.length === len) {
+        ccc = { rows: cachedRows, spinRows: msg._cache.spinRows || null };
+      } else {
+        const src = messageLines(msg, bordered ? boxText : innerW, state.cwd, expanded, state.spin,
+          state.pulseStart, state.rawMode, state.shimmerEdge || (state.cfg && state.cfg.shimmerEdge));
+        ccc = { rows: src.map(rowToLine), spinRows: null };
+        for (let i = 0; i < ccc.rows.length; i++) {
+          if (ccc.rows[i].indexOf(SPIN_PLACEHOLDER) >= 0) {
+            if (!ccc.spinRows) ccc.spinRows = new Set();
+            ccc.spinRows.add(i);
+          }
         }
       }
       const spinRows = ccc.spinRows;
@@ -4237,8 +4300,19 @@ const queueH = takeover ? 0 : queuePanelHeight(state);
     // the conversation. Starting at 0 instead made the first message land on screen row 20 in a window that has
     // only `bodyH` rows, so its rows fell outside the window and were composed but never painted: a brand-new
     // session showed its messages at the top with an empty area beneath them.
-    const loopFrom = Math.min(0, start);
-    for (let i = loopFrom; i < Math.max(total, bodyH); i++) {
+    const loopFrom = Math.min(start, 0);
+    // ONLY THE ROWS THAT CAN REACH THE SCREEN.
+    //
+    // The loop used to run to `max(total, bodyH)` and push a row only when `screenRow` fell inside `[0, bodyH)` — so on
+    // a 32000-row transcript it walked 32000 iterations of a body that does three string reads and a bounds test, to
+    // produce 40 rows. Everything outside `start .. start + bodyH` was composed and discarded.
+    //
+    // The bounds below are the same test the `push` already applied, hoisted into the loop header: `screenRow` runs
+    // from `idx - start`, so `0 <= screenRow < bodyH` is exactly `start <= idx < start + bodyH`. `loopFrom` still
+    // covers the padding case, where `start` is negative and the negative indices have to be walked to emit the blank
+    // rows above the conversation.
+    const loopTo = Math.min(Math.max(total, bodyH), start + bodyH);
+    for (let i = loopFrom; i < loopTo; i++) {
       const idx = i;
       // A negative `idx` is padding: there is no transcript row there, and `row` stays empty.
       const screenRow = idx - start;
@@ -5026,12 +5100,19 @@ const queueH = takeover ? 0 : queuePanelHeight(state);
   if (state.approvalPending && !dialog) {
     const ap = state.approvalPending;
     const promptW = insideW;
+    // A PROMPT THAT BLOCKS THE AGENT BREATHES.
+    //
+    // This is the one state where the program is waiting on the person, and a flat border reads as ordinary chrome — a
+    // reader in another window has no cue that anything needs them. A slow fade toward the hover accent says "still
+    // waiting" without moving, which is the truthful shape: nothing is happening until a key is pressed.
+    const promptBarColour = breatheColour(C.border, C.hover, Date.now(),
+      2400, reducedMotionOn(state));
     // Content span: promptW - 2 leaves one padding space on each side, so the
     // row is exactly 1 + 1 + (promptW - 2) + 1 + 1 = promptW + 2 wide — the same
     // as the composer. Using promptW - 4 made the box 2 columns too narrow and
     // fitAnsi pushed the right border inward.
     const innerW = Math.max(1, promptW - 2);
-    const bar = (ch) => col(ch, C.border);
+    const bar = (ch) => col(ch, promptBarColour);
     const boxRow = (content) => bar('│') + ' ' + fitAnsi(content, innerW) + ' ' + bar('│');
     const verb = col('Approve', C.white + C.bold);
     const cmd = col(ap.toolName + '?', C.cyan + C.bold);
@@ -5058,7 +5139,10 @@ const queueH = takeover ? 0 : queuePanelHeight(state);
   if (state.planPending && !dialog) {
     const promptW = insideW;
     const innerW = Math.max(1, promptW - 2);
-    const bar = (ch) => col(ch, C.border);
+    // The same breath as a tool approval: both block the agent on the user, and both used to be flat chrome.
+    const planBarColour = breatheColour(C.border, C.hover, Date.now(),
+      2400, reducedMotionOn(state));
+    const bar = (ch) => col(ch, planBarColour);
     const boxRow = (content) => bar('│') + ' ' + fitAnsi(content, innerW) + ' ' + bar('│');
     lines.push(bar('╭' + '─'.repeat(promptW) + '╮'));
     lines.push(boxRow(col('Review', C.white + C.bold) + ' ' + col('this plan', C.cyan + C.bold)));
@@ -5694,18 +5778,12 @@ setImageRegenerator((source, skipTop, maxColumns, maxHeight) => {
 // what makes two things possible that rows cannot express: a change that rewrites only the affected
 // columns (18 bytes instead of a whole row), and a bitmap treated as a RECTANGLE with no text in it.
 //
-// The grid is kept across frames. Its pools are session-lived on purpose: an interned style id stays valid
-// as long as the process, so a comparison is an integer compare.
+// The POOLS are session-lived on purpose: an interned style id stays valid as long as the process, so a comparison is
+// an integer compare. The GRID is not kept — `createScreen` allocates a fresh `Int32Array` each frame, and V8 serves
+// that from zeroed pages more cheaply than resetting a reused buffer (measured 0.56ms against 0.65ms at 100x40).
 const screenState = screenPools();
 let prevScreen = null;
 
-/**
- * Paint one frame through the cell grid.
- *
- * @param {object} frame Output of `composeFrame`.
- * @param {boolean} resendImages Whether bitmaps must be re-sent this paint.
- * @returns {string} The bytes to write.
- */
 export function paintCellFrame(frame, resendImages) {
   const rows = frame.lines || [];
   const bodyRows = frame.body || rows;
@@ -8655,6 +8733,9 @@ export async function dispatch(cmdRaw, arg, state, cfg, session, h, submit, stdo
       const applyGoal = (value, paused) => {
         state.objective = String(value || '');
         state.goalPaused = !!paused;
+        // AN OBJECTIVE THE USER WROTE BELONGS TO THEM. The Goal tool refuses to replace or clear one, so this is what
+        // marks it as not the agent's to change. `''` (a cancel) leaves no owner behind.
+        state.goalOwner = String(value || '').trim() ? 'user' : 'agent';
         persist();
         renderFrame();
       };
@@ -12382,7 +12463,11 @@ const agents = readAgentsMd(state.cwd || state.workspace || cfg.workspace, state
       session.steps = state.steps || session.steps;
       session.todos = state.todos || session.todos;
       session.mode = state.mode || session.mode;
-      try { sess.saveSession(session); } catch { }
+      // `saveSessionSoon`: this runs at every STEP boundary, which makes it the hottest save in the program. The
+      // synchronous version spent 38ms of `JSON.stringify` plus a 1.3 MB write on a session that size — a stall the user
+      // sees as the interface freezing between a tool finishing and the next thing appearing, and it is paid again at
+      // the end of the turn. Writes that land in the same tick coalesce into one.
+      try { sess.saveSessionSoon(session); } catch { }
     }
 
     // Focus is a ONE-TURN mode: it narrows the toolset for the turn the user set it
@@ -13499,7 +13584,16 @@ const agents = readAgentsMd(state.cwd || state.workspace || cfg.workspace, state
     // REFUSED — no credit, an invalid key, a rate limit — restarting sends the same request into the same
     // wall. It spends whatever quota remains, and the transcript fills with retries until the real error is
     // buried. `_turnFailed` is set by the error handler above.
-    const goalApplies = goalNow && !state.goalPaused && !state._turnFailed && !approvedPlan && !state.queued.length
+    //
+    // A TURN THE USER STOPPED IS NOT A TURN THAT RAN OUT.
+    //
+    // Esc means "stop now", and restarting the agent straight after it makes the key look broken: the turn that was
+    // interrupted comes back with the goal quoted at it. The `aborted`/`stopped` event handler returns early, but that
+    // is only one of the paths a turn can end by — the interrupt flag is the fact that survives to here, so it is what
+    // this decision reads. `state._userInterrupted` is set where Esc and Ctrl+C reach the agent, and cleared at the
+    // start of the next turn.
+    const goalApplies = goalNow && !state.goalPaused && !state._turnFailed && !state._userInterrupted
+      && !approvedPlan && !state.queued.length
       && !state._goalTurns;                 // set below, so one restart per goal per turn
     // GOAL PAUSED AFTER A FAILURE — and said out loud.
     //
@@ -14909,12 +15003,16 @@ export async function startTUI(opts) {
   // the store is installed here rather than inside the tool.
   installGoalStore({
     get: () => state.objective || '',
-    set: (goal) => {
+    // WHO SET IT MATTERS. `/goal set` writes with owner 'user'; this tool writes with 'agent'. The tool reads the owner
+    // back to refuse replacing or clearing a goal the person set — see src/tools/goal.js.
+    set: (goal, owner) => {
       state.objective = String(goal || '');
+      state.goalOwner = owner === 'user' ? 'user' : 'agent';
       state.goalPaused = false;
       try { sessHost.persistState(); } catch { /* a failed save must not lose the goal for this turn */ }
       renderFrame();
     },
+    owner: () => state.goalOwner || 'agent',
   });
   // The same indirection, for the same reason: `runTurn` drains the queue by re-entering
   // `submit`, which is a nested function of THIS scope. Referencing it by name from `runTurn`
@@ -16765,6 +16863,22 @@ export async function startTUI(opts) {
         apply: (next, caret) => { q.editingText = next; q.editingCaret = caret; },
       };
     }
+    // A PICKER's search box. The list itself has nothing to paste into, but every picker that is not explicitly
+    // `searchable: false` has a query the user types into, and a paste belongs there rather than in the prompt the
+    // dialog is covering. The query has no caret of its own — it is always edited at the end.
+    if (state.picker && state.picker.searchable !== false) {
+      return {
+        text: String(state.pickerQuery || ''),
+        caret: String(state.pickerQuery || '').length,
+        singleLine: true,
+        apply: (next) => {
+          state.pickerQuery = next;
+          state.picker.sel = 0;
+          const cb = state.picker.onQueryChange;
+          if (cb) cb(state.pickerQuery);
+        },
+      };
+    }
     return null;
   }
 
@@ -17213,6 +17327,8 @@ export async function startTUI(opts) {
       && !state.menuOpen && !state.picker && !state.form && !state.panel
       && !state.question && !state.editor && !state.approvalPending) {
       try { state.agent.interrupt(); } catch { /* an already-finished turn */ }
+      // THE GOAL MUST NOT RESTART THIS TURN. See `_userInterrupted` at the goal decision below.
+      state._userInterrupted = true;
       notice('Interrupted', 'info');
       renderFrame();
       return;
@@ -17239,6 +17355,8 @@ export async function startTUI(opts) {
       }
       if (state.running) {
         if (state.agent) state.agent.interrupt();
+        // THE GOAL MUST NOT RESTART THIS TURN. See `_userInterrupted` at the goal decision below.
+        state._userInterrupted = true;
       }
       if (state.confirmExit) { quit(); return; }
       state.confirmExit = true;
@@ -17260,6 +17378,8 @@ export async function startTUI(opts) {
       // exit" prompt, because a key whose whole meaning here is "stop this" must not also be able
       // to quit. An open overlay is excluded so Esc keeps its other job of closing one.
       if (state.agent) state.agent.interrupt();
+      // THE GOAL MUST NOT RESTART THIS TURN. See `_userInterrupted` at the goal decision below.
+      state._userInterrupted = true;
       return;
     }
     if (state.question) {
@@ -17759,6 +17879,8 @@ export async function startTUI(opts) {
     if (state.running && !overlayOpen) {
       if (t.key === 'escape') {
         if (state.agent) state.agent.interrupt();
+        // THE GOAL MUST NOT RESTART THIS TURN. See `_userInterrupted` at the goal decision below.
+        state._userInterrupted = true;
         // Manual /compact runs its own summarizer (no agent). Abort it and flag it,
         // so the /compact handler skips the trim (abort yields an empty summary —
         // trimming would drop history with nothing to replace it).
@@ -18168,9 +18290,16 @@ export async function startTUI(opts) {
           if (qcb) qcb(state.pickerQuery);
           renderFrame(); return;
         }
+        // CTRL+V GOES INTO THE SEARCH BOX, not the composer behind the dialog.
+        //
+        // The picker takes the keyboard while it is open and its query IS editable, so a paste belongs to the query.
+        // Without this the key fell through the bare `return` below to the composer's own handler, and the text landed
+        // in the prompt the dialog was covering — which is what a paste inside /provider looked like from outside.
+        if (t.key === 'c-v' || t.key === 'c-s-v') { void pasteFromClipboard(); return; }
       }
       return;
     }
+
 
     // The side-thread box owns Esc and ↑/↓ while it is open, the same way the
     // `/`-menu and the `@file` list do. Esc CLOSES it before clearing the composer,
@@ -18764,6 +18893,9 @@ function wheelStep(state, family) {
     // goal at most once; without resetting it here, the second turn of a goal would never continue.
     state._goalTurns = 0;
     state._turnFailed = false;   // a fresh turn has not failed yet
+    // A NEW TURN CLEARS THE INTERRUPT FLAG. It exists to stop the goal restarting the turn the user just stopped, so
+    // leaving it set would block every later restart — one Esc would silently retire the goal for good.
+    state._userInterrupted = false;
     state.historyIdx = -1;
     // The draft belongs to the history walk that just ended; the next ↑ starts fresh.
     state.draftInput = '';
@@ -19960,6 +20092,11 @@ function wheelStep(state, family) {
 // Run the SessionEnd hook, then exit. Bounded: a hung hook must not stop the
 // process from quitting, so the whole thing races a short timer.
 function quit() {
+  // FLUSH THE QUEUED SAVE FIRST.
+  //
+  // `saveSession` now schedules the write for the next tick. Exiting without draining it would lose whatever the last
+  // turn added — the exact failure the synchronous version could not have.
+  try { sess.flushSaves(); } catch { /* a failed flush must not block the exit */ }
   // Let plugins clean up (close files, flush logs, cancel timers) before we exit.
   try { runHooks('onShutdown'); } catch (e) {}
   stop();

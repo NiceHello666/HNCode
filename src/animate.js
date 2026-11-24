@@ -369,3 +369,38 @@ export function framesPerChar(n, ticks = SWEEP_TICKS) {
   const BAND = bandCharsFor(n) / n;
   return (BAND * ticks) / (1 + BAND * SWEEP_TRAVEL_PAD);
 }
+
+
+/**
+ * A slow, even breath between two colours, for a surface that is WAITING on the user.
+ *
+ * The screen has exactly one state where the user is the bottleneck: a prompt that blocks the agent until they answer
+ * (a tool approval, a plan review, a question). Those boxes are currently drawn in a flat border colour, which reads as
+ * ordinary chrome — and a reader busy in another window has no cue that the program has stopped for them.
+ *
+ * NOT the travelling light. A sweep says "work is happening", which is the opposite of the truth here: nothing is
+ * happening until someone presses a key. A breath is the shape for waiting.
+ *
+ * `t` is a 0..1 triangle over the cycle, so the two ends meet exactly and there is no visible seam when it repeats.
+ * Reduced motion collapses this to the resting colour: a surface that fades in and out is motion, and the point of
+ * the setting is that there is none.
+ *
+ * @param {string} rest  the colour the surface rests at (an SGR foreground or background run)
+ * @param {string} peak  the colour it breathes toward
+ * @param {number} phaseMs milliseconds into the cycle
+ * @param {number} cycleMs length of one full breath
+ * @param {boolean} [reduced] true to return `rest` unchanged
+ */
+export function breatheColour(rest, peak, phaseMs, cycleMs = 2400, reduced = false) {
+  if (reduced || !peak) return rest;
+  // A triangle, not a sine: the two are indistinguishable at this speed and the triangle needs no trig per frame.
+  const half = cycleMs / 2;
+  const at = ((phaseMs % cycleMs) + cycleMs) % cycleMs;
+  const t = at < half ? at / half : 1 - (at - half) / half;
+  // The colours arrive as SGR runs, so the blend happens on the NUMBERS inside them rather than on the strings.
+  const a = /38;2;(\d+);(\d+);(\d+)/.exec(rest);
+  const b = /38;2;(\d+);(\d+);(\d+)/.exec(peak);
+  if (!a || !b) return rest;   // a named colour, not truecolor: nothing to interpolate, so leave it alone
+  const mix = (i) => Math.round(Number(a[i]) + (Number(b[i]) - Number(a[i])) * t);
+  return `\x1b[38;2;${mix(1)};${mix(2)};${mix(3)}m`;
+}

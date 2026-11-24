@@ -71,6 +71,13 @@ export function displayWidth(line) {
 /**
  * Paint rows of styled text into a screen.
  *
+ * NO INTERMEDIATE RUNS. This used to call `styledRuns`, which built a `{ text, styleId }` object per SGR run and
+ * sliced a fresh string for each one — a hundred-odd throwaway objects per frame for a 40-row screen, on top of the
+ * per-character `for…of` that allocates a one-character string per glyph.
+ *
+ * The loop below walks the escapes in place and copies each run straight into the cell grid, so the only allocation
+ * left is whatever `screen.set` interns. The painted cells are identical.
+ *
  * @param {import('./screen.js').Screen} screen Destination, already the right size.
  * @param {string[]} rows One string per row; extra rows are ignored, missing ones stay blank.
  * @param {import('./screen.js').StylePool} stylePool
@@ -78,21 +85,39 @@ export function displayWidth(line) {
 export function paintRows(screen, rows, stylePool) {
   screen._rowCount = rows.length;
   const n = Math.min(rows.length, screen.height);
+  const width = screen.width;
+  // A style is interned only when it CHANGES, so a run of plain text costs one lookup for the whole row.
+  let curStyle = '';
+  let curStyleId = -1;
   for (let y = 0; y < n; y++) {
     const line = rows[y];
     if (!line) continue;
     let x = 0;
-    for (const run of styledRuns(line, stylePool)) {
-      for (const ch of run.text) {
-        const w = charWidth(ch);
-        if (w === 0) continue;                 // a combining mark has no column of its own
-        if (x + w > screen.width) break;
-        screen.set(x, y, ch, run.styleId, w);
-        x += w;
+    let pos = 0;
+    let internedForRun = false;
+    SGR.lastIndex = 0;
+    for (;;) {
+      const m = SGR.exec(line);
+      const end = m ? m.index : line.length;
+      if (end > pos && x < width) {
+        if (!internedForRun) { curStyleId = stylePool.intern(curStyle); internedForRun = true; }
+        for (let i = pos; i < end; i++) {
+          const ch = line[i];
+          const w = charWidth(ch);
+          if (w === 0) continue;             // a combining mark has no column of its own
+          if (x + w > width) break;
+          screen.set(x, y, ch, curStyleId, w);
+          x += w;
+        }
       }
-      if (x >= screen.width) break;
+      if (!m) break;
+      const params = m[1];
+      if (params === '' || params === '0') curStyle = '';
+      else curStyle += `\x1b[${params}m`;
+      pos = m.index + m[0].length;
+      internedForRun = false;
     }
-    screen._mark(0, y, screen.width);
+    screen._mark(0, y, width);
   }
 }
 

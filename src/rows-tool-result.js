@@ -168,8 +168,16 @@ export function toolResultRows(msg, width, expanded) {
       const termSurface = msg.toolName === 'Bash' || msg.toolName === 'Shell';
       wrapped.forEach((t, i) => {
         if (termSurface) {
-          const surfaced = t.replace(/\x1b\[0m/g, `\x1b[0m${C.termBg}`);
-          diffRows.push({ text: C.termBg + fitAnsi(surfaced, bodyW) + C.bgReset, ind: idx === 0 && i === 0 ? pre : cont, raw: true });
+          const surfaced = t.replace(/\x1b\[0m/g, `\x1b[0m${C.termBg}${color}`);
+          // A FOREGROUND IS NOT OPTIONAL HERE.
+          //
+          // This set only the background, so the text fell back to the terminal's own default colour. Against the very
+          // dark `termBg` that is readable on a light default and invisible on a dark one — which is exactly what a
+          // dark-background terminal showed: a solid dark block with no words in it.
+          //
+          // The `\x1b[0m` inside the row closes EVERYTHING, background included, so both have to be re-asserted after
+          // each one: the wash and the colour.
+          diffRows.push({ text: C.termBg + color + fitAnsi(surfaced, bodyW) + C.bgReset, ind: idx === 0 && i === 0 ? pre : cont, raw: true });
         } else {
           diffRows.push({ text: t, ind: idx === 0 && i === 0 ? pre : cont, color });
         }

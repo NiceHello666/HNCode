@@ -10,10 +10,32 @@
 import { C } from './colors.js';
 import { renderLatex } from './latex.js';
 import { measureTex, encodeTexImage, TEX_MAX_ROWS } from './tex/index.js';
-import { render as renderMermaid, sourceBox as mermaidSourceBox, toAnsi as mermaidAnsi } from './mermaid/index.js';
 import { encodeImageRow } from './image-row.js';
 import { terminalCaps } from './term-caps.js';
 import { col, visualCol, wrapWords } from './text.js';
+
+/**
+ * Mermaid is loaded on first use, not at import.
+ *
+ * It costs ~54ms of module evaluation — the largest single item behind `latex` and `tui` — and it is only needed to draw
+ * a ```mermaid fence, which most sessions never contain. On a weak machine that is a visible slice of the blank screen
+ * before the first frame, paid for a feature the session may not use at all.
+ *
+ * `require`-style sync loading is not available in ESM, so the first mermaid block renders as its SOURCE and kicks off
+ * the load; the next frame draws the diagram. A diagram appearing one frame late is not something a reader notices,
+ * and it is strictly better than every session paying for it up front.
+ */
+let mermaidMod = null;
+let mermaidLoading = null;
+function loadMermaid() {
+  if (mermaidMod) return mermaidMod;
+  if (!mermaidLoading) {
+    mermaidLoading = import('./mermaid/index.js')
+      .then((m) => { mermaidMod = m; return m; })
+      .catch(() => { mermaidLoading = null; return null; });
+  }
+  return null;   // not ready yet; the caller falls back to the source this frame
+}
 
 /**
  * Version of the markdown renderer, part of the incremental cache key.
@@ -207,20 +229,27 @@ export function renderMdText(text, width, fg, codeFg) {
       }
       if (/^mermaid$/i.test(lang)) {
         const diagramSrc = buf.join('\n');
-        let art = null;
-        try { art = renderMermaid(diagramSrc); } catch { art = null; }
-        // Wider than the panel: the frame is the honest answer, since truncating art would cut a box in half rather
-        // than say the diagram does not fit.
-        if (art && art.width <= width) {
-          // `toAnsi` keeps the role of every span, so the frame stays dim and the connectors cyan instead of the
-          // whole diagram arriving as plain white text.
-          const coloured = mermaidAnsi(art);
-          for (const l of coloured) out.push(l);
-          continue;
+        // The module is fetched on the first mermaid block and draws from the NEXT frame; until then the source box is
+        // what the reader sees, which is the same fallback used when a diagram does not fit.
+        const mm = loadMermaid();
+        if (mm) {
+          let art = null;
+          try { art = mm.render(diagramSrc); } catch { art = null; }
+          // Wider than the panel: the frame is the honest answer, since truncating art would cut a box in half rather
+          // than say the diagram does not fit.
+          if (art && art.width <= width) {
+            // `toAnsi` keeps the role of every span, so the frame stays dim and the connectors cyan instead of the
+            // whole diagram arriving as plain white text.
+            const coloured = mm.toAnsi(art);
+            for (const l of coloured) out.push(l);
+            continue;
+          }
         }
         try {
-          for (const l of mermaidSourceBox(diagramSrc, width).plain) out.push(col(l, C.white));
-          continue;
+          if (mm) {
+            for (const l of mm.sourceBox(diagramSrc, width).plain) out.push(col(l, C.white));
+            continue;
+          }
         } catch { /* fall through to the plain code block */ }
       }
       // Opening rule: `─ <lang> ` then `─` padding out to the FULL width.

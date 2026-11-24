@@ -21,18 +21,35 @@
 let readGoal = () => '';
 /** Write the goal. Installed by startTUI. */
 let writeGoal = () => {};
+/**
+ * Who set the goal: 'user' or 'agent'.
+ *
+ * THE DISTINCTION IS THE POINT. The user's `/goal set` and the agent's `Goal {action:'set'}` write the same field, so
+ * without this the agent could silently REPLACE the objective the person gave it — and worse, `Goal clear` could wipe an
+ * objective the user was still working towards, which stops the loop for a goal nobody has met.
+ *
+ * A goal the USER set is not the agent's to change. The tool refuses both `set` and `clear` against one.
+ */
+/** Set by installGoalStore; reports who owns the objective currently stored. */
+let readOwner = () => 'agent';
 
 /**
- * @param {{get: () => string, set: (goal: string) => void}} api
+ * @param {{get: () => string, set: (goal: string, owner?: 'user'|'agent') => void, owner?: () => string}} api
  */
 export function installGoalStore(api) {
   if (api && typeof api.get === 'function') readGoal = api.get;
   if (api && typeof api.set === 'function') writeGoal = api.set;
+  if (api && typeof api.owner === 'function') readOwner = api.owner;
 }
 
 /** The current objective, or ''. */
 export function getGoal() {
   try { return String(readGoal() || '').trim(); } catch { return ''; }
+}
+
+/** Who set the current objective. */
+export function getGoalOwner() {
+  try { return String(readOwner() || 'agent'); } catch { return 'agent'; }
 }
 
 export const spec = {
@@ -72,20 +89,40 @@ export const spec = {
    */
   execute(args) {
     const action = String((args && args.action) || '').toLowerCase();
+    const owner = getGoalOwner();
     if (action === 'set') {
       const goal = String((args && args.goal) || '').trim();
       if (!goal) return 'Error: `set` needs a goal — the outcome you are working towards.';
-      try { writeGoal(goal); } catch { return 'Error: could not store the goal.'; }
+      // THE USER'S GOAL IS NOT YOURS TO REPLACE.
+      //
+      // `/goal set` and this tool write the same field, so without this check a `set` silently overwrote whatever the
+      // person had asked for — and the loop then restarted against an objective they never wrote and could not see.
+      // Refused rather than merged: two objectives are not one goal.
+      const current = getGoal();
+      if (current && owner === 'user') {
+        return `Refused: the user set this goal and it is still active.\n\nGoal: ${current}\n\n`
+          + 'Work towards it. Do not replace it — the user changes it with /goal, and only they can clear it.';
+      }
+      try { writeGoal(goal, 'agent'); } catch { return 'Error: could not store the goal.'; }
       return `Goal set: ${goal}\nThe turn loop restarts you with this until you call Goal with action clear.`;
     }
     if (action === 'status') {
       const goal = getGoal();
-      return goal ? `Goal: ${goal}` : 'No goal is set.';
+      return goal ? `Goal: ${goal}${owner === 'user' ? ' (set by the user)' : ''}` : 'No goal is set.';
     }
     if (action === 'clear') {
       const goal = getGoal();
       if (!goal) return 'No goal to clear.';
-      try { writeGoal(''); } catch { return 'Error: could not clear the goal.'; }
+      // CLEARING SOMEONE ELSE'S GOAL STOPS A LOOP THAT WAS NOT YOURS.
+      //
+      // The user set an objective and is waiting for it. Reporting it done resets `state.objective`, so the turn loop
+      // stops restarting — the work is abandoned mid-way and nothing says so. Tell the user what was finished instead;
+      // they decide whether the goal is met.
+      if (owner === 'user') {
+        return `Not cleared: this goal was set by the user, so only they can finish it.\n\nGoal: ${goal}\n\n`
+          + 'Report what you completed and stop. The user will clear the goal, or tell you to continue.';
+      }
+      try { writeGoal('', 'agent'); } catch { return 'Error: could not clear the goal.'; }
       return `Goal cleared: ${goal}\nNothing will restart this turn now.`;
     }
     return `Error: unknown action "${args && args.action}". Use set, status or clear.`;

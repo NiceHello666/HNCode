@@ -120,7 +120,30 @@ function serializableSession(session) {
   return out;
 }
 
-export function saveSession(session, storeDir) {
+// ---- saving -----------------------------------------------------------------
+//
+// SAVING IS ON THE PER-TURN PATH, SO IT MUST NOT BLOCK THE FRAME.
+//
+// `saveSession` used to do the whole thing synchronously: `JSON.stringify` of the entire history, then `writeFileSync`,
+// then `renameSync`. On a 2.5 MB session that is a visible stall between the user pressing Enter and anything appearing
+// on screen — and it is paid TWICE per turn, once for the user message and once at each step boundary
+// (`persistTurnProgress`). A slow disk multiplies all of it.
+//
+// The write is now scheduled, and calls that land in the same tick coalesce into ONE write: the session object is the
+// same reference every time, so the last call is the one worth writing.
+//
+// ORDERING IS KEPT. `serialize` runs INSIDE the scheduled callback, not at call time, so the bytes written always
+// describe the session as it is when the write happens — never an older snapshot queued behind a newer one.
+//
+// A CALLER THAT MUST HAVE THE BYTES ON DISK uses `saveSessionNow` (used on exit).
+let pendingSave = null;      // { session, storeDir }
+let pendingScheduled = false;
+
+// Declared before its first use: `writeSessionSync` records a failure, and a `let` further down the file would
+// put it in the temporal dead zone.
+let saveFailure = null;
+
+function writeSessionSync(session, storeDir) {
   if (!session || !session.id) return session;
   // Keep the live object's updatedAt in sync for callers that read it back.
   session.updatedAt = Date.now();
@@ -133,7 +156,7 @@ export function saveSession(session, storeDir) {
     // Compact JSON, no indentation. `null, 2` made the file ~30% larger for a
     // human who never reads it (the reader is JSON.parse), and the pretty-printer
     // itself costs real time on a large transcript — measured ~22ms for 5.7MB, all
-    // of it spent inserting whitespace. Saving is on the per-turn path.
+    // of it spent inserting whitespace.
     const json = JSON.stringify(serializableSession(session));
     fs.writeFileSync(tmp, json, 'utf8');
     // Atomic replace. If this throws (EXDEV etc.) the temp is cleaned up below.
@@ -158,9 +181,62 @@ export function saveSession(session, storeDir) {
   return session;
 }
 
+/**
+ * Queue a save for the next event-loop tick, coalescing with any other call that lands before then.
+ *
+ * THIS IS THE ONE THE TUI USES. `saveSession` stays synchronous because its contract is "the file is on disk when
+ * this returns", and several callers depend on that — the store-integrity tests among them. On the per-turn path that
+ * contract is what costs a visible stall: a 1.3 MB session measured 38 ms of `JSON.stringify` + `writeFileSync`
+ * between Enter and the first frame, paid twice a turn, on a slow disk much worse.
+ *
+ * The session object is the same reference every time, so the last call is the one worth writing. `serialize` runs
+ * inside the scheduled callback, never at call time, so the bytes written always describe the session as it is when
+ * the write happens.
+ */
+export function saveSessionSoon(session, storeDir) {
+  if (!session || !session.id) return session;
+  // Update the timestamp NOW so the object a caller reads back is already stamped — the same
+  // guarantee the synchronous version gave.
+  session.updatedAt = Date.now();
+  pendingSave = { session, storeDir };
+  if (!pendingScheduled) {
+    pendingScheduled = true;
+    setImmediate(() => {
+      const job = pendingSave;
+      pendingSave = null;
+      pendingScheduled = false;
+      if (job) writeSessionSync(job.session, job.storeDir);
+    });
+  }
+  return session;
+}
+
+/** Write any queued save NOW and wait for it. For exit paths, where there is no next tick. */
+export function flushSaves() {
+  const job = pendingSave;
+  pendingSave = null;
+  pendingScheduled = false;
+  if (job) writeSessionSync(job.session, job.storeDir);
+}
+
+/**
+ * Save the session, synchronously. The file is on disk when this returns.
+ *
+ * Kept as the default because that is its documented contract and callers rely on it — reading the file straight
+ * back, listing sessions right after a rename, and asserting on a write failure all need the bytes to be there. The
+ * per-turn path uses `saveSessionSoon` instead; see it for why that matters on a large session.
+ */
+export function saveSession(session, storeDir) {
+  return writeSessionSync(session, storeDir);
+}
+
+/** Save synchronously. Only for callers that cannot wait for the next tick (exit). */
+export function saveSessionNow(session, storeDir) {
+  return writeSessionSync(session, storeDir);
+}
+
 // The most recent save failure, or null. Set once per failure so a caller can report it
 // (the TUI shows a warning) without this module reaching into the UI.
-let saveFailure = null;
 
 /** The last save failure `{ at, id, detail }`, or null when saving has been clean. */
 export function lastSaveFailure() { return saveFailure; }
