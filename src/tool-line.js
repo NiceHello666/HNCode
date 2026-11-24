@@ -180,14 +180,19 @@ export function formatToolLine(msg, workspace, spin, pulseStart, shimmerEdge, ex
   // A running call counts up from its start, so a slow tool shows progress rather than looking frozen; a finished one
   // shows the total. Same slot either way, so the line does not reflow when the call lands.
   //
-  // Nothing is shown when the start is unknown — an older session, or a restored transcript — because a duration
+  // NOTHING UNDER A SECOND. `Read` and `Glob` land well inside one, and `(0s)` beside every one of them was pure noise —
+  // the figure only says something once it is long enough to be worth reading. The slot then simply stays empty, so the
+  // line does not reflow when a call does cross the second.
+  //
+  // Nothing is shown when the start is unknown either — an older session, or a restored transcript — because a duration
   // invented from "now" would be a lie that grows every frame.
   let timeStr = '';
   if (typeof msg.startAt === 'number' && msg.startAt > 0) {
     const ended = typeof msg.endedAt === 'number' && msg.endedAt > 0
       ? msg.endedAt
       : (msg.pending ? Date.now() : 0);
-    if (ended >= msg.startAt) timeStr = ' ' + col(`(${fmtDuration(ended - msg.startAt)})`, C.gray);
+    const tookMs = ended >= msg.startAt ? ended - msg.startAt : 0;
+    if (tookMs >= 1000) timeStr = ' ' + col(`(${fmtDuration(tookMs)})`, C.gray);
   }
   return col(verb, C.white) + ' ' + nameDisplay + argText + col(sizeStr, C.gray) + diffStr + timeStr;
 }
