@@ -83,6 +83,10 @@ export function visualCol(s) {
     i++;
   }
   if (i === len) return len;
+  // NO ESCAPE, NO STRIPPING. The scan above stopped on a non-ASCII or control character, which is NOT the same thing as
+  // a styled row: a row with one CJK character or one TAB fell through to `stripAnsi`, which allocated a fresh string
+  // through three regex passes just to hand it to a width walk. Only a row that actually contains ESC needs that.
+  if (str.indexOf('\x1b') < 0) return visualWidth(str);
   return visualWidth(stripAnsi(str));
 }
 
