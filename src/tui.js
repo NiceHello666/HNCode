@@ -4939,18 +4939,26 @@ const queueH = takeover ? 0 : queuePanelHeight(state);
       const tailText = state.turnStart
         ? ` [${elapsedTail(Date.now() - state.turnStart, state.turnOutputTokens)}]`
         : '';
-      const totalChars = phrase.length + tailText.length;
+      // THE STEP MARKER IS PART OF THE ROW, so it types and sweeps with it.
+      //
+      // The steady-state branch appended it separately, so the number appeared out of nowhere the instant this animation
+      // ended - the one element on the row that was not typed in with the rest. It belongs with the TAIL rather than the
+      // phrase: the phrase is what sweeps grey to orange, and a counter that changed colour would read as a status change
+      // instead of a label.
+      const stepText = state._turnSteps > 0 ? ` (step ${state._turnSteps})` : '';
+      const totalChars = phrase.length + tailText.length + stepText.length;
       const out = [];
 
       if (phase === 'type') {
-        // Type the WHOLE row (phrase + tail) left → right, all in the grey.
+        // Type the WHOLE row (phrase + tail + step) left → right, all in the grey.
         const typedCount = Math.floor(phaseT * totalChars);
         for (let i = 0; i < phrase.length; i++) {
           out.push(i < typedCount ? col(phrase[i], greyEsc) : ' ');
         }
         const tailTyped = Math.max(0, typedCount - phrase.length);
-        for (let i = 0; i < tailText.length; i++) {
-          out.push(i < tailTyped ? col(tailText[i], greyEsc) : ' ');
+        const tailAll = tailText + stepText;
+        for (let i = 0; i < tailAll.length; i++) {
+          out.push(i < tailTyped ? col(tailAll[i], greyEsc) : ' ');
         }
         // The tail is already inside `out`, so do NOT append `elapsed` here.
         lines.push(col(frame, orangeEsc) + ' ' + out.join(''));
@@ -4976,7 +4984,7 @@ const queueH = takeover ? 0 : queuePanelHeight(state);
           const b = Math.round(GREY_RGB[2] + (ORANGE_RGB[2] - GREY_RGB[2]) * tChar);
           out.push(col(phrase[i], lerpColor(r, g, b, r, g, b, 0)));
         }
-        lines.push(col(frame, orangeEsc) + ' ' + out.join('') + elapsed);
+        lines.push(col(frame, orangeEsc) + ' ' + out.join('') + elapsed + col(stepText, greyEsc));
       }
       // The cutoff has to be the SAME number as `DUR`. They were separate literals (1000 here, 1000
       // above) and changing one alone left the preview exiting early or the animation running on into
@@ -12310,7 +12318,12 @@ async function runTurn(deps, text, opts = {}, viewArg) {
     state.workMsg = WORKING_MESSAGES[Math.floor(Math.random() * WORKING_MESSAGES.length)];
     state.rounds = (state.rounds || 0) + 1;
     state._stepsBase = state.steps || 0;
-    state._turnSteps = 0;
+    // A TURN BEGINS INSIDE ITS FIRST STEP.
+    //
+    // This started at 0 and only incremented on `step_start`, so the row showed no step while the model was thinking,
+    // typing, or running its first tool call — which is most of the animation the user actually watches. The turn IS in
+    // step 1 from the moment it starts, so the counter says so and `step_start` moves it to 2 when the next round begins.
+    state._turnSteps = 1;
     // Re-base the start animation to THIS instant and paint immediately.
     // submit() set startAnim before `running` was true, so nothing could render
     // yet; by the time a frame was actually drawn the 1s animation had already
