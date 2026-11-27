@@ -50,8 +50,9 @@ Commands:
   init                          Create ~/.hncode/config.toml with defaults.
   export [id]                   Export a session to ~/.hncode/export/<id>.json.
   backup [path]                 Archive ALL state (sessions, settings, skills, plugins, memory) for another machine.
-  restore <path>                Read a backup. --workspace <dir> repoints the imported sessions;
-                                --overwrite replaces existing files; --dry-run shows what would happen.
+  restore <path>                Read a backup. Sessions are placed by the index.yml inside it.
+                                --index <file> use an edited copy; --no-index keep recorded paths;
+                                --workspace <dir> repoint every session; --overwrite; --dry-run.
   control status                Ask a running session (started with --control) for its status.
   control prompt <text>         Queue a prompt on a running session.
   control interrupt             Interrupt the running turn.
@@ -74,10 +75,10 @@ export function parseArgs(argv) {
       else { key = a.slice(2); val = null; }
       if (key === 'resume') key = 'session'; // `--resume <id>` is an alias for `--session <id>`
       if (['session', 'control', 'web'].includes(key) && val === null) { const nx = argv[i + 1]; out[key] = nx !== undefined && !nx.startsWith('-') ? (i++, nx) : true; }
-      // FLAGS THAT TAKE A VALUE. `--workspace` is here for `hncode restore --workspace <dir>`: without it the path was
+      // FLAGS THAT TAKE A VALUE. `--workspace` and `--index` are here for `hncode restore`: without them the path was
       // left in `positional` and the flag itself became `true`, so the restore would have repointed every session at the
       // string "true".
-else if (key === 'model' || key === 'prompt' || key === 'output-format' || key === 'add-dir' || key === 'timeout' || key === 'retries' || key === 'workspace') {
+else if (key === 'model' || key === 'prompt' || key === 'output-format' || key === 'add-dir' || key === 'timeout' || key === 'retries' || key === 'workspace' || key === 'index') {
         if (val === null) {
           const nx = argv[i + 1];
           // Only consume the next token if it is a real value, not another flag
@@ -312,19 +313,31 @@ async function cmdRestore(from, args = {}) {
   console.log(`  created ${new Date(manifest.createdAt).toISOString()}, ${manifest.files.length} files, ${mig.fmtBytes(bytes)}`);
   console.log(`  from   ${manifest.home || '(unknown)'}`);
   console.log(`  into   ${home}`);
+  // THE INDEX IS THE POINT OF THIS FLAG. Without it the archive's own `index.yml` is used when present, which is what
+  // makes an exported-then-edited file worth having. `--index <file>` points at a copy edited OUTSIDE the archive, and
+  // `--no-index` ignores it so the recorded paths are kept verbatim.
   const opts = {
     home,
     overwrite: !!args.overwrite,
     workspace: args.workspace,
     dryRun: !!args['dry-run'],
+    // DEFAULT IS ON: an archive's own index.yml is used unless `--no-index` says otherwise. `--index <file>` replaces it
+    // with an edited copy.
+    index: args['no-index'] ? false : true,
+    indexFile: typeof args.index === 'string' ? args.index : undefined,
   };
-  if (opts.workspace) console.log(`  sessions repointed at ${path.resolve(String(opts.workspace))}`);
-  if (opts.dryRun) console.log(`  (dry run — nothing is written)`);
+  if (opts.workspace) console.log(`  sessions repointed at ${path.resolve(String(opts.workspace))}  (--workspace overrides the index)`);
+  else if (!opts.index) console.log('  --no-index: paths stay exactly as recorded');
+  else if (opts.indexFile) console.log(`  mapping read from ${path.resolve(String(opts.indexFile))}`);
+  else console.log('  sessions are placed by the index.yml inside the archive, if it has one');
+  if (opts.dryRun) console.log('  (dry run — nothing is written)');
   let res;
   try { res = mig.readArchive(src, opts); } catch (e) { console.error(`restore failed: ${e.message}`); return 1; }
   console.log(`  ${opts.dryRun ? 'would write' : 'wrote'} ${res.written} file(s), ${mig.fmtBytes(res.bytes)}`);
   if (res.skipped) console.log(`  kept ${res.skipped} existing file(s) — pass --overwrite to replace them`);
-  if (res.sessionsRewritten) console.log(`  repointed ${res.sessionsRewritten} session(s)`);
+  if (res.mapped) console.log(`  ${res.mapped} session(s) moved by the mapping`);
+  else if (res.sessionsRewritten) console.log(`  ${res.sessionsRewritten} session(s) repointed`);
+  if (opts.index !== false && !res.indexFound) console.log('  no index.yml in the archive (an older backup) — paths left as recorded');
   for (const e of res.errors.slice(0, 5)) console.error(`  ! ${e}`);
   if (res.errors.length > 5) console.error(`  ! … and ${res.errors.length - 5} more`);
   return res.errors.length ? 1 : 0;

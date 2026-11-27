@@ -17,6 +17,7 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { execFileSync } from 'node:child_process';
+import { INDEX_ENTRY, renderIndex, parseIndex, mapPath } from './migrate-index.js';
 
 /** The root every path here is relative to. `HNCODE_HOME` wins, like everywhere else in the program. */
 // The last four bytes of an archive. Latin-1 rather than UTF-8 so a reader does not have to agree with a decoder about
@@ -165,6 +166,28 @@ export function writeArchive(out, opts = {}) {
   };
   for (const item of items) collect(path.join(home, item.name), item.name);
 
+  // THE INDEX TRAVELS AS AN ORDINARY ENTRY, so it can be extracted and edited with nothing but a text editor. It is
+  // built from the sessions that were just collected rather than from a second walk of the store.
+  const sessionIndex = [];
+  for (const f of files) {
+    const m = /^sessions\/([^/]+)\.json$/.exec(f.rel);
+    if (!m) continue;
+    let meta = { id: m[1], title: '', workspace: '' };
+    try {
+      // The file is small enough to read whole here — this is the export, not a frame.
+      const s = JSON.parse(fs.readFileSync(f.abs, 'utf8'));
+      meta = { id: s.id || m[1], title: s.title || '', workspace: s.workspace || '' };
+    } catch { /* a session that will not parse is still listed by id */ }
+    sessionIndex.push({ ...meta, file: f.rel });
+  }
+  const indexBody = Buffer.from(renderIndex({
+    home,
+    createdAt: opts.createdAt || Date.now(),
+    mapping: opts.mapping || [],
+    sessions: sessionIndex,
+  }), 'utf8');
+  files.unshift({ abs: null, rel: INDEX_ENTRY, size: indexBody.length, body: indexBody });
+
   const fd = fs.openSync(out, 'w');
   let offset = 0;
   const records = [];
@@ -173,6 +196,15 @@ export function writeArchive(out, opts = {}) {
     for (let i = 0; i < files.length; i++) {
       const f = files[i];
       records.push({ path: f.rel, size: f.size, offset });
+      // A GENERATED ENTRY HAS ITS BYTES IN MEMORY. `index.yml` is not on disk to read from, so it is written
+      // straight from the buffer the caller handed over; everything else streams from its file.
+      if (f.body) {
+        fs.writeSync(fd, f.body, 0, f.body.length);
+        offset += f.body.length;
+        if (typeof opts.onProgress === 'function') opts.onProgress(i + 1, files.length, f.rel);
+        continue;
+      }
+
       const src = fs.openSync(f.abs, 'r');
       try {
         let left = f.size;
@@ -267,11 +299,43 @@ export function readArchiveManifest(from) {
 export function readArchive(from, opts = {}) {
   const home = opts.home || hncodeHome();
   const { manifest } = readArchiveManifest(from);
-  const result = { written: 0, skipped: 0, bytes: 0, sessionsRewritten: 0, errors: [] };
+  const result = {
+    written: 0, skipped: 0, bytes: 0, sessionsRewritten: 0, errors: [],
+    indexFound: false, mapped: 0,
+  };
+  // `--workspace` still wins when given: it is the blunt "put everything here" the user typed on this command line.
   const rewriteTo = typeof opts.workspace === 'string' && opts.workspace.trim() ? path.resolve(opts.workspace.trim()) : null;
 
   const fd = fs.openSync(from, 'r');
+  const readEntry = (f) => {
+    const buf = Buffer.allocUnsafe(Math.max(1, f.size));
+    let read = 0;
+    while (read < f.size) {
+      const n = fs.readSync(fd, buf, read, f.size - read, f.offset + read);
+      if (n <= 0) break;
+      read += n;
+    }
+    return buf.subarray(0, read);
+  };
   try {
+    // THE INDEX IS READ FIRST, because it decides where every session lands. It travels as an ordinary entry, so a
+    // person can extract it, correct the paths and put it back — or hand `--index <file>` an edited copy from outside.
+    let index = null;
+    if (opts.index !== false) {
+      const entry = manifest.files.find((f) => f.path === INDEX_ENTRY);
+      if (entry) {
+        try {
+          index = parseIndex(readEntry(entry).toString('utf8'));
+          result.indexFound = !!index;
+        } catch { /* a damaged index must not stop the import */ }
+      }
+      if (typeof opts.indexFile === 'string' && opts.indexFile.trim()) {
+        try { index = parseIndex(fs.readFileSync(path.resolve(opts.indexFile.trim()), 'utf8')); result.indexFound = !!index; }
+        catch (e) { result.errors.push(`could not read --index file: ${(e && e.message) || e}`); }
+      }
+    }
+    const mapping = (index && index.mapping) || [];
+
     for (const f of manifest.files) {
       // A path in the manifest is data from a file, so it is checked before it is joined to anything: an entry holding
       // `..` would otherwise write outside the hncode home.
@@ -281,25 +345,31 @@ export function readArchive(from, opts = {}) {
         continue;
       }
       const dest = path.join(home, rel);
+      const isSession = /(^|\/)sessions\/[^/]+\.json$/.test(rel);
       if (!opts.overwrite && fs.existsSync(dest)) { result.skipped++; continue; }
-      if (opts.dryRun) { result.written++; result.bytes += f.size; continue; }
+      if (opts.dryRun) {
+        result.written++;
+        result.bytes += f.size;
+        if (isSession && (rewriteTo || mapping.length)) result.sessionsRewritten++;
+        continue;
+      }
 
       fs.mkdirSync(path.dirname(dest), { recursive: true });
-      const buf = Buffer.allocUnsafe(Math.max(1, f.size));
-      let read = 0;
-      while (read < f.size) {
-        const n = fs.readSync(fd, buf, read, f.size - read, f.offset + read);
-        if (n <= 0) break;
-        read += n;
-      }
-      // A SESSION IS REWRITTEN, NOT COPIED VERBATIM. See the note above on `workspace`.
-      if (rewriteTo && /(^|\/)sessions\/[^/]+\.json$/.test(rel)) {
+      const buf = readEntry(f);
+      // A SESSION IS REWRITTEN, NOT COPIED VERBATIM — its `workspace` is an absolute path from another machine.
+      if (isSession && (rewriteTo || mapping.length)) {
         try {
-          const s = JSON.parse(buf.subarray(0, read).toString('utf8'));
+          const s = JSON.parse(buf.toString('utf8'));
           if (s && typeof s === 'object') {
-            s.workspace = rewriteTo;
-            if (s.cwd) s.cwd = rewriteTo;
-            buf.fill(0, 0, read);
+            if (rewriteTo) {
+              s.workspace = rewriteTo;
+              if (s.cwd) s.cwd = rewriteTo;
+            } else {
+              const before = s.workspace;
+              if (s.workspace) s.workspace = mapPath(s.workspace, mapping);
+              if (s.cwd) s.cwd = mapPath(s.cwd, mapping);
+              if (s.workspace && s.workspace !== before) result.mapped++;
+            }
             const out = Buffer.from(JSON.stringify(s), 'utf8');
             fs.writeFileSync(dest, out);
             result.written++;
@@ -310,9 +380,9 @@ export function readArchive(from, opts = {}) {
           }
         } catch { /* not JSON we can rewrite; fall through and copy it as-is */ }
       }
-      fs.writeFileSync(dest, buf.subarray(0, read));
+      fs.writeFileSync(dest, buf);
       result.written++;
-      result.bytes += read;
+      result.bytes += buf.length;
       if (typeof opts.onProgress === 'function') opts.onProgress(result.written, manifest.files.length, rel);
     }
   } finally {
