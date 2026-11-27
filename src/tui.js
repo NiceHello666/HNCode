@@ -4885,13 +4885,15 @@ const queueH = takeover ? 0 : queuePanelHeight(state);
     const elapsed = state.turnStart
       ? col(` [${elapsedTail(Date.now() - state.turnStart, state.turnOutputTokens)}]`, greyEsc)
       : '';
-    // HOW FAR INTO THE TURN IT IS.
+    // HOW FAR INTO THIS TURN IT IS.
     //
     // A turn that runs for five minutes looks identical at minute one and minute four: the same phrase sweeps, the same
-    // clock counts up. The step count is the one number that shows MOVEMENT rather than elapsed time, and it is already
-    // maintained on `state.steps` — it simply was not on screen. Hidden at zero, because "step 0" beside a Working row is
-    // noise on a turn that has not reached its first tool call yet.
-    const stepNote = state.steps > 0 ? col(` step ${state.steps}`, greyEsc) : '';
+    // clock counts up. The step count is the one number that shows MOVEMENT rather than elapsed time.
+    //
+    // `_turnSteps`, NOT `state.steps`. That one is the session total and never returns to zero, so it would read
+    // "step 247" at the start of the next message — a number about the whole session rather than about the row it sits
+    // on. The per-turn counter already exists beside it (see the increment in runTurn) and starts at zero every turn.
+    const stepNote = state._turnSteps > 0 ? col(` (step ${state._turnSteps})`, greyEsc) : '';
     // The wording was chosen once at turn start; the gradient below loops
     // independently, so the phrase stays put while the colours sweep.
     //
@@ -5080,7 +5082,7 @@ const queueH = takeover ? 0 : queuePanelHeight(state);
       ORANGE_RGB[0], ORANGE_RGB[1], ORANGE_RGB[2],
       255, 90, 90, stall,
     )) : col(frame, orangeEsc);
-    lines.push(baseFrame + ' ' + out + stepNote + elapsed);
+    lines.push(baseFrame + ' ' + out + elapsed + stepNote);
     }
   }
 
