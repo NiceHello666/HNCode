@@ -9,7 +9,26 @@
 
 import { C } from './colors.js';
 import { renderLatex } from './latex.js';
-import { measureTex, encodeTexImage, TEX_MAX_ROWS } from './tex/index.js';
+// THE TYPESETTER IS LOADED WHEN A PICTURE IS ACTUALLY NEEDED.
+//
+// `measureTex` / `encodeTexImage` pull in the whole TeX layout, metrics and raster pipeline: 21ms of module evaluation,
+// which every session paid before the first frame — for a feature that (a) most replies do not use and (b) is skipped
+// entirely when the terminal cannot show a bitmap. `placeTex` returns early in that case, so the common path never
+// needs these at all.
+//
+// ESM has no synchronous require, so the first formula draws as its Unicode layout and the bitmap appears from the next
+// frame. Asking for a picture twice to get it once is better than every startup paying for it.
+let texMod = null;
+let texLoading = null;
+function loadTex() {
+  if (texMod) return texMod;
+  if (!texLoading) {
+    texLoading = import('./tex/index.js')
+      .then((m) => { texMod = m; return m; })
+      .catch(() => { texLoading = null; return null; });
+  }
+  return null;
+}
 import { encodeImageRow } from './image-row.js';
 import { terminalCaps } from './term-caps.js';
 import { col, visualCol, wrapWords } from './text.js';
@@ -525,12 +544,16 @@ export function stripMathDelimiters(tex) {
 export function placeTex(tex, room) {
   const capable = mathImageCapable();
   if (!capable) return null;
+  // Loaded on first use — see loadTex. Until it lands the caller draws the Unicode layout, which is the same fallback
+  // used when a formula cannot be placed as a picture.
+  const T = loadTex();
+  if (!T) return null;
   try {
     // Measured first, because laying out is what rejects TeX outside the subset: a raster would be paid for and then
     // thrown away.
-    const measured = measureTex(tex, { cell: capable.cell });
-    if (!measured || measured.columns > room || measured.rows > TEX_MAX_ROWS) return null;
-    const image = encodeTexImage(tex, { protocol: capable.protocol, cell: capable.cell, colour: MATH_INK });
+    const measured = T.measureTex(tex, { cell: capable.cell });
+    if (!measured || measured.columns > room || measured.rows > T.TEX_MAX_ROWS) return null;
+    const image = T.encodeTexImage(tex, { protocol: capable.protocol, cell: capable.cell, colour: MATH_INK });
     if (!image) return null;
     // THE SOURCE TRAVELS WITH THE ROW. A picture that straddles the top of the window has to be redrawn from its first
     // VISIBLE row, and only the TeX can produce that raster: cropping the encoded payload can only land on a six-pixel

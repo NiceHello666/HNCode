@@ -49,6 +49,9 @@ Commands:
   doctor [config] [path]        Environment self-check (default), or validate a config.toml.
   init                          Create ~/.hncode/config.toml with defaults.
   export [id]                   Export a session to ~/.hncode/export/<id>.json.
+  backup [path]                 Archive ALL state (sessions, settings, skills, plugins, memory) for another machine.
+  restore <path>                Read a backup. --workspace <dir> repoints the imported sessions;
+                                --overwrite replaces existing files; --dry-run shows what would happen.
   control status                Ask a running session (started with --control) for its status.
   control prompt <text>         Queue a prompt on a running session.
   control interrupt             Interrupt the running turn.
@@ -71,7 +74,10 @@ export function parseArgs(argv) {
       else { key = a.slice(2); val = null; }
       if (key === 'resume') key = 'session'; // `--resume <id>` is an alias for `--session <id>`
       if (['session', 'control', 'web'].includes(key) && val === null) { const nx = argv[i + 1]; out[key] = nx !== undefined && !nx.startsWith('-') ? (i++, nx) : true; }
-else if (key === 'model' || key === 'prompt' || key === 'output-format' || key === 'add-dir' || key === 'timeout' || key === 'retries') {
+      // FLAGS THAT TAKE A VALUE. `--workspace` is here for `hncode restore --workspace <dir>`: without it the path was
+      // left in `positional` and the flag itself became `true`, so the restore would have repointed every session at the
+      // string "true".
+else if (key === 'model' || key === 'prompt' || key === 'output-format' || key === 'add-dir' || key === 'timeout' || key === 'retries' || key === 'workspace') {
         if (val === null) {
           const nx = argv[i + 1];
           // Only consume the next token if it is a real value, not another flag
@@ -255,13 +261,90 @@ function cmdExport(id) {
   return 0;
 }
 
+// ---- migration: every piece of state, to another machine -------------------
+//
+// `hncode backup [path]`  writes one archive of everything a person made: sessions, settings, skills, plugins, memory.
+// `hncode restore <path>` reads it back, with `--workspace <dir>` to repoint the imported sessions, `--overwrite` to
+// replace what is already here, and `--dry-run` to see what would happen first.
+//
+// Debug logs and the plugin browser's Chromium profile are deliberately excluded — see EXCLUDED in src/migrate.js.
+async function cmdBackup(dest) {
+  const mig = await import('./migrate.js');
+  const home = mig.hncodeHome();
+  const items = mig.planExport(home);
+  if (!items.length) {
+    console.error(`nothing to migrate: ${home} holds none of the portable entries`);
+    return 1;
+  }
+  const total = items.reduce((n, i) => n + i.size, 0);
+  const out = dest ? path.resolve(String(dest))
+    : path.join(process.cwd(), `hncode-backup-${new Date().toISOString().slice(0, 10)}.hnb`);
+  console.log(`exporting ${items.length} item(s), ${mig.fmtBytes(total)}, from ${home}`);
+  for (const i of items) console.log(`  ${mig.fmtBytes(i.size).padStart(9)}  ${i.name}${i.kind === 'dir' ? '/' : ''}  — ${i.what}`);
+  console.log(`  (left behind: ${mig.EXCLUDED.map((e) => e.name).join(', ')})`);
+  let last = 0;
+  const res = mig.writeArchive(out, {
+    home,
+    items,
+    onProgress: (done, all) => {
+      // A line every 10% keeps a 190 MB export from looking frozen without flooding the terminal.
+      const pct = Math.floor((done / all) * 10) * 10;
+      if (pct > last) { last = pct; process.stderr.write(`  ${pct}%\r`); }
+    },
+  });
+  console.log(``);
+  console.log(`wrote ${res.path}`);
+  console.log(`  ${res.files} files, ${mig.fmtBytes(res.bytes)}`);
+  console.log(`On the other machine: hncode restore ${path.basename(res.path)}`);
+  return 0;
+}
+
+async function cmdRestore(from, args = {}) {
+  const mig = await import('./migrate.js');
+  if (!from) { console.error('restore needs an archive: hncode restore <file.hnb> [--workspace <dir>] [--overwrite] [--dry-run]'); return 1; }
+  const src = path.resolve(String(from));
+  let head;
+  try { head = mig.readArchiveManifest(src); } catch (e) { console.error(`cannot read ${src}: ${e.message}`); return 1; }
+  const { manifest } = head;
+  const home = mig.hncodeHome();
+  const bytes = manifest.files.reduce((n, f) => n + f.size, 0);
+  console.log(`archive: ${src}`);
+  console.log(`  created ${new Date(manifest.createdAt).toISOString()}, ${manifest.files.length} files, ${mig.fmtBytes(bytes)}`);
+  console.log(`  from   ${manifest.home || '(unknown)'}`);
+  console.log(`  into   ${home}`);
+  const opts = {
+    home,
+    overwrite: !!args.overwrite,
+    workspace: args.workspace,
+    dryRun: !!args['dry-run'],
+  };
+  if (opts.workspace) console.log(`  sessions repointed at ${path.resolve(String(opts.workspace))}`);
+  if (opts.dryRun) console.log(`  (dry run — nothing is written)`);
+  let res;
+  try { res = mig.readArchive(src, opts); } catch (e) { console.error(`restore failed: ${e.message}`); return 1; }
+  console.log(`  ${opts.dryRun ? 'would write' : 'wrote'} ${res.written} file(s), ${mig.fmtBytes(res.bytes)}`);
+  if (res.skipped) console.log(`  kept ${res.skipped} existing file(s) — pass --overwrite to replace them`);
+  if (res.sessionsRewritten) console.log(`  repointed ${res.sessionsRewritten} session(s)`);
+  for (const e of res.errors.slice(0, 5)) console.error(`  ! ${e}`);
+  if (res.errors.length > 5) console.error(`  ! … and ${res.errors.length - 5} more`);
+  return res.errors.length ? 1 : 0;
+}
+
 const SUBCOMMANDS = {
   'session': { 'list': cmdSessionList },
   'provider': { 'list': cmdProviderList },
   'doctor': { 'config': cmdDoctorConfig },
   'init': cmdInit,
   'export': cmdExport,
-  'control': {
+  // MIGRATION. `export` above writes ONE session as Markdown; these move the whole hncode state — every session,
+  // the settings, skills, plugins, memory — to another machine. Different jobs, so different names.
+  //
+  // BOTH ARE `{ run }` ENTRIES, NOT BARE FUNCTIONS. The dispatcher treats a second positional word as the SUBCOMMAND of
+  // the first (`session list`), and for these it is just the path — `backup /tmp/x.hnb` was being read as the subcommand
+  // `/tmp/x.hnb` of `backup`, which does not exist, so it printed the help and did nothing.
+  'backup': { run: cmdBackup },
+  'restore': { run: cmdRestore },
+  control: {
     // Subcommands pass only positional[2] to their handler, so bind the op.
     'status': (rest) => cmdControl('status', rest),
     'prompt': (rest) => cmdControl('prompt', rest),
@@ -487,6 +570,11 @@ export async function main(argv) {
     if (cmd === 'doctor' && !sub) { return await cmdDoctorEnv(); }
     const handler = SUBCOMMANDS[cmd];
     if (handler) {
+      // A `{ needsArgs, run }` entry wants the parsed flags as well as the positional path — the one thing a
+      // module-level table cannot close over, because `args` lives in this function.
+      if (typeof handler === 'object' && typeof handler.run === 'function') {
+        return await handler.run(args.positional[1], args);
+      }
       if (sub !== undefined) {
         const h2 = handler[sub];
         if (h2) return await h2(args.positional[2]);

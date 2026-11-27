@@ -149,7 +149,7 @@ import { forkOf } from './fork.js';
 // different frame, which is a mis-drawn screen rather than a stale cache.
 import { makeRowKey, rowCacheGet, rowCacheSet } from './row-cache.js';
 import { renderContextBar, segmentCaption } from './context-bar.js';
-import { runDoctor, formatDoctor } from './doctor.js';
+// `doctor` is NOT imported here: it is reached only from /doctor and loads itself on first use.
 import { profileMemory, renderMemoryProfile } from './memory-profile.js';
 import { loadKeybindings, resolveKey, describeKeybindings, readOrEmpty, writeKeybindings, normalizeKey } from './keybindings.js';
 import { describeRuns, listRuns, sendToRun, interruptRun, interruptAll, closeRun } from './subagent-control.js';
@@ -167,12 +167,27 @@ import { OTHER_LABEL, SUPPLEMENT_LABEL } from './tools/ask-user-question.js';
 import { render as renderTodos } from './tools/todo.js';
 import { renderLatex } from './latex.js';
 import { bannerLines } from './banner.js';
-import { measureTex, encodeTexImage, TEX_MAX_ROWS } from './tex/index.js';
+// The TeX raster pipeline is NOT imported here: `setImageRegenerator` below reaches it only when the terminal can show
+// a bitmap and a formula straddles the top of the window. It is 21ms of module evaluation on the path to the first
+// frame, for a feature most sessions never touch, so it loads on first use.
+let texRegen = null;
+let texRegenLoading = null;
+function loadTexRegen() {
+  if (texRegen) return texRegen;
+  if (!texRegenLoading) {
+    texRegenLoading = import('./tex/index.js')
+      .then((m) => { texRegen = m; return m; })
+      .catch(() => { texRegenLoading = null; return null; });
+  }
+  return null;
+}
 import { isImageRow, imageBytes, parseImageRow, encodeImageRow as encodeImageRowHelper } from './image-row.js';
 import { createScreen, pools as screenPools } from './screen.js';
 import { paintRows, screenToRows } from './screen-paint.js';
 import { diffScreens, placementKey, placementRows, setImageRegenerator } from './screen-diff.js';
-import { render as renderMermaid, sourceBox as mermaidSourceBox, toAnsi as mermaidAnsi } from './mermaid/index.js';
+// Mermaid is NOT imported here. It is only reachable from a ```mermaid fence, which `markdown.js` loads on first use;
+// importing it here as well would pull the whole diagram pipeline into every startup for nothing — it measured 79ms of
+// module evaluation, the single largest item on the path to the first frame.
 import { getTool, toolNames } from './tools/index.js';
 import { installGoalStore, getGoal } from './tools/goal.js';
 import { decideFromRules, describeRules, selfTestRules, describeSelfTest } from './permissions.js';
@@ -5752,7 +5767,11 @@ const SYNC_END = '\x1b[?2026l';
 setImageRegenerator((source, skipTop, maxColumns, maxHeight) => {
   const capable = mathImageCapable();
   if (!capable) return null;
-  const image = encodeTexImage(source, {
+  // Loaded on first use: until it arrives the painter keeps the existing bitmap rather than re-cropping it, which is
+  // the same frame it would have drawn anyway.
+  const T = loadTexRegen();
+  if (!T) return null;
+  const image = T.encodeTexImage(source, {
     protocol: capable.protocol,
     cell: capable.cell,
     colour: MATH_INK,
@@ -9898,11 +9917,13 @@ export async function dispatch(cmdRaw, arg, state, cfg, session, h, submit, stdo
         args.childProcess = cp;
         h.notice('Probing the provider with one real request…', 'info');
       }
-      Promise.resolve(runDoctor(args)).then((results) => {
-        h.openPanel('hncode — doctor', formatDoctor(results, { showOk: showAll, version: VERSION }));
-      }).catch((e) => {
-        appErr(`doctor failed: ${(e && e.message) || e}`);
-      });
+      // LOADED HERE, NOT AT STARTUP. The doctor reads git, disk, sessions, MCP and the terminal — several hundred
+      // lines and dependencies nothing else uses, measured at ~2ms of module evaluation on the path to the first
+      // frame. Small, but paid by every session for a command most never run.
+      import('./doctor.js')
+        .then((m) => Promise.resolve(m.runDoctor(args))
+          .then((results) => h.openPanel('hncode — doctor', m.formatDoctor(results, { showOk: showAll, version: VERSION }))))
+        .catch((e) => appErr(`doctor failed: ${(e && e.message) || e}`));
       return;
     }
     case 'memory-profile': {

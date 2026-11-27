@@ -138,6 +138,16 @@ function serializableSession(session) {
 // A CALLER THAT MUST HAVE THE BYTES ON DISK uses `saveSessionNow` (used on exit).
 let pendingSave = null;      // { session, storeDir }
 let pendingScheduled = false;
+let saveTimer = null;
+
+/**
+ * How long a queued save may wait.
+ *
+ * A turn saves once per step boundary plus once at the end, a few seconds apart — long enough that `setImmediate` never
+ * coalesced any of them. Three seconds is short enough that a crash loses at most the last step, and long enough that a
+ * burst of steps becomes one write.
+ */
+const SAVE_DELAY_MS = 3000;
 
 // Declared before its first use: `writeSessionSync` records a failure, and a `let` further down the file would
 // put it in the temporal dead zone.
@@ -199,14 +209,29 @@ export function saveSessionSoon(session, storeDir) {
   // guarantee the synchronous version gave.
   session.updatedAt = Date.now();
   pendingSave = { session, storeDir };
+  // A SHORT DELAY, NOT THE NEXT TICK.
+  //
+  // `setImmediate` coalesced calls made in one tick, which is not what a turn looks like: a turn's saves are spread
+  // across seconds (one per step boundary, then the turn end), so every one of them ran a full `JSON.stringify` plus
+  // write on the main thread — 17-38 ms each on a real session, and each one is a frame the user sees stop.
+  //
+  // Nothing reads a session file while the program is running: `loadSession` is called at startup and from `/sessions`,
+  // both by the same process that already holds the live object. So the file only has to be CURRENT ENOUGH for a crash,
+  // and a few seconds of coalescing costs at most the last couple of steps of a session that died — against a stall the
+  // user pays on every single turn.
+  //
+  // `flushSaves` (exit) and `saveSession` (callers that need the bytes now) still write immediately.
   if (!pendingScheduled) {
     pendingScheduled = true;
-    setImmediate(() => {
+    saveTimer = setTimeout(() => {
+      saveTimer = null;
+      pendingScheduled = false;
       const job = pendingSave;
       pendingSave = null;
-      pendingScheduled = false;
       if (job) writeSessionSync(job.session, job.storeDir);
-    });
+    }, SAVE_DELAY_MS);
+    // The timer must not hold the process open by itself.
+    if (saveTimer.unref) saveTimer.unref();
   }
   return session;
 }
@@ -216,6 +241,8 @@ export function flushSaves() {
   const job = pendingSave;
   pendingSave = null;
   pendingScheduled = false;
+  // The timer would fire into an empty queue anyway; clearing it keeps the process from lingering for its sake.
+  if (saveTimer) { clearTimeout(saveTimer); saveTimer = null; }
   if (job) writeSessionSync(job.session, job.storeDir);
 }
 
