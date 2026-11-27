@@ -1,0 +1,24 @@
+feat: cap the approval box, add a readable full-text panel, and show turn progress
+
+THE APPROVAL BOX COULD FILL THE TERMINAL. It printed every line of the tool's argument, so a long Bash command or a
+heredoc pushed the transcript off the top and "Enter approve / Esc reject" off the bottom with it. The content is now
+capped at a quarter of the screen and never more than ten rows, measured in RENDERED rows rather than source lines
+because one long line wraps into several. A cut is never silent: the last row says how many are left and which key shows
+them. Content that already fits is shown whole - a three-line command is not cut to satisfy a formula it fits inside.
+
+Ctrl+V OPENS THE FULL TEXT, read-only and scrollable. Every argument under its own name, multi-line values kept as lines
+(a heredoc has to look like a heredoc to be reviewed), and a footer naming the keys that decide. Esc closes the panel
+with the approval STILL PENDING, so Enter / Ctrl+A / Esc keep working afterwards - the panel does not touch
+`approvalPending`.
+
+Measured: 40-row terminal, box is 11 rows and stays under 25% of the screen; 16-row terminal, 8 rows. One to five lines
+of content is shown in full.
+
+A RUNNING TURN NOW SAYS HOW FAR IN IT IS. A five-minute turn looked identical at minute one and minute four - the same
+phrase sweeping, the same clock counting up. `step N` beside the Working row is the number that shows movement rather
+than elapsed time, and `state.steps` already held it. Hidden at zero: "step 0" on a turn that has not reached its first
+tool call is noise.
+
+A COMPACTION NOW SAYS WHERE THE CONVERSATION WENT. It drops older messages from the history and older rows from the
+screen, and the only explanation offered was a token count, which reads as deletion. The row now reports how many
+messages left the screen and that the history is summarised, still in the session file, and readable with /recap.

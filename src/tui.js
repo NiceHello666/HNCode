@@ -668,6 +668,12 @@ const STATUS_H = 1;              // status line (above the context bar)
 const INPUT_BASE_H = 3;          // input box: top border + input line + bottom border
 const MAX_MENU = 6;              // menu rows shown (matches the ~6 you see)
 const MAX_PICKER = 200;            // max picker list rows shown at once
+// How many rendered rows of a tool's arguments the approval box may print before it starts cutting.
+//
+// A Bash command, a heredoc, a long path list — any of them can be taller than the terminal, and the box used to print all
+// of it: the transcript scrolled off the top and the "Enter approve / Esc reject" row went off the bottom with it. The
+// real cap is a quarter of the screen (see the composer); this is the ceiling for a very tall terminal.
+const APPROVAL_MAX_ROWS = 10;
 // How many of the MOST RECENT messages keep their wrapped-row cache. The cache
 // makes a re-render cheap, but it holds a full copy of the message's rows and used
 // to live forever (see the eviction in renderChatLines): 8000 messages held 42000
@@ -4879,6 +4885,13 @@ const queueH = takeover ? 0 : queuePanelHeight(state);
     const elapsed = state.turnStart
       ? col(` [${elapsedTail(Date.now() - state.turnStart, state.turnOutputTokens)}]`, greyEsc)
       : '';
+    // HOW FAR INTO THE TURN IT IS.
+    //
+    // A turn that runs for five minutes looks identical at minute one and minute four: the same phrase sweeps, the same
+    // clock counts up. The step count is the one number that shows MOVEMENT rather than elapsed time, and it is already
+    // maintained on `state.steps` — it simply was not on screen. Hidden at zero, because "step 0" beside a Working row is
+    // noise on a turn that has not reached its first tool call yet.
+    const stepNote = state.steps > 0 ? col(` step ${state.steps}`, greyEsc) : '';
     // The wording was chosen once at turn start; the gradient below loops
     // independently, so the phrase stays put while the colours sweep.
     //
@@ -5067,7 +5080,7 @@ const queueH = takeover ? 0 : queuePanelHeight(state);
       ORANGE_RGB[0], ORANGE_RGB[1], ORANGE_RGB[2],
       255, 90, 90, stall,
     )) : col(frame, orangeEsc);
-    lines.push(baseFrame + ' ' + out + elapsed);
+    lines.push(baseFrame + ' ' + out + stepNote + elapsed);
     }
   }
 
@@ -5135,15 +5148,29 @@ const queueH = takeover ? 0 : queuePanelHeight(state);
     const cmd = col(ap.toolName + '?', C.cyan + C.bold);
     lines.push(bar('╭' + '─'.repeat(promptW) + '╮'));
     lines.push(boxRow(verb + ' ' + cmd));
-    if (Array.isArray(ap.detail) && ap.detail.length) {
-      for (const ln of ap.detail) {
-        // Wrap by DISPLAY width so a wide/CJK glyph cannot push the border out.
-        for (const seg of wrapWords(ln === '' ? ' ' : ln, innerW)) {
-          lines.push(boxRow(col(seg, C.gray)));
-        }
-      }
-    } else if (ap.desc) {
-      for (const seg of wrapWords(ap.desc, innerW)) lines.push(boxRow(col(seg, C.gray)));
+    // A LONG COMMAND IS CUT, NOT SPILLED.
+    //
+    // This used to print every line of the argument, and a Bash command or a heredoc could be taller than the terminal —
+    // the box pushed the transcript off screen and the approve/reject keys ran off the bottom with it.
+    //
+    // The cap is measured in RENDERED rows, not source lines, because one long line wraps into several. What is hidden is
+    // never hidden silently: the last row says how much is left and which key shows it.
+    const detailLines = Array.isArray(ap.detail) && ap.detail.length ? ap.detail : (ap.desc ? [ap.desc] : []);
+    const promptRows = [];
+    for (const ln of detailLines) {
+      for (const seg of wrapWords(ln === '' ? ' ' : ln, innerW)) promptRows.push(seg);
+    }
+    // HOW TALL MAY IT GET. Two limits, and the smaller wins: a quarter of the terminal — so the conversation behind it
+    // and the keys below it stay on screen — and an absolute cap so a very tall terminal does not turn one command into a
+    // page of its own. The 5 is the box's own fixed rows: top rule, title, key row, bottom rule, and the "… N more" line
+    // that appears once anything is cut.
+    const roomForContent = Math.max(1, Math.floor(h / 4) - 5);
+    const budget = Math.min(promptRows.length, APPROVAL_MAX_ROWS, Math.max(3, roomForContent));
+    const shown = promptRows.slice(0, budget);
+    for (const seg of shown) lines.push(boxRow(col(seg, C.gray)));
+    if (promptRows.length > shown.length) {
+      const more = promptRows.length - shown.length;
+      lines.push(boxRow(col(`… ${more} more line${more === 1 ? '' : 's'} — Ctrl+V to read the whole thing`, C.yellow)));
     }
     lines.push(boxRow(col('Enter approve | Ctrl+A approve for session | Esc reject', C.gray)));
     lines.push(bar('╰' + '─'.repeat(promptW) + '╯'));
@@ -12878,6 +12905,10 @@ const agents = readAgentsMd(state.cwd || state.workspace || cfg.workspace, state
           viewCur.addChat({
             role: 'compaction', phase: 'done',
             tokensBefore: e.before, tokensAfter: e.after, text: e.summary || '',
+            // HOW MUCH OF THE DISPLAYED TRANSCRIPT WENT WITH IT, so the row can say where the earlier conversation
+            // went. Without this the older messages simply vanished from the screen and the only explanation on offer
+            // was a token count — which reads as data loss, not as a summarised history.
+            trimmed: state._trimmedAt || 0,
           });
           state.compactionMsg = null;
           viewCur.renderSoon();
@@ -14881,6 +14912,56 @@ export async function startTUI(opts) {
     ed.caretRow = ls.length - 1;
     ed.caretCol = (ls[ls.length - 1] || '').length;
     renderFrame();
+  }
+
+  // The full text of what a tool is about to do, for the Ctrl+V panel.
+  //
+  // The approval box shows a SLICE — it must, or a long command swallows the transcript and the approve/reject keys with
+  // it. This is the other half of that bargain: everything, laid out so a person can actually judge it. Read-only on
+  // purpose; the decision stays on Enter / Ctrl+A / Esc, which still work while this is open because the panel does not
+  // touch `approvalPending`.
+  //
+  // The arguments are printed one per line with their own names, so a tool with several of them is not a blob: a `Bash`
+  // shows `command`, a `Write` shows `path` and its whole body. Long string values keep their line breaks — a heredoc has
+  // to look like a heredoc to be reviewed.
+  function approvalDetailLines(ap) {
+    if (!ap) return [];
+    const out = [];
+    const tool = String(ap.toolName || 'a tool');
+    out.push('The agent is waiting for permission to run ' + tool + '.');
+    out.push('');
+    if (ap.desc) { out.push('Summary: ' + ap.desc); out.push(''); }
+
+    // EVERY ARGUMENT, ITS OWN NAME, IN FULL.
+    const args = ap.args && typeof ap.args === 'object' ? ap.args : null;
+    if (args && Object.keys(args).length) {
+      out.push('Arguments');
+      out.push('---------');
+      for (const [k, v] of Object.entries(args)) {
+        const text = typeof v === 'string' ? v : (() => { try { return JSON.stringify(v, null, 2); } catch { return String(v); } })();
+        const lines = String(text == null ? '' : text).replace(/\r\n/g, '\n').split('\n');
+        // A short scalar rides the same line as its name; anything with structure goes underneath, indented.
+        if (lines.length === 1 && lines[0].length <= 60) {
+          out.push('  ' + k + ': ' + lines[0]);
+        } else {
+          out.push('  ' + k + ':');
+          for (const ln of lines) out.push('    ' + ln);
+        }
+      }
+      out.push('');
+    } else if (Array.isArray(ap.detail) && ap.detail.length) {
+      // No structured arguments (a tool that passed its payload some other way): fall back to the raw lines the prompt
+      // already holds.
+      out.push(...ap.detail);
+      out.push('');
+    }
+
+    out.push('---------');
+    out.push('Enter  approve once      Ctrl+A  approve for this session      Esc  reject');
+    // The panel takes the keyboard while it is open, so how to leave it matters — and that a DECISION can still be made
+    // from here is the part a person would not otherwise guess. The body is read-only: this is a review, not an edit.
+    out.push('↑/↓ scroll · PgUp/PgDn page · Esc closes the panel, then Esc again rejects');
+    return out;
   }
 
   function openPanel(title, lines) {
@@ -17308,6 +17389,15 @@ export async function startTUI(opts) {
         state.approvalPending = null;
         resolve(false);
         renderFrame();
+        return;
+      }
+      // CTRL+V OPENS THE FULL TEXT, because the box above can only show a slice of it.
+      //
+      // The panel is read-only and scrollable, and Esc closes it with the approval still pending — so the keys that decide
+      // still apply after reading. Opening it cannot disturb a picker or form: those cannot be open while a prompt is
+      // blocking the turn.
+      if (t.key === 'c-v') {
+        openPanel('What will run - ' + ap.toolName, approvalDetailLines(ap));
         return;
       }
       if (t.key === 'c-c') return;

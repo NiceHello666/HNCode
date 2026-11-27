@@ -41,6 +41,19 @@ export function compactionRows(msg, width, expanded, spin) {
     head = bullet + col('Compacting context…', C.cyan + C.bold);
   }
   const out = [{ text: head, ind: '', raw: true }];
+  // WHERE THE EARLIER CONVERSATION WENT.
+  //
+  // Compaction drops the oldest messages from the model's history AND the oldest rows from the displayed transcript, so
+  // a long conversation visibly loses its top. The row above only reported token counts, which reads as "something was
+  // deleted". This says what actually happened: the history was summarised, it is still in the session file, and
+  // `/recap` reads it back.
+  if (done) {
+    const trimmed = Number(msg.trimmed) || 0;
+    const note = trimmed > 0
+      ? `${trimmed} earlier message${trimmed === 1 ? '' : 's'} left the screen — summarised above, still in the session file (/recap to read it back)`
+      : 'the full conversation is still in the session file (/recap to read it back)';
+    out.push({ text: INDENT + col(note, C.gray), ind: INDENT, raw: true });
+  }
   if (msg.instruction) {
     out.push({ text: INDENT + col(String(msg.instruction), C.gray), ind: INDENT, raw: true });
   }
