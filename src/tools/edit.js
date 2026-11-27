@@ -4,7 +4,7 @@
 
 import fs from 'node:fs';
 import path from 'node:path';
-import { resolvePath, ensureDir, checkpointBeforeWrite } from './utils.js';
+import { resolvePath, ensureDir, checkpointBeforeWrite , similarFileHint } from './utils.js';
 import { hashStr, normalizeText } from './read.js';
 
 // Typographic quotes -> straight quotes. A model almost always emits ASCII
@@ -501,40 +501,6 @@ function buildEditDiff({ fileLines, oldText, newText, startLine, filePath }) {
 // exact case-insensitive match, same stem with a different extension, or a
 // prefix match. Saves the model a round-trip of guessing (Claude Code's
 // "Did you mean X?").
-function similarFileHint(missingPath) {
-  const dir = path.dirname(missingPath);
-  const base = path.basename(missingPath);
-  const stem = base.replace(/\.[^.]*$/, '').toLowerCase();
-  let entries;
-  try { entries = fs.readdirSync(dir); } catch { return ''; }
-  const lower = base.toLowerCase();
-  // Levenshtein distance, capped — enough to catch a typo (confg -> config).
-  const lev = (a, b) => {
-    const m = a.length, n = b.length;
-    if (Math.abs(m - n) > 2) return 3;
-    let prev = Array.from({ length: n + 1 }, (_, j) => j);
-    for (let i = 1; i <= m; i++) {
-      const cur = [i];
-      for (let j = 1; j <= n; j++) {
-        cur[j] = Math.min(prev[j] + 1, cur[j - 1] + 1, prev[j - 1] + (a[i - 1] === b[j - 1] ? 0 : 1));
-      }
-      prev = cur;
-    }
-    return prev[n];
-  };
-  let cand = entries.find((e) => e.toLowerCase() === lower);
-  if (!cand) {
-    let best = null, bestD = 3;
-    for (const e of entries) {
-      const d = lev(stem, e.replace(/\.[^.]*$/, '').toLowerCase());
-      if (d < bestD) { bestD = d; best = e; }
-    }
-    cand = best;
-  }
-  if (cand && cand !== base) return ` Did you mean "${path.join(dir, cand)}"?`;
-  return '';
-}
-
 // When old_string is not found, look for the closest line in the file and name
 // it, so the model can see what the text actually is instead of guessing.
 function nearestLineHint(content, oldStr) {

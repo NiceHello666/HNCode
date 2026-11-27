@@ -102,3 +102,42 @@ export function isProbablyTextFile(buf) {
   }
   return bad / Math.min(buf.length, 8192) < 0.10;
 }
+
+
+
+
+export function similarFileHint(missingPath) {
+  const dir = path.dirname(missingPath);
+  const base = path.basename(missingPath);
+  const stem = base.replace(/\.[^.]*$/, '').toLowerCase();
+  let entries;
+  try { entries = fs.readdirSync(dir); } catch { return ''; }
+  const lower = base.toLowerCase();
+  // Levenshtein distance, capped — enough to catch a typo (confg -> config).
+  const lev = (a, b) => {
+    const m = a.length, n = b.length;
+    if (Math.abs(m - n) > 2) return 3;
+    let prev = Array.from({ length: n + 1 }, (_, j) => j);
+    for (let i = 1; i <= m; i++) {
+      const cur = [i];
+      for (let j = 1; j <= n; j++) {
+        cur[j] = Math.min(prev[j] + 1, cur[j - 1] + 1, prev[j - 1] + (a[i - 1] === b[j - 1] ? 0 : 1));
+      }
+      prev = cur;
+    }
+    return prev[n];
+  };
+  let cand = entries.find((e) => e.toLowerCase() === lower);
+  if (!cand) {
+    let best = null, bestD = 3;
+    for (const e of entries) {
+      const d = lev(stem, e.replace(/\.[^.]*$/, '').toLowerCase());
+      if (d < bestD) { bestD = d; best = e; }
+    }
+    cand = best;
+  }
+  if (cand && cand !== base) return ` Did you mean "${path.join(dir, cand)}"?`;
+  return '';
+}
+
+

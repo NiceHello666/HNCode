@@ -1,0 +1,20 @@
+feat: Read suggests the file you meant when a path is misspelled
+
+The cheapest mistake a model makes is also the most expensive to pay for, because the failure says only ENOENT: it has to
+spend a whole extra round listing the directory to learn that `pakage.json` was meant to be `package.json`. That is a
+request, a step and on a small model sometimes a retry loop, for one character.
+
+Read now names what is actually there:
+
+    Error reading pakage.json: ENOENT ... Did you mean "package.json"?
+
+Edit already had this on its own missing-file path, with its own copy of the distance function. Rather than add a second
+one beside it, `similarFileHint` moved out of edit.js into utils.js and both tools import it - one implementation, one
+behaviour. It refuses to guess when nothing is close: a wrong suggestion sends the model after a file that does not
+exist, which is worse than saying nothing.
+
+The suggestion is a STEM match first (a wrong extension is the commonest case: README.mdx for README.md), then nearest by
+edit distance capped at 2.
+
+Measured on four shapes: README.mdx -> README.md, pakage.json -> package.json, src/indx.js -> src\index.js, and a path
+with nothing similar gets no suggestion at all.

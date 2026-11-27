@@ -1,7 +1,7 @@
 // Read tool — mirrors the hncode Read tool schema & behavior.
 
 import fs from 'node:fs';
-import { resolvePath, isProbablyTextFile } from './utils.js';
+import { resolvePath, isProbablyTextFile, similarFileHint } from './utils.js';
 
 // Normalize newlines so a text file's hash is stable regardless of CRLF/LF.
 export function normalizeText(s) {
@@ -64,7 +64,15 @@ export const spec = {
     let p;
     try { p = resolvePath(args.path, ctx); } catch (e) { return e.message; }
     let buf;
-    try { buf = fs.readFileSync(p); } catch (e) { return `Error reading ${args.path}: ${e.message}`; }
+    // A MISS TYPED PATH IS THE CHEAPEST MISTAKE TO FIX AND THE MOST EXPENSIVE TO PAY FOR.
+    // `ENOENT` alone sends the model into a directory listing to discover that `pakage.json` was meant to be
+    // `package.json` — a whole extra round trip for one character. The hint names what is actually there.
+    try {
+      buf = fs.readFileSync(p);
+    } catch (e) {
+      const hint = e && e.code === 'ENOENT' ? similarFileHint(args.path, p) : '';
+      return `Error reading ${args.path}: ${e.message}${hint}`;
+    }
     if (!isProbablyTextFile(buf)) {
       return `Cannot read: ${args.path} appears to be a binary file (use a tool suited for binary).`;
     }
