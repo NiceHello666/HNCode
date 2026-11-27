@@ -165,7 +165,8 @@ import { resolveProvider, resolveModelArg, addProvider, removeProvider, addModel
 import { pluginCommands, renderWidgets, runHooks, runPatch, runPatchSync, runKeybindsSync, pluginKeybinds, setPluginLoggerTui } from './plugin.js';
 import { OTHER_LABEL, SUPPLEMENT_LABEL } from './tools/ask-user-question.js';
 import { render as renderTodos } from './tools/todo.js';
-import { renderLatex } from './latex.js';
+// `latex.js` is NOT imported here. `renderLatex` had no call site in this file — the same dead import mermaid had, and
+// the same cost: inline-math support pulled into every startup for a function nothing reached. `markdown.js` owns it.
 import { bannerLines } from './banner.js';
 // The TeX raster pipeline is NOT imported here: `setImageRegenerator` below reaches it only when the terminal can show
 // a bitmap and a formula straddles the top of the window. It is 21ms of module evaluation on the path to the first
@@ -202,7 +203,8 @@ import { packSession, serializeTeleport, parseTeleport, unpackInto, teleportFile
 import { buildSteps, renderStep, replaySummary, stateAtStep } from './rollout.js';
 import { renderBtwPanel, btwPanelHeight } from './btw-panel.js';
 import { SessionHub } from './session-hub.js';
-import { startWebServer } from './web.js';
+// `web.js` is NOT imported here. It is the `/web` HTTP and SSE server — 70ms of module evaluation, and the only thing
+// that reaches it is `/web` itself. Every session paid that before its first frame for a feature most never start.
 import { FAMILIES, TASKS, buildPreset, presetLabel } from './prompt-presets.js';
 import { tuiView } from './session-view.js';
 import { SessionCore } from './session-core.js';
@@ -5678,9 +5680,17 @@ const queueH = takeover ? 0 : queuePanelHeight(state);
   const bodyOrigin = state && state._bodyScreenTop != null
     ? { screenTop: state._bodyScreenTop, bodyTop: state._bodyTop != null ? state._bodyTop : 0 }
     : null;
-  for (let i = 0; i < body.length; i++) {
-    if (!isImageRow(body[i])) continue;
-    const parsed = parseImageRow(body[i]);
+  // ONLY THE WINDOW CAN HOLD A PICTURE.
+  //
+  // `body` is `total` rows long so callers can address it by absolute row, but only the viewport has content: a
+  // 1000-row transcript in a 40-row window is 956 empty strings. Walking all of them ran the marker search a thousand
+  // times a frame to look for images that could only be in the forty on screen.
+  const bodyScanEnd = Math.min(body.length, viewportTop + bodyH);
+  for (let i = viewportTop; i < bodyScanEnd; i++) {
+    const bodyRow = body[i];
+    if (!bodyRow) continue;
+    if (!isImageRow(bodyRow)) continue;
+    const parsed = parseImageRow(bodyRow);
     if (!parsed) continue;
     if (bodyOrigin) {
       const screenRow = bodyOrigin.screenTop + (i - bodyOrigin.bodyTop);
@@ -19578,6 +19588,8 @@ function wheelStep(state, family) {
 
 
 
+    // Brought in on first use: see the note at the top of this file.
+    const { startWebServer } = await import('./web.js');
     const srv = await startWebServer({
       hub,
       bindIp: bindIp || '127.0.0.1',
