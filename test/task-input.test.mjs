@@ -149,7 +149,12 @@ test('an interactive task is NOT detached', () => {
   // interactive run would be deaf and mute. The source is pinned because the failure is invisible —
   // the command "succeeds" and prints nothing.
   const src = fs.readFileSync(path.resolve('src/agent.js'), 'utf8') && fs.readFileSync(path.resolve('src/tools/bash.js'), 'utf8');
-  assert.match(src, /detached: !args\.interactive/, 'the spawn opts out of detach when interactive');
+  // The guard got STRONGER: Windows never detaches now, because a detached process there returns exit 0 and no
+  // output for a PLAIN background command too - measured with pwsh, and it made every Ctrl+B task report success with
+  // an empty transcript. What must never regress is that an interactive run is attached; the Windows rule covers it.
+  assert.match(src, /detached: canDetach/, 'the spawn decides detach through canDetach');
+  assert.match(src, /const canDetach = process\.platform !== 'win32' && !args\.interactive;/,
+    'canDetach keeps interactive runs attached, and all Windows runs attached');
 });
 
 test('the shell is not started with -NonInteractive', () => {

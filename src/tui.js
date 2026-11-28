@@ -13458,21 +13458,45 @@ const agents = readAgentsMd(state.cwd || state.workspace || cfg.workspace, state
     state.agent = agent;
     if (agent.ctx && agent.ctx.tasks) state.tasks = agent.ctx.tasks;
     try { viewCur.pubStatusField('tasks', Object.values(state.tasks || {}).map((t) => ({ id: t.id || t.taskId || '', kind: t.kind || 'bash', status: t.status || 'running', summary: t.summary || t.description || t.prompt || '', startedAt: t.startedAt || t.startAt || 0, agentId: t.agentId || '' }))); } catch { /* best-effort */ } 
-    // A background subagent (Agent {run_in_background:true}, or an AgentSwarm)
-    // finishes AFTER the turn that launched it returned. The tools call
-    // `ctx._onBackgroundTaskDone`, which nothing installed, so the parent was
-    // never told: its result sat in the task store until the user opened /tasks.
-    // Post it into the transcript when it lands (mirroring how a queued message
-    // arrives after the turn), so the parent model sees it on its next turn.
+    // A BACKGROUND TASK CAN FINISH AFTER THE TURN THAT STARTED IT.
+    //
+    // `Agent {run_in_background:true}`, an AgentSwarm, and a Bash command put in the background with Ctrl+B all outlive
+    // the turn. This callback is the only thing that tells anyone: it is captured by `createTask` (a settling tool has no
+    // ctx to look it up on) and fired by `settleTask` once the task reaches a terminal state.
+    //
+    // It does two jobs. The card below tells the PERSON, and the `submit` after it tells the MODEL — a result nobody
+    // reads is work that may as well not have run, and without the second half the agent only found out when the user
+    // happened to send another message.
     if (agent.ctx) {
       agent.ctx._onBackgroundTaskDone = (task) => {
         if (!task) return;
-        // kimi-style lifecycle card: bullet colour by phase, a headline naming
-        // the kind (agent / bash / question task) and what happened, and a dim
-        // detail line. The task's conclusion is kept as the expandable body.
+        // kimi-style lifecycle card: bullet colour by phase, a headline naming the kind (agent / bash / question
+        // task) and what happened, and a dim detail line. The task's conclusion is kept as the expandable body.
         const card = backgroundTaskCard(task);
         const body = String(task.output || '').trim();
         viewCur.addChat({ role: 'bg_task', card, text: body });
+
+        // AND THEN LET THE MODEL SEE IT.
+        //
+        // The card above tells the PERSON. The model was never told: the result sat in `state.tasks` until the user
+        // happened to send another message, by which time the turn that launched the task was long over — and a
+        // background task nobody reads is work that may as well not have run.
+        //
+        // A turn that is STILL RUNNING picks the result up through its own step loop, so nothing happens here for it.
+        // A turn that has already ENDED is the case this exists for: the conclusion becomes the next turn's opening
+        // message, so the agent carries on without waiting to be prompted.
+        if (state.running) return;
+        const label = task.status === 'completed' ? 'finished' : String(task.status || 'finished');
+        const id = task.taskId || task.id || '';
+        const excerpt = body ? body.split('\n').slice(0, 40).join('\n') : '(no output)';
+        void sessHost.submit([
+          `A background task you started has ${label}${id ? ': ' + id : ''}.`,
+          '',
+          'Its output:',
+          excerpt,
+          '',
+          'Read it and decide what to do next. If it finished, summarise the result for the user; if it failed, say why and what you will change.',
+        ].join('\n'));
       };
     }
     await agent.run();
@@ -18045,6 +18069,27 @@ export async function startTUI(opts) {
       state.expanded = !state.expanded;
       notice(state.expanded ? 'Expanded tool output' : 'Collapsed tool output', 'info');
       renderFrame();
+      return;
+    }
+
+    // CTRL+E SHOWS THE WHOLE THING, IN A SCROLLABLE VIEWER.
+    //
+    // Ctrl+O above is a glance: it expands what is on screen and stops at a cap, because a 3000-line command in the
+    // transcript buries the conversation it belongs to. That cap is the right default and the wrong answer for the one
+    // time someone actually needs to read the output — so this opens a panel over the transcript instead, with no cap and
+    // no effect on the scroll position underneath.
+    //
+    // It works on whatever result is NEWEST, whether or not that result was cut: the key should not depend on the reader
+    // having noticed a "more lines" hint first.
+    if (t.key === 'c-e' && !state.editor) {
+      const target = [...state.chat].reverse().find((m) => m
+        && (m.role === 'tool_result' || m.role === 'assistant')
+        && String(m.text || '').trim());
+      if (!target) { notice('Nothing to show yet', 'info'); renderFrame(); return; }
+      const title = target.role === 'tool_result'
+        ? `Output — ${target.toolName || 'tool'}`
+        : 'Reply';
+      openPanel(title, String(target.text || '').replace(/\r\n/g, '\n').split('\n'));
       return;
     }
 

@@ -372,21 +372,27 @@ function spawnBackground(args, cwd, ctx) {
   // still read it. (In the TUI the parent rarely exits, but headless -p mode
   // does, and a background job should outlive the prompt.)
   //
-  // AN INTERACTIVE RUN CANNOT BE DETACHED. Measured on Windows: `detached: true` with piped stdout
-  // returns exit 0 and NO output, while the same command not detached returns its output normally — the
-  // detached process gets no working pipe back to us. Interactive needs that pipe in both directions, so
-  // it stays attached. The trade: it will not outlive the parent, which is the same lifetime its stdin
-  // already has.
+  // AND NOT ON WINDOWS AT ALL. The note above says `detached: true` with piped stdout returns exit 0 and no output; the
+  // same is true for a NON-interactive background command, which is the ordinary Ctrl+B case. Measured with pwsh:
+  //
+  //     detached=false  "exit 3"      -> exit 3, output intact
+  //     detached=true   "exit 3"      -> exit 0, output EMPTY
+  //     detached=true   "echo hello"  -> exit 0, output EMPTY
+  //
+  // So on Windows the process stays attached: its output and its exit code are the whole point of a background task, and
+  // a task that reports success whatever happened is worse than one that dies with its parent. Elsewhere the detach is
+  // what makes a job outlive headless `-p`, so it is kept.
+  const canDetach = process.platform !== 'win32' && !args.interactive;
   let shell;
   try { shell = shellSpawnArgs(command, { interactive: args.interactive }); } catch (e) { return `Error: ${e.message}`; }
   const child = cp.spawn(shell.bin, shell.args, {
-    cwd, detached: !args.interactive, stdio: [args.interactive ? 'pipe' : 'ignore', 'pipe', 'pipe'], env: { ...process.env },
+    cwd, detached: canDetach, stdio: [args.interactive ? 'pipe' : 'ignore', 'pipe', 'pipe'], env: { ...process.env },
   });
   const task = createTask(ctx, 'process', {
     description: args.description || args.command,
     command: args.command,
     pid: child.pid,
-    detached: !args.interactive,
+    detached: canDetach,
   });
   // The stdin pipe, when the caller asked for one. Kept on the TASK so `TaskInput` can reach it from a
   // task id alone — a tool receives an id, not a handle. Only `interactive` gets here, so a plain

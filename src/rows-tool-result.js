@@ -113,7 +113,7 @@ export function toolResultRows(msg, width, expanded) {
         // A DEAD-END Ctrl+O IS WORSE THAN NO HINT. Collapsed it expands; already expanded there is nothing left to
         // reveal, so the line says how much was withheld instead of inviting a key that would do nothing.
         text: col(expanded
-          ? `… (${total - emitted} more lines not shown; the full diff went to the model)`
+          ? `… (${total - emitted} more lines not shown; press ctrl+e for the whole thing)`
           : `… (${total - emitted} more lines, ctrl+o to expand)`, C.gray),
         ind: cont, raw: true,
       });
@@ -202,7 +202,7 @@ export function toolResultRows(msg, width, expanded) {
       // spilled, the file it was written to).
       const rest = visible.length - MAX_RESULT_LINES;
       const text = expanded
-        ? `… ${rest} more line${rest === 1 ? '' : 's'} not shown; the full output went to the model (ctrl+o to collapse)`
+        ? `… ${rest} more line${rest === 1 ? '' : 's'} not shown; ctrl+o collapses, ctrl+e shows all of it`
         : `… ${rest} more lines, ctrl+o to expand`;
       diffRows.push({
         text,
