@@ -4893,7 +4893,7 @@ const queueH = takeover ? 0 : queuePanelHeight(state);
     // `_turnSteps`, NOT `state.steps`. That one is the session total and never returns to zero, so it would read
     // "step 247" at the start of the next message — a number about the whole session rather than about the row it sits
     // on. The per-turn counter already exists beside it (see the increment in runTurn) and starts at zero every turn.
-    const stepNote = state._turnSteps > 0 ? col(` (step ${state._turnSteps})`, greyEsc) : '';
+    const stepNote = col(` (step ${Math.max(1, state._turnSteps || 0)})`, greyEsc);
     // The wording was chosen once at turn start; the gradient below loops
     // independently, so the phrase stays put while the colours sweep.
     //
@@ -4945,7 +4945,7 @@ const queueH = takeover ? 0 : queuePanelHeight(state);
       // ended - the one element on the row that was not typed in with the rest. It belongs with the TAIL rather than the
       // phrase: the phrase is what sweeps grey to orange, and a counter that changed colour would read as a status change
       // instead of a label.
-      const stepText = state._turnSteps > 0 ? ` (step ${state._turnSteps})` : '';
+      const stepText = ` (step ${Math.max(1, state._turnSteps || 0)})`;
       const totalChars = phrase.length + tailText.length + stepText.length;
       const out = [];
 
@@ -12320,10 +12320,13 @@ async function runTurn(deps, text, opts = {}, viewArg) {
     state._stepsBase = state.steps || 0;
     // A TURN BEGINS INSIDE ITS FIRST STEP.
     //
-    // This started at 0 and only incremented on `step_start`, so the row showed no step while the model was thinking,
-    // typing, or running its first tool call — which is most of the animation the user actually watches. The turn IS in
-    // step 1 from the moment it starts, so the counter says so and `step_start` moves it to 2 when the next round begins.
-    state._turnSteps = 1;
+    // The counter starts at 0 and `step_start` raises it — that event fires once before EVERY model call, including the
+    // first one, so the first call already lands on 1. Starting it at 1 and letting that event increment it again made
+    // every turn open on "step 2" before the model had done anything at all.
+    //
+    // Zero here, plus one where it is displayed: the turn is visibly in its first step from the moment it starts, and the
+    // number only advances when a new round actually begins.
+    state._turnSteps = 0;
     // Re-base the start animation to THIS instant and paint immediately.
     // submit() set startAnim before `running` was true, so nothing could render
     // yet; by the time a frame was actually drawn the 1s animation had already
