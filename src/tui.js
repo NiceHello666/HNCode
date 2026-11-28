@@ -13836,6 +13836,26 @@ export async function startTUI(opts) {
   // hands back a new object, and every later save would otherwise keep writing the old one —
   // which is how /move left the session stamped with the directory it was moved away from.
   let session = opts.session;
+  // A session whose history could not be read back (see session-recover.js) arrives marked
+  // and empty. Continuing into it would show a blank conversation under the old title and
+  // then SAVE that blank over its file. Say so, and move on to a fresh session instead.
+  if (session && session._unrecoverable) {
+    process.stderr.write(
+      `hncode: session ${session.id} has no readable history (its file is damaged).\n`
+      + 'hncode: starting a new session; the old file is untouched.\n',
+    );
+    session = null;
+  }
+  if (!session) {
+    session = {
+      id: sess.newId(),
+      title: '',
+      workspace: path.resolve(process.cwd()),
+      model: cfg.model,
+      createdAt: Date.now(),
+      messages: [],
+    };
+  }
 
   // HOUSEKEEPING: drop prompt-history files whose session no longer exists. One file is written per
   // conversation and nothing else removes them, so without this the directory grows by a file per session with

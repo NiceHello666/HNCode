@@ -6,6 +6,7 @@ import os from 'node:os';
 import path from 'node:path';
 import fs from 'node:fs';
 import crypto from 'node:crypto';
+import { recoverSessionFile } from './session-recover.js';
 
 const DEFAULT_DIR = () => path.join(os.homedir(), '.hncode', 'sessions');
 function dir(custom) { return custom || process.env.HNCODE_SESSIONS_DIR || DEFAULT_DIR(); }
@@ -113,6 +114,10 @@ function serializableSession(session) {
   for (const k of Object.keys(session)) {
     if (k in out) continue;
     if (k === 'messages' || k === 'transcript') continue;
+    // `_`-prefixed keys are runtime markers, never session data. `_unrecoverable` says the
+    // file could not be read back; persisting it would make the NEXT load treat a healthy
+    // session as damaged.
+    if (k.startsWith('_')) continue;
     out[k] = session[k];
   }
   out.messages = Array.isArray(session.messages) ? session.messages : [];
@@ -202,12 +207,17 @@ function stringifySession(session) {
   const shallow = { ...obj, messages: PLACE };
   if (Array.isArray(obj.transcript)) shallow.transcript = PLACE;
   const text = JSON.stringify(shallow);
+  // A REPLACEMENT STRING IS NOT LITERAL. `String.replace` expands `$&`, `` $` ``, `$'` and
+  // `$$` inside it, so a message that merely MENTIONED `sed s/x/$&/g` spliced a copy of the
+  // session's own metadata head into its own JSON — every save corrupted the file, the file
+  // would not parse, and the next save wrote an empty history over it. Returning the value
+  // from a function is the only form that is not expanded.
   const messagesJson = '[' + messages.map((m) => (m && typeof m === 'object' ? jsonOf(m) : JSON.stringify(m))).join(',') + ']';
-  let out = text.replace(JSON.stringify(PLACE), messagesJson);
+  let out = text.replace(JSON.stringify(PLACE), () => messagesJson);
   if (Array.isArray(obj.transcript)) {
     const tr = obj.transcript;
     const trJson = '[' + tr.map((m) => (m && typeof m === 'object' ? jsonOf(m) : JSON.stringify(m))).join(',') + ']';
-    out = out.replace(JSON.stringify(PLACE), trJson);
+    out = out.replace(JSON.stringify(PLACE), () => trJson);
   }
   return out;
 }
@@ -342,6 +352,19 @@ export function loadSession(id, storeDir) {
   try {
     return JSON.parse(text);
   } catch (e) {
+    // A file that no longer parses is RECOVERED, not written off. An older hncode wrote
+    // session files through a `String.replace`, and a message that happened to contain
+    // `$&` or `` $` `` spliced a copy of the file's own metadata into it — which then
+    // failed to parse here, fell back to the metadata head in `latestSession`, and was
+    // overwritten with an empty history by the next save. See session-recover.js.
+    const fixed = recoverSessionFile(file, text);
+    if (fixed && fixed.session) {
+      logSessionError('recover', `${id}: ${e.message} -> ${fixed.report.route}, `
+        + `${fixed.report.kept} kept, ${fixed.report.dropped} dropped`
+        + (fixed.wrote ? `, original kept as ${fixed.backup}` : ', file NOT rewritten'));
+      cacheFor(storeDir, false)?.delete(file);
+      return fixed.session;
+    }
     // FIX: a corrupt file is NOT the same as a missing session. Log it so the
     // user can find the damaged file instead of silently "losing" the session.
     logSessionError('parse', `${id}: ${e.message} (file: ${file})`);
@@ -378,7 +401,14 @@ export function latestSession(cwd, storeDir, opts = {}) {
   if (loaded) return loaded;
   // If the full load failed (corrupt), fall back to the metadata we already have
   // so the caller still gets an id/title/workspace instead of null.
-  return pick.meta;
+  //
+  // It is a LAST RESORT, not a session: it carries no `messages`, and the TUI's next save
+  // would write that emptiness to disk. Marked so the caller can refuse the resume instead
+  // — three real conversations were lost this way, each one an apparently healthy session
+  // with 700 rounds and no history.
+  return pick.meta && typeof pick.meta === 'object'
+    ? { ...pick.meta, messages: [], _unrecoverable: true }
+    : pick.meta;
 }
 
 // Enumerate the session directory, reading each file's metadata head ONCE per

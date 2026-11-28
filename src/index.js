@@ -421,6 +421,13 @@ async function runPrompt({ cfg, prompt, format, session, modelArg, timeoutSecond
   // history and the system message, so a fresh session answered nothing the
   // user asked and a resumed one answered nothing new.
   messages.push({ role: 'user', content: prompt });
+  if (session && session._unrecoverable) {
+    process.stderr.write(
+      `hncode: session ${session.id} has no readable history (its file is damaged). `
+      + 'Starting a new session; the old file is untouched.\n',
+    );
+    session = null;
+  }
   const saved = session || { id: sess.newId(), title: prompt.slice(0, 60), workspace: path.resolve(process.cwd()), model: cfg.model, createdAt: Date.now(), messages: [] };
   const tracker = createRunTracker();
   const startedAt = Date.now();
@@ -526,6 +533,18 @@ function loadOrCreateSession(opts, cfg) {
     // --continue: get the most recent session for THIS directory that has messages.
     // Empty shells are created on every launch, so we skip them to find real conversations.
     session = sess.latestSession(process.cwd(), undefined, { skipEmpty: true });
+  }
+  // A session whose file could not be parsed OR recovered comes back marked, with no
+  // messages. Resuming it would present an empty conversation that still looks like the
+  // old one, and the first save would write that emptiness over the file. Start fresh and
+  // say why, rather than letting the user type into a session that has already lost its
+  // history. The damaged file stays on disk, so nothing is destroyed by refusing.
+  if (session && session._unrecoverable) {
+    process.stderr.write(
+      `hncode: session ${session.id} has no readable history (its file is damaged). `
+      + 'Starting a new session; the old file is untouched.\n',
+    );
+    session = null;
   }
   if (!session) {
     session = { id: sess.newId(), title: '', workspace: path.resolve(process.cwd()), model: cfg.model, createdAt: Date.now(), messages: [] };
