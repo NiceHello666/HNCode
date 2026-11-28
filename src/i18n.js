@@ -1198,6 +1198,11 @@ export const NOTICE_ZH = {
   " from the repository": " 来自仓库",
   "Enter removes the local copy of ": "Enter 删除本地副本 ",
   "loaded plugin — switch to the On disk tab to remove it": "已加载的插件，切到“在磁盘上”标签才能删除",
+  "Model: ": "模型：",
+  "(no model)": "（无模型）",
+  "Tool results dominate — /compact or a narrower search would free the most.": "工具结果占了大部分，用 /compact 或缩小搜索范围最有效",
+  "The system prompt is large — trim AGENTS.md / personal prompt.": "系统提示很大，精简 AGENTS.md 或个人偏好",
+  "Over 80% — auto-compaction is close. /compact now to keep control.": "已超过 80%，快触发自动压缩了，用 /compact 主动控制",
 };
 
 // The UI's active language, shared with the render modules (rows, panels, file tree)

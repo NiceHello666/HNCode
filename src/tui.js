@@ -3780,10 +3780,10 @@ export function startupChat(width, opts = {}) {
   // the two compete.
   rows.push(line(C.bold + C.heading + name + C.reset + ' ' + C.gray + 'v' + version + C.reset));
 
-  const model = modelLabel(cfg) || '(no model)';
+  const model = modelLabel(cfg) || uiText('(no model)');
   // The effort is only meaningful when the model reasons; showing "off" for a model that never thinks is noise.
   const effort = cfg.reasoning && cfg.effort && cfg.effort !== 'off' ? ` (${cfg.effort})` : '';
-  rows.push(line(C.gray + 'Model: ' + model + effort + C.reset));
+  rows.push(line(C.gray + uiText('Model: ') + model + effort + C.reset));
 
   const dir = opts.workspace || cfg.workspace || '';
   if (dir) rows.push(line(C.gray + dir + C.reset));
@@ -8975,13 +8975,15 @@ export async function dispatch(cmdRaw, arg, state, cfg, session, h, submit, stdo
       h.openPanel(title, [
         ...panel,
         tr('tui.help.skills', 'Skills'),
-        `  /${SKILL_PREFIX}<name>     ${tr('tui.help.skillRun', 'run an installed skill (Tab completes the name)')}`,
-        `  /import-skill <file.md | owner/repo>  ${tr('tui.help.skillImport', 'add a skill from a file, or install a repository of them')}`,
-        `  /skills                  ${tr('tui.help.skillOpen', 'open the skill manager (Tab switches tabs)')}`,
-        `  /skills install <name>   ${tr('tui.help.skillInstall', 'download one from the repo, without the panel')}`,
-        `  /skills remove <name>    ${tr('tui.help.skillRemove', 'delete the local copy')}`,
-        `  /plugins                 ${tr('tui.help.pluginOpen', 'open the plugin manager')}`,
-        `  /plugins install <name>  ${tr('tui.help.pluginInstall', 'download one from the repo')}`,
+        // A fixed command column keeps the descriptions aligned even though one command
+        // is much longer than the rest; hand-spaced strings drifted as commands changed.
+        `  ${`/${SKILL_PREFIX}<name>`.padEnd(38)} ${tr('tui.help.skillRun', 'run an installed skill (Tab completes the name)')}`,
+        `  ${'/import-skill <file.md | owner/repo>'.padEnd(38)} ${tr('tui.help.skillImport', 'add a skill from a file, or install a repository of them')}`,
+        `  ${'/skills'.padEnd(38)} ${tr('tui.help.skillOpen', 'open the skill manager (Tab switches tabs)')}`,
+        `  ${'/skills install <name>'.padEnd(38)} ${tr('tui.help.skillInstall', 'download one from the repo, without the panel')}`,
+        `  ${'/skills remove <name>'.padEnd(38)} ${tr('tui.help.skillRemove', 'delete the local copy')}`,
+        `  ${'/plugins'.padEnd(38)} ${tr('tui.help.pluginOpen', 'open the plugin manager')}`,
+        `  ${'/plugins install <name>'.padEnd(38)} ${tr('tui.help.pluginInstall', 'download one from the repo')}`,
         '',
         tr('tui.help.shortcuts', 'Shortcuts'),
         `  Enter          ${tr('tui.key.send', 'send the message')}`,
@@ -9789,9 +9791,9 @@ export async function dispatch(cmdRaw, arg, state, cfg, session, h, submit, stdo
       }
       // Advice, only when there is something worth saying.
       const tips = [];
-      if (byRole.tool > total * 0.4) tips.push('Tool results dominate — /compact or a narrower search would free the most.');
-      if (byRole.system > total * 0.3) tips.push('The system prompt is large — trim AGENTS.md / personal prompt.');
-      if (total / max > 0.8) tips.push('Over 80% — auto-compaction is close. /compact now to keep control.');
+      if (byRole.tool > total * 0.4) tips.push(uiText('Tool results dominate — /compact or a narrower search would free the most.'));
+      if (byRole.system > total * 0.3) tips.push(uiText('The system prompt is large — trim AGENTS.md / personal prompt.'));
+      if (total / max > 0.8) tips.push(uiText('Over 80% — auto-compaction is close. /compact now to keep control.'));
       if (tips.length) lines.push('', ...tips.map((t) => g + '  ' + t + C.reset));
       sayRich(lines.join('\n'));
       return;
