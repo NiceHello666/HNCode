@@ -5,7 +5,7 @@
 
 import fs from 'node:fs';
 import cp from 'node:child_process';
-import { resolvePath, truncateBuf } from './utils.js';
+import { resolvePath, truncateBuf , similarFileHint } from './utils.js';
 import { createTask, appendTaskOutput, settleTask } from '../agent-task.js';
 import { shellSpawnArgs, getShell } from './shell.js';
 
@@ -152,7 +152,7 @@ export const spec = {
     const cwdRaw = args.cwd || ctx.workspace;
     let cwd;
     try { cwd = resolvePath(cwdRaw, ctx); } catch (e) { return e.message; }
-    if (!fs.existsSync(cwd)) return `Error: cwd does not exist: ${cwdRaw}`;
+    if (!fs.existsSync(cwd)) return `Error: cwd does not exist: ${cwdRaw}${similarFileHint(cwd)}. Omit cwd to use the workspace root.`;
 
     if (args.run_in_background) return spawnBackground(args, cwd, ctx);
 

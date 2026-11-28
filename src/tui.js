@@ -8848,7 +8848,7 @@ export async function dispatch(cmdRaw, arg, state, cfg, session, h, submit, stdo
       const filter = String(raw || '').trim().toLowerCase();
       const groups = [
         ['Everyday', ['settings', 'set', 'model', 'provider', 'permission', 'yolo']],
-        ['Session', ['new', 'sessions', 'all-sessions', 'resume', 'save', 'export', 'compact', 'goal', 'init']],
+        ['Session', ['new', 'sessions', 'all-sessions', 'resume', 'save', 'export', 'compact', 'goal', 'init', 'jump']],
         ['Context', ['context', 'tokens', 'usage', 'cost', 'memory', 'personal', 'output-style']],
         ['Work', ['plan', 'focus', 'swarm', 'team', 'btw', 'tasks']],
         ['Extend', ['skills', 'plugins', 'import-skill', 'plugin-manager']],
@@ -9412,6 +9412,67 @@ export async function dispatch(cmdRaw, arg, state, cfg, session, h, submit, stdo
       await askSideQuestion(state, cfg, question, renderFrame);
       return;
     }
+    case 'jump': {
+      // FIND YOUR PLACE IN A LONG CONVERSATION.
+      //
+      // Nothing in the transcript is addressable: /search greps the PROJECT, not the session, and the only way to get
+      // back to the last failure or the start of the previous reply was to scroll and look. On a session that has been
+      // running for hours that is not a thing a person does.
+      //
+      // The three targets are the ones that come up: the last failure, the last reply, and the very top. Rows come from
+      // `_metrics.rowStart`, which pass 1 already computes for every message — so a jump is a lookup, not a scan.
+      const what = String(raw || '').trim().toLowerCase();
+      const metrics = state._metrics;
+      if (!metrics || !metrics.rowStart || !state.chat.length) {
+        app('Nothing to jump to yet.');
+        return;
+      }
+      const totalRows = metrics.total || 0;
+      // The viewport height is not on `state`, so a jump puts the target NEAR the middle using a nominal 20-row
+      // window; `state.scroll` is clamped by the next render anyway. Landing a few rows off centre is the cost of not
+      // threading a new field through the composer for a scroll position.
+      // `scroll` counts rows UP from the tail, which is why every value here is subtracted from the total.
+      // `scroll` counts rows UP from the tail, so a row is converted by subtracting it from the total. The nominal
+      // window keeps the target clear of the very edge; the next render clamps whatever is out of range.
+      const VIEW = 20;
+      const goToRow = (row) => {
+        const fromEnd = Math.max(0, totalRows - row - Math.floor(VIEW / 2));
+        state.scroll = Math.min(Math.max(0, totalRows - VIEW), fromEnd);
+        dropScrollPin(state);
+      };
+      const lastIndex = (pred) => {
+        for (let i = state.chat.length - 1; i >= 0; i--) if (pred(state.chat[i])) return i;
+        return -1;
+      };
+      // A row past the end would scroll nowhere useful, so the row is clamped to what exists.
+      const rowOf = (i) => Math.min(metrics.rowStart[i] == null ? 0 : metrics.rowStart[i], (metrics.total || 1) - 1);
+      if (what === 'top' || what === 'start') {
+        state.scroll = Math.max(0, Math.max(0, totalRows - 20));
+        dropScrollPin(state);
+        renderFrame();
+        app('Jumped to the top of the session.');
+        return;
+      }
+      if (what === 'error' || what === 'fail' || what === 'failure') {
+        const i = lastIndex((m) => m && (m.failed === true || (m.role === 'tool_result' && /^\s*\[?error/i.test(String(m.text || '')))));
+        if (i < 0) { app('No failure in this session.'); return; }
+        goToRow(rowOf(i));
+        renderFrame();
+        app('Jumped to the last failure.');
+        return;
+      }
+      if (what === 'reply' || what === 'answer' || what === 'last') {
+        const i = lastIndex((m) => m && m.role === 'assistant' && String(m.text || '').trim());
+        if (i < 0) { app('No reply to jump to.'); return; }
+        goToRow(rowOf(i));
+        renderFrame();
+        app('Jumped to the last reply.');
+        return;
+      }
+      app('Use /jump top, /jump error, or /jump reply.');
+      return;
+    }
+
     case 'recap': {
       // Where the session got to. Read-only: it changes nothing, unlike /compact.
       const stats = digestStats(session.messages);
