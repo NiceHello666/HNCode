@@ -33,6 +33,7 @@
 // 3 is acceptable — the information stays one pointer away.
 
 import { C } from './colors.js';
+import { uiText } from './i18n.js';
 
 /** The segments, in the order they are drawn. Order is part of the reading: the session
  *  grows from left to right in the same sequence the context does. */
@@ -56,15 +57,16 @@ export const SEGMENTS = [
 for (const seg of SEGMENTS) {
   seg.labelFor = (tokens) => {
     const v = compactTokens(tokens);
-    return { name: seg.name, full: `${seg.name} ${v}`, value: v, title: seg.name };
+    // Translate at render time, not at definition: uiLang is set when the TUI starts.
+    const name = uiText(seg.name);
+    return { name, full: `${name} ${v}`, value: v, title: name };
   };
 }
 /** The caption a hovered segment produces: `assistant 4.4k`. */
 /** The caption a hovered segment produces: `assistant 4.4k`. */
 export function segmentCaption(key, tokens) {
   const seg = SEGMENTS.find((s) => s.key === key);
-  if (!seg) return '';
-  return `${seg.name} ${compactTokens(tokens)}`;
+  return `${uiText(seg.name)} ${compactTokens(tokens)}`;
 }
 
 /**

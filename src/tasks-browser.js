@@ -78,12 +78,12 @@ function singleLine(t) { return String(t == null ? '' : t).replace(/\s+/g, ' ').
 function relativeTime(ts) {
   if (!ts || !Number.isFinite(ts) || ts <= 0) return '';
   const d = Math.floor(Math.max(0, Date.now() - ts) / 1000);
-  if (d < 60) return 'just now';
+  if (d < 60) return uiText('just now');
   const m = Math.floor(d / 60);
-  if (m < 60) return m + 'm ago';
+  if (m < 60) return m + uiText('m ago');
   const h = Math.floor(m / 60);
-  if (h < 24) return h + 'h ago';
-  return Math.floor(h / 24) + 'd ago';
+  if (h < 24) return h + uiText('h ago');
+  return Math.floor(h / 24) + uiText('d ago');
 }
 
 export function visibleTasks(tasks, filter) {
@@ -147,22 +147,22 @@ export function renderTasksBrowser(state, cols, rows) {
     // gets a clickable span. `c` tracks the column so the spans land exactly on the
     // rendered words — the original drew `N/esc cancel` as one run, so the two keys
     // share the single "cancel" label and are measured as one span.
-    const prefix = ' ' + C.orange + C.bold + 'Stop' + C.reset + ' ' + C.white + state.pendingStop + C.reset + '? ';
+    const prefix = ' ' + C.orange + C.bold + uiText('Stop') + C.reset + ' ' + C.white + state.pendingStop + C.reset + '? ';
     let c = visWidth(prefix);
-    const yPart = key('Y') + ' ' + dim('confirm');
+    const yPart = key('Y') + ' ' + dim(uiText('confirm'));
     footerHits.push({ keyWord: 'Y', label: 'confirm', action: 'confirmStop', col0: c, col1: c + visWidth(yPart) - 1 });
     c += visWidth(yPart) + 2;
-    const nPart = key('N') + dim('/') + key('esc') + ' ' + dim('cancel');
+    const nPart = key('N') + dim('/') + key('esc') + ' ' + dim(uiText('cancel'));
     footerHits.push({ keyWord: 'N/esc', label: 'cancel', action: 'cancelStop', col0: c, col1: c + visWidth(nPart) - 1 });
     footer = fitExactly(prefix + yPart + '  ' + nPart + ' ', cols);
   } else {
     const specs = [
-      ['\u2191\u2193', 'select', 'select'],
-      ['Enter/O', 'output', 'openOutput'],
-      ['S', 'stop', 'requestStop'],
-      ['R', 'refresh', 'refresh'],
-      ['Tab', 'filter', 'toggleFilter'],
-      ['Q/Esc', 'close', 'close'],
+      ['↑↓', uiText('select'), 'select'],
+      ['Enter/O', uiText('output'), 'openOutput'],
+      ['S', uiText('stop'), 'requestStop'],
+      ['R', uiText('refresh'), 'refresh'],
+      ['Tab', uiText('filter'), 'toggleFilter'],
+      ['Q/Esc', uiText('close'), 'close'],
     ];
     const parts = [];
     let cursor = 1;

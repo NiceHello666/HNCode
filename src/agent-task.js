@@ -14,6 +14,8 @@
 // goes through `createTask`, so a task always has the same shape no matter which
 // tool spawned it.
 
+import { uiText } from './i18n.js';
+
 export const TERMINAL_STATUSES = new Set(['completed', 'failed', 'timed_out', 'killed', 'lost']);
 
 export function isTerminal(status) {
@@ -302,20 +304,20 @@ export function backgroundTaskPhase(status) {
 }
 
 function bgSubject(kind) {
-  if (kind === 'agent') return 'agent task';
-  if (kind === 'question') return 'question task';
-  return 'bash task';
+  if (kind === 'agent') return uiText('agent task');
+  if (kind === 'question') return uiText('question task');
+  return uiText('bash task');
 }
 
 function bgHeadline(status, kind) {
   const subject = bgSubject(kind);
   switch (status) {
-    case 'running': return `${subject} started in background`;
-    case 'completed': return `${subject} completed in background`;
-    case 'failed': return `${subject} failed in background`;
-    case 'timed_out': return `${subject} timed out`;
-    case 'killed': return `${subject} stopped`;
-    case 'lost': return `${subject} lost`;
+    case 'running': return `${subject} ${uiText('started in background')}`;
+    case 'completed': return `${subject} ${uiText('completed in background')}`;
+    case 'failed': return `${subject} ${uiText('failed in background')}`;
+    case 'timed_out': return `${subject} ${uiText('timed out')}`;
+    case 'killed': return `${subject} ${uiText('stopped')}`;
+    case 'lost': return `${subject} ${uiText('lost')}`;
     default: return `${subject} ${status}`;
   }
 }
@@ -338,8 +340,8 @@ function bgDetail(task) {
     const reason = bgTruncate(task.stopReason);
     if (reason !== undefined) parts.push(reason);
   }
-  if (task.status === 'timed_out') parts.push('timed out');
-  if (task.status === 'lost') parts.push('session restarted before completion');
+  if (task.status === 'timed_out') parts.push(uiText('timed out'));
+  if (task.status === 'lost') parts.push(uiText('session restarted before completion'));
 
   return parts.length ? parts.join(' · ') : undefined;
 }

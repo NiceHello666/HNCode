@@ -241,7 +241,7 @@ export function renderSwarmProgress(snapshot, width, opts = {}) {
   const lines = [];
 
   // ---- header: `─ Agent Swarm ─ desc ─ model ─────` ----
-  const title = col('Agent Swarm', C.spring + C.bold);
+  const title = col(uiText('Agent Swarm'), C.spring + C.bold);
   const suffix = [];
   if (desc) suffix.push(col(' \u2500 ', C.spring) + col(desc, C.white));
   if (model) suffix.push(col(' \u2500 ', C.spring) + col(model, C.gray));

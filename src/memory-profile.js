@@ -24,6 +24,8 @@
 //
 // Pure and read-only: it measures, it never trims, loads or rewrites anything.
 
+import { uiText } from './i18n.js';
+
 /** Content larger than this is counted separately — a single 16 KB block is the shape of
  *  a runaway, while 16 KB spread evenly is nothing. */
 const LARGE_BLOB_BYTES = 16 * 1024;
@@ -184,12 +186,13 @@ export function renderMemoryProfile(p, opts = {}) {
     return ` ${v.toFixed(1)}%`.padStart(7);
   };
   const row = (label, b, n, share = true) => {
-    lines.push(`  ${label.padEnd(18)} ${mb(b).padStart(9)} MB${n != null ? `  x${n}` : ''}${share ? pct(b) : ''}`);
+    const text = uiText(label);
+    lines.push(`  ${text.padEnd(18)} ${mb(b).padStart(9)} MB${n != null ? `  x${n}` : ''}${share ? pct(b) : ''}`);
   };
 
-  lines.push(`Memory profile — ${mb(total)} MB across the forms a session holds`);
+  lines.push(uiText(`Memory profile — ${mb(total)} MB across the forms a session holds`));
   lines.push('');
-  lines.push('  content (session.messages)');
+  lines.push(uiText('  content (session.messages)'));
   row('text', p.messages.text.bytes, p.messages.text.count);
   row('tool results', p.messages.toolResults.bytes, p.messages.toolResults.count);
   row('tool arguments', p.messages.toolArgs.bytes, p.messages.toolArgs.count);
@@ -197,12 +200,12 @@ export function renderMemoryProfile(p, opts = {}) {
 
   if (p.transcript.count) {
     lines.push('');
-    lines.push('  transcript (display-only, on disk)');
+    lines.push(uiText('  transcript (display-only, on disk)'));
     row('all rows', p.transcript.bytes, p.transcript.count);
     if (p.transcript.largeBytes) {
-      lines.push(`    of which >=16 KB:  ${mb(p.transcript.largeBytes).padStart(9)} MB`);
+      lines.push(`    ${uiText('of which >=16 KB:')}  ${mb(p.transcript.largeBytes).padStart(9)} MB`);
     }
-    lines.push(`    largest row:     ${mb(p.transcript.maxRowBytes).padStart(9)} MB`);
+    lines.push(`    ${uiText('largest row:').padEnd(17)}${mb(p.transcript.maxRowBytes).padStart(9)} MB`);
     if (opts.verbose) {
       for (const [role, b] of [...p.transcript.byRole].sort((a, c) => c[1].bytes - a[1].bytes)) {
         row(`    ${role}`, b.bytes, b.count);
@@ -211,22 +214,22 @@ export function renderMemoryProfile(p, opts = {}) {
   }
 
   lines.push('');
-  lines.push('  other copies held at the same time');
+  lines.push(uiText('  other copies held at the same time'));
   row('state.chat (render)', p.chat.bytes, p.chat.count);
 
   lines.push('');
-  lines.push('  as one JSON document (a different measure of the same data)');
+  lines.push(uiText('  as one JSON document (a different measure of the same data)'));
   // Measured against the CONTENT, not the content-plus-content the base holds, so these
   // two rows carry no share: they re-measure what the rows above already report.
   row('serialised size', p.messages.jsonBytes, null, false);
   row('structure + escapes', p.messages.structuralBytes, null, false);
   if (p.messages.structuralBytes > p.messages.contentBytes) {
-    lines.push('    (structure is larger than the content — that is normal for many short messages)');
+    lines.push(uiText('    (structure is larger than the content — that is normal for many short messages)'));
   }
 
   if (opts.verbose && p.messages.argsByTool.size) {
     lines.push('');
-    lines.push('  tool arguments by tool');
+    lines.push(uiText('  tool arguments by tool'));
     const rows = [...p.messages.argsByTool].sort((a, b) => b[1].bytes - a[1].bytes);
     for (const [name, b] of (opts.top ? rows.slice(0, opts.top) : rows)) {
       row(name, b.bytes, b.count);
