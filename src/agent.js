@@ -333,14 +333,6 @@ Tools:
 - If a tool fails, read the error and fix your approach. After 2 failed attempts on the same goal, stop and report the blocker.
 - Independent tool calls may run in parallel; never parallelize dependent ones.
 
-- Put ALL of your internal reasoning inside <|thinking|>...<|/thinking|> tags, and always emit BOTH the
-  opening and the closing tag. Do not omit the tags, do not abbreviate them, and do not leave the block
-  unclosed.
-- Everything outside <|thinking|>...<|/thinking|> is what the user reads: keep it to the answer itself —
-  what you did and what you found. Never repeat or summarise your reasoning there.
-- Keep the tags exactly as written: <|thinking|> and <|/thinking|>. Do not emit any other variant. The
-  bars matter: a plain <think> is ordinary text that may appear in code or prose, and a bare
-  "thinking" is a word this very instruction uses.
 Acting:
 - Unless the user is explicitly asking for a plan, asking a question about the code, or brainstorming,
   assume they want the work DONE. Say less and do more: implement the change rather than describing it.
@@ -377,6 +369,51 @@ Finishing:
 - Be concise. No filler, no restating the request or explaining tool output that already spoke for itself.
 - If context is running low, call /compact to shrink history.
 `;
+
+// THE INLINE-REASONING INSTRUCTION, AND WHEN IT IS NEEDED AT ALL.
+//
+// A model that has its OWN reasoning channel does not need to be told to wrap its thoughts
+// in a tag: Anthropic sends `thinking` blocks, OpenAI and DeepSeek send `reasoning_content`,
+// and hncode renders all of them as the thinking block. Asking such a model for
+// `<|thinking|>…<|/thinking|>` on top of that asks for the SAME reasoning twice — once in the
+// channel the API provides and once as literal text in the answer, which is then either
+// duplicated on screen or left in the reply as noise.
+//
+// So the instruction is only attached for a model with NO native channel: there the tag is
+// the only way to separate reasoning from the answer, and the transcript depends on it.
+//
+// It is kept OUT of SYSTEM_PROMPT so that the prompt stays static — a static prefix is what
+// providers cache, and a suffix that changes with the model would break that caching for
+// every request that follows it.
+export const THINKING_TAGS_INSTRUCTION = `Reasoning:
+- Put ALL of your internal reasoning inside <|thinking|>...<|/thinking|> tags, and always emit BOTH the
+  opening and the closing tag. Do not omit the tags, do not abbreviate them, and do not leave the block
+  unclosed.
+- Everything outside <|thinking|>...<|/thinking|> is what the user reads: keep it to the answer itself —
+  what you did and what you found. Never repeat or summarise your reasoning there.
+- Keep the tags exactly as written: <|thinking|> and <|/thinking|>. Do not emit any other variant. The
+  bars matter: a plain <think> is ordinary text that may appear in code or prose, and a bare
+  "thinking" is a word this very instruction uses.`;
+
+/**
+ * Does this model need to be told to wrap its reasoning in tags?
+ *
+ * `cfg.reasoning` is the model's own declaration that it can think — Anthropic's `thinking`,
+ * OpenAI's `reasoning_effort`, DeepSeek's `reasoning_content`. A model that can do that
+ * reports its reasoning through the channel the API gives it, so the tag instruction is
+ * redundant at best and asks for doubled output at worst.
+ *
+ * A model that cannot think has no channel to use, so the tag is the ONLY way to keep the
+ * reasoning out of the answer.
+ */
+export function needsThinkingTags(cfg) {
+  if (!cfg) return true;
+  // An explicit override wins: someone who wants the tag on a reasoning model (or off for
+  // one that has no channel) should not have to argue with the detection.
+  if (cfg.thinkingTags === true) return true;
+  if (cfg.thinkingTags === false) return false;
+  return cfg.reasoning !== true;
+}
 
 /** Plain text of a structured tool result, for the model and the transcript. */
 function mediaResultText(r) {

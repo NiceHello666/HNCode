@@ -1260,6 +1260,22 @@ export const NOTICE_ZH = {
   "stopped": "已停止",
   "session restarted before completion": "会话在完成前重启了",
   "Agent Swarm": "Agent 群组",
+  "context": "上下文",
+  "Session usage": "会话用量",
+  "messages": "消息数",
+  "requests": "请求数",
+  "input tokens": "输入 token",
+  "output tokens": "输出 token",
+  "reasoning": "推理",
+  "total tokens": "token 总量",
+  "est. cost": "预估费用",
+  "approx tokens": "约计 token",
+  "token totals": "token 总计",
+  "Context window": "上下文窗口",
+  "used": "已用",
+  "Where it goes": "token 去向",
+  "conversation": "对话",
+  "tool schemas": "工具定义",
 };
 
 // The UI's active language, shared with the render modules (rows, panels, file tree)

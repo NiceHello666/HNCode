@@ -162,7 +162,7 @@ import { buildTree, visibleRows, allDirs, renderTree, moveSel } from './file-tre
 import { walkFiles } from './tools/ignore.js';
 
 
-import { Agent, SYSTEM_PROMPT, addUsage } from './agent.js';
+import { Agent, SYSTEM_PROMPT, THINKING_TAGS_INSTRUCTION, needsThinkingTags, addUsage } from './agent.js';
 import { LLM } from './llm.js';
 import * as sess from './session.js';
 import { convRowFor } from './session.js';
@@ -5552,7 +5552,7 @@ const queueH = takeover ? 0 : queuePanelHeight(state);
   //
   // No bar when the window is unknown: a bar claiming to be full is worse than no bar, and
   // `ctxMax` is 0 until the first usage report lands.
-  const ctxText = `context: ${state.ctxPercent}% (${fmtTokens(state.ctxTokens || 0)}/${fmtTokens(state.ctxMax || 1)})`;
+  const ctxText = `${uiText('context')} ${state.ctxPercent}% (${fmtTokens(state.ctxTokens || 0)}/${fmtTokens(state.ctxMax || 1)})`;
   const ctxSegs = contextSegments(state, state.cfg);
   const barRow = lines.length;
   const bar = state.ctxMax > 0
@@ -9053,32 +9053,32 @@ export async function dispatch(cmdRaw, arg, state, cfg, session, h, submit, stdo
       const g = C.gray, w = C.white, b = C.bold;
       const u = state.usage || {};
       const lines = [
-        w + b + 'Session usage' + C.reset,
-        '  ' + g + 'messages      ' + C.reset + w + msgs.length + C.reset,
+        w + b + uiText('Session usage') + C.reset,
+        '  ' + g + uiText('messages') + '      ' + C.reset + w + msgs.length + C.reset,
       ];
       // Provider-reported totals when there are any: they are what the model
       // actually billed. The estimate is the fallback for an endpoint that reports
       // nothing (or predates `stream_options`).
       if (u.calls) {
         const cr = u.input ? Math.round((u.cached || 0) / u.input * 100) : 0;
-        lines.push('  ' + g + 'requests      ' + C.reset + w + fmtCount(u.calls) + C.reset);
-        lines.push('  ' + g + 'input tokens  ' + C.reset + w + fmtCount(u.input || 0) + C.reset
+        lines.push('  ' + g + uiText('requests') + '      ' + C.reset + w + fmtCount(u.calls) + C.reset);
+        lines.push('  ' + g + uiText('input tokens') + '  ' + C.reset + w + fmtCount(u.input || 0) + C.reset
           + (u.cached ? g + `  (${cr}% cached)` + C.reset : ''));
-        lines.push('  ' + g + 'output tokens ' + C.reset + w + fmtCount(u.output || 0) + C.reset);
+        lines.push('  ' + g + uiText('output tokens') + ' ' + C.reset + w + fmtCount(u.output || 0) + C.reset);
         if (u.reasoning) {
-          lines.push('  ' + g + 'reasoning     ' + C.reset + w + fmtCount(u.reasoning) + C.reset
+          lines.push('  ' + g + uiText('reasoning') + '     ' + C.reset + w + fmtCount(u.reasoning) + C.reset
             + g + '  included in output' + C.reset);
         }
-        lines.push('  ' + g + 'total tokens  ' + C.reset + w + fmtCount((u.input || 0) + (u.output || 0)) + C.reset);
-        lines.push('  ' + g + 'est. cost     ' + C.reset + formatCost(usageCost(u, modelCost(cfg))) + C.reset);
+        lines.push('  ' + g + uiText('total tokens') + '  ' + C.reset + w + fmtCount((u.input || 0) + (u.output || 0)) + C.reset);
+        lines.push('  ' + g + uiText('est. cost') + '     ' + C.reset + formatCost(usageCost(u, modelCost(cfg))) + C.reset);
       } else {
-        lines.push('  ' + g + 'approx tokens ' + C.reset + w + fmtCount(approx) + C.reset);
-        lines.push('  ' + g + 'token totals  ' + C.reset + C.gray
+        lines.push('  ' + g + uiText('approx tokens') + ' ' + C.reset + w + fmtCount(approx) + C.reset);
+        lines.push('  ' + g + uiText('token totals') + '  ' + C.reset + C.gray
           + 'not reported by this endpoint yet' + C.reset);
       }
       lines.push('');
-      lines.push(w + b + 'Context window' + C.reset);
-      lines.push('  ' + g + 'used          ' + C.reset + w + `${state.ctxPercent}% `
+      lines.push(w + b + uiText('Context window') + C.reset);
+      lines.push('  ' + g + uiText('used') + '          ' + C.reset + w + `${state.ctxPercent}% `
         + g + `(${fmtTokens(state.ctxTokens)} / ${fmtTokens(state.ctxMax)})` + C.reset);
 
       // WHAT THE REQUEST IS MADE OF, itemised.
@@ -9093,13 +9093,13 @@ export async function dispatch(cmdRaw, arg, state, cfg, session, h, submit, stdo
           .reduce((n, m) => n + messageTokens(m, cfg), 0);
         const toolTokens = cfg.toolDefTokens || 0;
         const rows = [
-          ['system prompt', sysTokens],
-          ['conversation', convTokens],
-          ['tool schemas', toolTokens],
+          [uiText('system prompt'), sysTokens],
+          [uiText('conversation'), convTokens],
+          [uiText('tool schemas'), toolTokens],
         ].filter(([, v]) => v > 0).sort((a, b) => b[1] - a[1]);
         if (rows.length) {
           lines.push('');
-          lines.push(w + b + 'Where it goes' + C.reset);
+          lines.push(w + b + uiText('Where it goes') + C.reset);
           for (const [label, v] of rows) {
             const share = state.ctxTokens ? Math.round((v / state.ctxTokens) * 100) : 0;
             lines.push('  ' + g + label.padEnd(14) + C.reset + w + fmtTokens(v).padStart(8) + C.reset
@@ -9244,9 +9244,9 @@ export async function dispatch(cmdRaw, arg, state, cfg, session, h, submit, stdo
         sayRich(lines.join('\n'));
         return;
       }
-      lines.push('  ' + g + 'requests      ' + C.reset + w + fmtCount(u.calls) + C.reset);
+      lines.push('  ' + g + uiText('requests') + '      ' + C.reset + w + fmtCount(u.calls) + C.reset);
       lines.push('  ' + g + 'input  tokens ' + C.reset + w + fmtCount(u.input || 0) + C.reset);
-      lines.push('  ' + g + 'output tokens ' + C.reset + w + fmtCount(u.output || 0) + C.reset);
+      lines.push('  ' + g + uiText('output tokens') + ' ' + C.reset + w + fmtCount(u.output || 0) + C.reset);
       if (u.cached) lines.push('  ' + g + 'cache reads   ' + C.reset + w + fmtCount(u.cached) + C.reset);
       if (u.cacheWrite) lines.push('  ' + g + 'cache writes  ' + C.reset + w + fmtCount(u.cacheWrite) + C.reset);
       lines.push('');
@@ -9515,7 +9515,8 @@ export async function dispatch(cmdRaw, arg, state, cfg, session, h, submit, stdo
       if (!state.sideThread) {
         const modelCfg = secondaryModelCfg(cfg);
         state.sideThread = new SideThread({
-          basePrompt: (cfg.systemPrompt && String(cfg.systemPrompt).trim()) || SYSTEM_PROMPT,
+        basePrompt: ((cfg.systemPrompt && String(cfg.systemPrompt).trim()) || SYSTEM_PROMPT)
+            + (needsThinkingTags(cfg) ? `\n\n${THINKING_TAGS_INSTRUCTION}` : ''),
           // The fork: the conversation as it stands NOW. A copy, so nothing the side
           // thread appends can reach the session.
           history: forkMessages(session),
@@ -11771,7 +11772,8 @@ export async function askSideQuestion(state, cfg, question, repaint) {
   try {
     if (!state.sideThread) {
       state.sideThread = new SideThread({
-        basePrompt: (cfg.systemPrompt && String(cfg.systemPrompt).trim()) || SYSTEM_PROMPT,
+        basePrompt: ((cfg.systemPrompt && String(cfg.systemPrompt).trim()) || SYSTEM_PROMPT)
+          + (needsThinkingTags(cfg) ? `\n\n${THINKING_TAGS_INSTRUCTION}` : ''),
         tools: SIDE_RO_TOOLS,
         model: modelCfg.model || cfg.model,
       });
@@ -12522,6 +12524,19 @@ async function runTurn(deps, text, opts = {}, viewArg) {
     //     model stops narrating what it is about to do and why.
     const basePrompt = (cfg.systemPrompt && String(cfg.systemPrompt).trim()) || SYSTEM_PROMPT;
     let sysText = basePrompt;
+
+    // THE INLINE-REASONING INSTRUCTION, ONLY WHERE IT IS THE ONLY WAY TO GET IT.
+    //
+    // A model with its own reasoning channel reports it through the API (Anthropic's
+    // `thinking`, OpenAI's and DeepSeek's `reasoning_content`), and hncode already renders
+    // that as the thinking block. Telling such a model to ALSO wrap its reasoning in
+    // `<|thinking|>…<|/thinking|>` asks for the same reasoning twice — once in the channel
+    // and once as literal text in the answer, which ends up duplicated on screen or left in
+    // the reply as noise. A model with no channel has nothing but the tag, so there it is
+    // attached.
+    if (needsThinkingTags(cfg)) {
+      sysText += '\n\n' + THINKING_TAGS_INSTRUCTION;
+    }
 
     // APPEND rather than replace — the safer of the two prompt knobs, and the one to reach
     // for when the built-in prompt already does most of what you want.

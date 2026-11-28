@@ -5,7 +5,7 @@ import path from 'node:path';
 import fs from 'node:fs';
 import { resolveConfig, effectiveSnapshot, saveConfig, resolveModelArg, readPersonalPrompt } from './config.js';
 import * as sess from './session.js';
-import { Agent, SYSTEM_PROMPT, canSplitAfter } from './agent.js';
+import { Agent, SYSTEM_PROMPT, THINKING_TAGS_INSTRUCTION, needsThinkingTags, canSplitAfter } from './agent.js';
 import { llmTools } from './tools/index.js';
 import { localVersion } from './version.js';
 import { EXIT, FORMATS, isValidFormat, buildResult, exitCodeFor, resultLine, createRunTracker, trackEvent, finalReply } from './ci.js';
@@ -399,6 +399,9 @@ async function runPrompt({ cfg, prompt, format, session, modelArg, timeoutSecond
   // Same layering as the TUI: built-in prompt first, then the user's own
   // system_prompt override if any, then the /personal notes, then calm mode.
   let sysText = (cfg.systemPrompt && String(cfg.systemPrompt).trim()) || SYSTEM_PROMPT;
+  // The inline-reasoning instruction, only for a model with no reasoning channel of its
+  // own — the same rule the TUI applies (see needsThinkingTags).
+  if (needsThinkingTags(cfg)) sysText += '\n\n' + THINKING_TAGS_INSTRUCTION;
   const personal = readPersonalPrompt(cfg.workspace);
   if (personal) sysText += '\n\n' + personal;
   messages.push({ role: 'system', content: sysText });

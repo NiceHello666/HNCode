@@ -58,7 +58,12 @@ export function listSubagents() {
 function systemPromptFor(type, cfg, systemPrompt) {
   const profile = SUBAGENT_TYPES[type] || SUBAGENT_TYPES[DEFAULT_SUBAGENT_TYPE];
   const base = (cfg.systemPrompt && String(cfg.systemPrompt).trim()) || systemPrompt;
-  return `${profile.prompt}\n\n${base}`;
+  // The inline-reasoning instruction, for a model with no reasoning channel of its own —
+  // the same rule the main agent applies (see needsThinkingTags).
+  const tags = needsThinkingTags(cfg)
+    ? `\n\n${THINKING_TAGS_INSTRUCTION}`
+    : '';
+  return `${profile.prompt}\n\n${base}${tags}`;
 }
 
 // Run a subagent to completion. `history` seeds its messages (fork). Returns
@@ -70,7 +75,7 @@ function systemPromptFor(type, cfg, systemPrompt) {
 async function runSubagent({ cfg, type, prompt, history, signal, onEvent, onProgress, onStep, agentId, onAgent }) {
   // The parent-signal listener (registered below, removed when the run settles).
   let onSubagentAbort = null;
-  const { Agent, SYSTEM_PROMPT } = await import('../agent.js');
+  const { Agent, SYSTEM_PROMPT, THINKING_TAGS_INSTRUCTION, needsThinkingTags } = await import('../agent.js');
   const subCfg = {
     ...cfg,
     systemPrompt: systemPromptFor(type, cfg, SYSTEM_PROMPT),

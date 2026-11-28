@@ -496,6 +496,20 @@ const b = baseUrl.replace(/\/+$/, '');
       if (raw === 'zh' || raw.startsWith('zh-')) return 'zh';
       return 'en';
     })(),
+    // THINKING TAGS: whether the model is told to wrap its reasoning in
+    // `<|thinking|>…<|/thinking|>`. Left unset, it follows the model: a model with a
+    // native reasoning channel does not need the tag, one without it does. Set it to
+    // true or false to decide by hand.
+    thinkingTags: (() => {
+      const raw = process.env.HNCODE_THINKING_TAGS;
+      if (raw != null && raw !== '') {
+        if (/^(0|off|false|no)$/i.test(String(raw))) return false;
+        if (/^(1|on|true|yes)$/i.test(String(raw))) return true;
+      }
+      if (root.thinking_tags === true || root.thinking_tags === 'true') return true;
+      if (root.thinking_tags === false || root.thinking_tags === 'false') return false;
+      return undefined;
+    })(),
     subagentModel: process.env.HNCODE_SUBAGENT_MODEL || root.subagent_model || '',
     // SECONDARY MODEL (/secondary-model): the cheap model for side work — /btw,
     // /recap and the compaction summary run on it, so a long main-context model is
