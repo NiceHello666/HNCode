@@ -4554,8 +4554,28 @@ const queueH = takeover ? 0 : queuePanelHeight(state);
         out.push(line);
       }
       // Rows go back into the body in place of the sentinel, so the indices the hitbox step
-      // uses (`catBodyRow`) stay correct.
+      // uses (`catBodyRow`) stay correct for the TABS.
+      //
+      // EVERY BODY INDEX RECORDED BEFORE THIS POINT MUST BE SHIFTED BY THE GROWTH. The
+      // sentinel occupied ONE slot; a wrapped strip takes several. Body indices are what
+      // `rowOf()` turns into screen rows, so leaving them unshifted moved every control
+      // below the strip up by (out.length - 1) rows — on /model that made a click one row
+      // too high, so clicking a model selected the one under it. Only a strip that FITS on
+      // one line hid this, because then the growth is zero.
+      const grew = out.length - 1;
       ov.body.splice(bi, 1, ...out);
+      if (grew > 0) {
+        const shift = (i) => (i > bi ? i + grew : i);
+        if (Array.isArray(ov.itemBodyRows)) {
+          for (let k = 0; k < ov.itemBodyRows.length; k++) ov.itemBodyRows[k] = shift(ov.itemBodyRows[k]);
+        }
+        if (Array.isArray(ov.fieldBodyRows)) {
+          for (let k = 0; k < ov.fieldBodyRows.length; k++) ov.fieldBodyRows[k] = shift(ov.fieldBodyRows[k]);
+        }
+        if (ov.footerBodyRow > bi) ov.footerBodyRow += grew;
+        if (ov.typeBodyRow > bi) ov.typeBodyRow += grew;
+        if (ov.catBodyRow > bi) ov.catBodyRow += grew;
+      }
       // The tabs, with their row recorded ABSOLUTELY: a hitbox carries one row and the
       // strip now spans several.
       if (Array.isArray(b.tabs)) {
