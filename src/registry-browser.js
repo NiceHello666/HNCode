@@ -27,6 +27,7 @@
 
 import { C } from './colors.js';
 import { visualWidth } from './term.js';
+import { uiText } from './i18n.js';
 
 const ELLIPSIS = '\u2026';
 const ESC = '\x1b';
@@ -190,11 +191,11 @@ export function visibleRowsForTab(state, tabId) {
 
 export function renderRegistryBrowser(state, cols, rows) {
   if (cols < MIN_WIDTH || rows < MIN_HEIGHT) {
-    const lines = [fitExactly(C.red + 'Terminal too small (need >= ' + MIN_WIDTH + ' x ' + MIN_HEIGHT + ')' + C.reset, cols)];
+    const lines = [fitExactly(C.red + uiText(`Terminal too small (need >= ${MIN_WIDTH} x ${MIN_HEIGHT})`) + C.reset, cols)];
     for (let i = 1; i < rows; i++) lines.push(' '.repeat(cols));
     return lines;
   }
-  const title = state.kind === 'skills' ? ' Skills' : ' Plugins';
+  const title = uiText(state.kind === 'skills' ? ' Skills' : ' Plugins');
   const tabs = state.kind === 'skills' ? SKILL_TABS : PLUGIN_TABS;
   const tabIdx = Math.max(0, tabs.findIndex((t) => t.id === state.tab));
   const tab = tabs[tabIdx] || tabs[0];
@@ -216,7 +217,7 @@ export function renderRegistryBrowser(state, cols, rows) {
   // The key hints stay visible while the fetch runs: the panel is usable during it
   // (the local tabs are already loaded), so replacing the hints with a status message
   // would hide the keys exactly when the user is most likely to press them.
-  const hint = ' / search \u00b7 Tab switch \u00b7 \u2191\u2193 select \u00b7 Enter install/remove \u00b7 Esc close';
+  const hint = uiText(' / search · Tab switch · ↑↓ select · Enter install/remove · Esc close');
   out.push(fitExactly(C.gray + hint + (state.busy ? C.gray + `  ${state.busy}` : '') + C.reset, cols));
   out.push('');
   // The search field, drawn whenever it is open or has text, so a filtered list always explains itself.
@@ -233,7 +234,8 @@ export function renderRegistryBrowser(state, cols, rows) {
     let col = 0;
     const segs = tabs.map((t) => {
       const n = rowsForTab(state, t.id).length;
-      const text = t.id === tab.id ? `[${t.label} (${n})]` : ` ${t.label} (${n}) `;
+      const lbl = uiText(t.label);
+      const text = t.id === tab.id ? `[${lbl} (${n})]` : ` ${lbl} (${n}) `;
       const col0 = col;
       col += visWidth(text) + 1;   // +1 for the joining space
       return { id: t.id, text, col0, col1: col0 + visWidth(text) - 1 };
@@ -259,11 +261,11 @@ export function renderRegistryBrowser(state, cols, rows) {
     // "Loading" only applies to the tab that is actually waiting on the fetch; a local
     // tab is empty because there is genuinely nothing there, and saying "Loading" for
     // data that is already on screen reads as a stall.
-    const msg = (isRemoteTab && state.busy) ? '  Loading\u2026'
+    const msg = (isRemoteTab && state.busy) ? uiText('  Loading…')
       : (isRemoteTab && state.data && state.data.remoteError)
-        ? '  Could not fetch from the repo: ' + state.data.remoteError
-        : isRemoteTab ? '  Nothing published in the repo yet.'
-          : '  Nothing here.';
+        ? uiText('  Could not fetch from the repo: ') + state.data.remoteError
+        : isRemoteTab ? uiText('  Nothing published in the repo yet.')
+          : uiText('  Nothing here.');
     out.push(C.gray + msg + C.reset);
   }
   // How many LINES each row occupies: its label plus its wrapped description.
@@ -294,14 +296,14 @@ export function renderRegistryBrowser(state, cols, rows) {
     const isSel = i === sel;
     const ptr = isSel ? C.cyan + '\u276f ' + C.reset : '  ';
     const nameStyle = isSel ? (C.cyan + C.bold) : C.white;
-    const badge = r.status ? '  ' + statusColor(r.statusTone) + r.status + C.reset : '';
+    const badge = r.status ? '  ' + statusColor(r.statusTone) + uiText(r.status) + C.reset : '';
     const dis = r.disabled ? C.gray : '';
     const labelRow = out.length;
     out.push(fitExactly(ptr + nameStyle + dis + r.label + C.reset + badge, cols));
     // The whole label row is a click target: clicking selects the item (and a second click / the footer
     // activates it), mirroring the tasks browser.
     hits.push({ row: labelRow, col0: 0, col1: cols - 1, kind: 'regRow', index: i });
-    for (const line of wrapText(r.description, descW)) {
+    for (const line of wrapText(uiText(r.description), descW)) {
       out.push(C.gray + '    ' + line + C.reset);
     }
   }
@@ -329,13 +331,13 @@ export function renderRegistryBrowser(state, cols, rows) {
   // does there (and it is the only way to pick up a newer version).
   const cur = all[sel];
   const action = !cur ? ''
-    : cur.disabled ? 'Enter does nothing \u2014 this entry has no SKILL.md'
+    : cur.disabled ? uiText('Enter does nothing — this entry has no SKILL.md')
       : cur.action === 'reinstall-skill' || cur.action === 'reinstall-plugin'
-        ? 'Enter reinstalls ' + cur.name + ' (replaces the local copy)'
+        ? uiText('Enter reinstalls ') + cur.name + uiText(' (replaces the local copy)')
         : cur.action === 'install-skill' || cur.action === 'install-plugin'
-          ? 'Enter installs ' + cur.name + ' from the repository'
-          : cur.action.startsWith('remove') ? 'Enter removes the local copy of ' + cur.name
-            : 'loaded plugin \u2014 switch to the On disk tab to remove it';
+          ? uiText('Enter installs ') + cur.name + uiText(' from the repository')
+          : cur.action.startsWith('remove') ? uiText('Enter removes the local copy of ') + cur.name
+            : uiText('loaded plugin — switch to the On disk tab to remove it');
   while (out.length < rows - 2) out.push('');
   out.push(fitExactly(C.gray + ' ' + action + C.reset, cols));
   out.push(rule);
