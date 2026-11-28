@@ -139,6 +139,24 @@ This project is licensed under the [PolyForm Noncommercial License 1.0.0](https:
 3. ❌ No commercial use of any kind (selling it, shipping it inside a paid product, or using it to run a commercial service)
 4. ℹ️ This is *not* a copyleft license: your own additions do not have to be published. Commercial use requires a separate license from the author.
 
+### On commercial partnerships
+
+**This project does not take commercial partnerships, and is not built toward one.**
+
+HNCode exists because I wanted a tool that works the way I work, and because other people who like tinkering deserve the
+same. It is not a product and it is not a business. The moment a partnership enters the picture, the question stops being
+"how do we make this better" and starts being "how do we make this pay" — and that decides the roadmap, the trade-offs,
+even the shape of the code. At that point it is a different project.
+
+So:
+
+- No investment, no feature sponsorship, no white-labelling, no "build us a commercial fork"
+- Design trade-offs are not renegotiated for a paying customer's needs
+- Using it **internally** — including at a company, to write code — is the normal way to run it and is not restricted.
+  What is prohibited is selling it or building a business on it, not working with it
+
+The project will keep going this way. If it is useful, use it; if you want it better, file an issue or send a PR.
+
 ---
 
 **NPM Package**: [@hncode/hncode](https://www.npmjs.com/package/@hncode/hncode)  

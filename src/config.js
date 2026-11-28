@@ -484,6 +484,18 @@ const b = baseUrl.replace(/\/+$/, '');
       // Backwards-compat: read legacy cool_mode key if calm_mode is not set.
       : (root.calm_mode === true || root.calm_mode === 'true'
          || root.cool_mode === true || root.cool_mode === 'true'),
+    // UI LANGUAGE (/lang): which language the TERMINAL UI speaks. Only the strings a
+    // person reads are translated — command descriptions, the help panel, menu hints
+    // and turn states. The system prompt and everything the model reads stay English,
+    // because those are instructions to the model rather than text for a reader, and a
+    // half-translated instruction set is worse than an English one.
+    //
+    // Anything unrecognised falls back to English rather than failing the launch.
+    lang: (() => {
+      const raw = String(process.env.HNCODE_LANG || root.lang || '').trim().toLowerCase().replace('_', '-');
+      if (raw === 'zh' || raw.startsWith('zh-')) return 'zh';
+      return 'en';
+    })(),
     subagentModel: process.env.HNCODE_SUBAGENT_MODEL || root.subagent_model || '',
     // SECONDARY MODEL (/secondary-model): the cheap model for side work — /btw,
     // /recap and the compaction summary run on it, so a long main-context model is
@@ -1243,9 +1255,14 @@ export function effortOptions(cfg, modelKeyName) {
 // Token budget for a NAMED grade, on a protocol that wants a number rather than a word.
 //
 // The grades the catalog declares are low/medium/high, and a user may also write their own
-// in config.toml (`efforts = ["xhigh"]`). A grade with no entry here has no honest budget to
-// send, so the field is omitted — the previous code fell back to 8000, which silently gave
-// every unknown grade the same strength as `on` and `medium`.
+// in config.toml (`efforts = ["xhigh"]`). A grade with no entry here has no budget of its
+// own to send, and the old code fell back to 8000 — which silently gave an unknown grade the
+// same strength as `medium`.
+//
+// These numbers are the grade's INTENT, not the wire value. llm.js fits the figure to the
+// request's own `max_tokens` (see anthropicThinking), because this API requires a budget
+// that leaves the reply room to be written: 32000 against a 10000 cap is a guaranteed 400,
+// which is exactly what the old mapping sent for `high` and `max`.
 const EFFORT_BUDGETS = { low: 2000, medium: 8000, high: 16000, max: 32000 };
 
 // Map a chosen effort to the wire value for the active protocol.
@@ -1259,12 +1276,13 @@ export function effortWire(cfg, effort) {
   const named = Object.prototype.hasOwnProperty.call(EFFORT_BUDGETS, effort);
 
   if (cfg.protocol === 'anthropic') {
-    // `thinking: { type: 'enabled' }` IS the plain toggle; `budget_tokens` is optional and
-    // only meaningful for a named grade. Omitting it lets the provider pick its own budget,
-    // which is what "on" asked for.
+    // A BUDGET IS REQUIRED whenever thinking is enabled on this protocol, the plain "on"
+    // toggle included: `{type:'enabled'}` on its own is a 400, not a default. `on` therefore
+    // asks for the neutral grade's figure and llm.js fits it to the request's output cap
+    // (see anthropicThinking), so the intent survives but the number is always legal.
     return named
       ? { thinking: { type: 'enabled', budget_tokens: EFFORT_BUDGETS[effort] } }
-      : { thinking: { type: 'enabled' } };
+      : { thinking: { type: 'enabled', budget_tokens: EFFORT_BUDGETS.medium } };
   }
 
   // Responses API and the OpenAI-compatible shape both take a GRADE word, and neither has

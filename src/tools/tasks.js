@@ -26,7 +26,7 @@ export const TaskListSpec = {
 
 export const TaskOutputSpec = {
   name: 'TaskOutput',
-  description: 'Get the output of a background task by task_id. head_limit caps the lines returned.',
+  description: 'Read what a background task has printed so far, and its status. Call this FIRST — before TaskWait, and again after it. head_limit caps the lines returned; omit it to see everything.',
   parameters: {
     type: 'object',
     properties: {
@@ -163,7 +163,7 @@ export const TaskInputSpec = {
 // lists the tasks still running so the caller can wait again.
 export const TaskWaitSpec = {
   name: 'TaskWait',
-  description: 'Wait for background tasks to finish, timeout in seconds (1-600). With task_id, waits for that task; without it, returns when any running task finishes. A timeout is not an error; still-running tasks are listed, so you may call it again.',
+  description: 'Block until a background task finishes, or until the timeout expires. WAITING IS NOT READING: it tells you whether the task is done, not what it did. Read TaskOutput first to see progress, and again afterwards to get the result — usually a task that is still running is better advanced by reading its output than by blocking on it. A timeout is not an error; the still-running tasks are listed so you can decide.',
   parameters: {
     type: 'object',
     properties: {

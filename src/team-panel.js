@@ -21,6 +21,7 @@ import { readTeamFile } from './team/store.js';
 import { readMailbox, writeToMailbox } from './team/mailbox.js';
 import { readTasks, formatTasks } from './team/tasks.js';
 import { TEAM_LEAD_NAME } from './team/constants.js';
+import { uiText } from './i18n.js';
 
 
 /** The state a panel needs, created once when it opens. */
@@ -303,26 +304,26 @@ export function renderTeamPanel(panel, cols, rows) {
     const m = roster[Math.min(panel.selectedIndex, roster.length - 1)];
     push('');
     push(`  ${C.cyan}${C.bold}@${m.name}${C.reset}  ${C.gray}${m.state || ''}${C.reset}`);
-    push(`  ${C.gray}${m.model || '(no model set)'}${m.model ? '' : ''}${C.reset}`);
+    push(`  ${C.gray}${m.model || uiText('(no model set)')}${m.model ? '' : ''}${C.reset}`);
     push(`  ${C.gray}mode: ${m.permissionMode || 'ask'}${C.reset}`);
     if (m.taskId) push(`  ${C.gray}task: ${m.taskId}${C.reset}`);
     if (m.cwd) push(`  ${C.gray}cwd:  ${m.cwd}${C.reset}`);
     push('');
-    push(`  ${C.gray}── what it is doing ──${C.reset}`);
+    push(`  ${C.gray}── ${uiText('what it is doing')} ──${C.reset}`);
     const live = (panel.chat && panel.chat[m.name]) || [];
     const preview = previewLines(panel, m.name, Math.max(3, rows - 14), cols);
-    if (!preview.length) push(`  ${C.gray}(nothing yet)${C.reset}`);
+    if (!preview.length) push(`  ${C.gray}${uiText('(nothing yet)')}${C.reset}`);
     for (const line of preview) push(`  ${C.gray}${line}${C.reset}`);
     void live;
     while (out.length < rows - 3) push('');
     push(C.border + '─'.repeat(cols) + C.reset);
-    push(`  ${C.gray}← back · Enter message · k kill · s stop · m mode${C.reset}`);
+    push(`  ${C.gray}${uiText('← back · Enter message · k kill · s stop · m mode')}${C.reset}`);
     push('');
     return out.slice(0, rows);
   }
 
   if (!roster.length) {
-    push('  ' + C.gray + 'No members. Add one with /team add <name>.' + C.reset);
+    push('  ' + C.gray + uiText('No members. Add one with /team add <name>.') + C.reset);
   }
 
   // The roster, then the selected member's traffic, then the composer.
@@ -479,9 +480,9 @@ export function renderTeamPanel(panel, cols, rows) {
   const req = panel.pendingPermission;
   if (req && out.length < rows - composerRows - 3) {
     const cut2 = (s) => String(s || '').replace(/\s+/g, ' ').trim().slice(0, Math.max(8, cols - 4));
-    const who = String(req.agentId || 'a member');
-    const what = String(req.description || req.toolName || 'a tool call');
-    push(`  ${C.yellow}${cut2(`${who} wants ${req.toolName}: ${what}`)}${C.reset}`);
+    const who = uiText(String(req.agentId || 'a member'));
+    const what = uiText(String(req.description || req.toolName || 'a tool call'));
+    push(`  ${C.yellow}${cut2(uiText(`${who} wants ${req.toolName}: ${what}`))}${C.reset}`);
     const inputLine = req.input && typeof req.input === 'object'
       ? Object.entries(req.input).slice(0, 2).map(([k, v]) => `${k}=${String(v).slice(0, 40)}`).join('  ')
       : '';
@@ -503,12 +504,12 @@ export function renderTeamPanel(panel, cols, rows) {
   push(C.border + '─'.repeat(cols) + C.reset);
   if (panel.mode === 'compose') {
     push(`  ${C.cyan}→ ${sel ? sel.name : '?'}${C.reset} ${panel.composing}${C.cyan}█${C.reset}`);
-    push('  ' + C.gray + 'Enter send · Esc cancel' + C.reset);
+    push('  ' + C.gray + uiText('Enter send · Esc cancel') + C.reset);
   } else {
-    push('  ' + C.gray + 'Enter write · Tab next · ↑↓ select · Esc close' + C.reset);
+    push('  ' + C.gray + uiText('Enter write · Tab next · ↑↓ select · Esc close') + C.reset);
     // The roster actions, named so they are discoverable rather than folklore. A second line because
     // squeezing six shortcuts onto one makes all of them unreadable.
-    push('  ' + C.gray + 'k kill · s stop · p prune idle · m mode · r read' + C.reset);
+    push('  ' + C.gray + uiText('k kill · s stop · p prune idle · m mode · r read') + C.reset);
   }
 
   return out.slice(0, rows);

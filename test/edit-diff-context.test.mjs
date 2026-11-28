@@ -104,11 +104,12 @@ test('a change near the end does not invent lines below it', async () => {
 });
 
 test('both renderers use the SAME window size', async () => {
-  // Drift here is invisible until someone compares the two, so it is asserted directly: the
-  // Drift here is invisible until someone compares the two, so it is asserted directly: the
-  // model's tool result and the screen must agree about how much context a change deserves.
-  const { lineDiff } = await import('../src/tui.js');
-  const src = fs.readFileSync(path.resolve('src/tui.js'), 'utf8');
+  // Drift here is invisible until someone compares the two, so it is asserted directly: the model's tool result and
+  // the screen must agree about how much context a change deserves.
+  //
+  // The UI's window constant lives in src/diff.js — the renderer reads it from there — while the tool's is its own.
+  const { lineDiff } = await import('../src/diff.js');
+  const src = fs.readFileSync(path.resolve('src/diff.js'), 'utf8');
   const edit = fs.readFileSync(path.resolve('src/tools/edit.js'), 'utf8');
   const tuiWindow = Number(/const DIFF_CONTEXT_LINES = (\d+);/.exec(src)?.[1]);
   const toolWindow = Number(/const DIFF_CONTEXT = (\d+);/.exec(edit)?.[1]);

@@ -20,7 +20,12 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import path from 'node:path';
 
-const tuiSrc = fs.readFileSync(path.resolve('src/tui.js'), 'utf8');
+// The two rows that carry a GLINT no longer live in one file: the Working row is still in tui.js, while the Using row
+// moved to src/tool-line.js. Both are read so the pair can still be compared. The token and time formatters moved on to
+// src/format.js, and the stall thresholds and the interpolation site went with them.
+const tuiSrc = fs.readFileSync(path.resolve('src/tui.js'), 'utf8')
+  + fs.readFileSync(path.resolve('src/tool-line.js'), 'utf8')
+  + fs.readFileSync(path.resolve('src/format.js'), 'utf8');
 
 // ---------------------------------------------------------------------------
 // helpers

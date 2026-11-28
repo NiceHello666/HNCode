@@ -53,8 +53,7 @@ Do NOT use it for what you can infer from context, or for trivial decisions — 
 
 Usage:
 - Users always get an "Other" option; do not create one.
-    + 'For an answer that cannot be enumerated (a name, a path, a description), set free_text: true and omit'
-    + ' options — the user gets a focused field instead of a list.',
+    For an answer that cannot be enumerated (a name, a path, a description), set free_text: true and omit options — the user gets a focused field instead of a list.
 - 2-4 distinct options per question, labels 1-5 words, descriptions carry the trade-offs. Labels unique within a question, question texts unique across the call.
 - 1-4 questions at a time, related ones grouped. multi_select allows several answers.
 - Put a recommended option first and append "(Recommended)" to its label.

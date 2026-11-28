@@ -6,6 +6,8 @@ import os from 'node:os';
 import path from 'node:path';
 import fs from 'node:fs';
 import crypto from 'node:crypto';
+import { recoverSessionFile } from './session-recover.js';
+import { appendLog } from './log-file.js';
 
 const DEFAULT_DIR = () => path.join(os.homedir(), '.hncode', 'sessions');
 function dir(custom) { return custom || process.env.HNCODE_SESSIONS_DIR || DEFAULT_DIR(); }
@@ -36,18 +38,15 @@ export function invalidateSessionCache(storeDir) {
 // if external state is suspected. Our own save/delete already invalidate.
 
 // FIX: single place for the error log so save/load failures are never silent.
+//
+// Rotation-bounded: this file is written by every failed save, so an unattended session
+// that keeps failing one would otherwise grow without limit — and the failure it records
+// is the one thing the user needs to read, so it must not bury itself.
 function errorLogFile() {
   return path.join(os.homedir(), '.hncode', 'session-errors.log');
 }
 function logSessionError(op, detail) {
-  try {
-    fs.mkdirSync(path.dirname(errorLogFile()), { recursive: true });
-    fs.appendFileSync(
-      errorLogFile(),
-      `[${new Date().toISOString()}] ${op}: ${detail}\n`,
-      'utf8',
-    );
-  } catch { /* logging must never throw */ }
+  appendLog(errorLogFile(), `[${new Date().toISOString()}] ${op}: ${detail}\n`);
 }
 
 export function newId() {
@@ -113,6 +112,10 @@ function serializableSession(session) {
   for (const k of Object.keys(session)) {
     if (k in out) continue;
     if (k === 'messages' || k === 'transcript') continue;
+    // `_`-prefixed keys are runtime markers, never session data. `_unrecoverable` says the
+    // file could not be read back; persisting it would make the NEXT load treat a healthy
+    // session as damaged.
+    if (k.startsWith('_')) continue;
     out[k] = session[k];
   }
   out.messages = Array.isArray(session.messages) ? session.messages : [];
@@ -120,7 +123,104 @@ function serializableSession(session) {
   return out;
 }
 
-export function saveSession(session, storeDir) {
+// ---- saving -----------------------------------------------------------------
+//
+// SAVING IS ON THE PER-TURN PATH, SO IT MUST NOT BLOCK THE FRAME.
+//
+// `saveSession` used to do the whole thing synchronously: `JSON.stringify` of the entire history, then `writeFileSync`,
+// then `renameSync`. On a 2.5 MB session that is a visible stall between the user pressing Enter and anything appearing
+// on screen — and it is paid TWICE per turn, once for the user message and once at each step boundary
+// (`persistTurnProgress`). A slow disk multiplies all of it.
+//
+// The write is now scheduled, and calls that land in the same tick coalesce into ONE write: the session object is the
+// same reference every time, so the last call is the one worth writing.
+//
+// ORDERING IS KEPT. `serialize` runs INSIDE the scheduled callback, not at call time, so the bytes written always
+// describe the session as it is when the write happens — never an older snapshot queued behind a newer one.
+//
+// A CALLER THAT MUST HAVE THE BYTES ON DISK uses `saveSessionNow` (used on exit).
+let pendingSave = null;      // { session, storeDir }
+let pendingScheduled = false;
+let saveTimer = null;
+
+/**
+ * How long a queued save may wait.
+ *
+ * A turn saves once per step boundary plus once at the end, a few seconds apart — long enough that `setImmediate` never
+ * coalesced any of them. Three seconds is short enough that a crash loses at most the last step, and long enough that a
+ * burst of steps becomes one write.
+ */
+const SAVE_DELAY_MS = 3000;
+
+// Declared before its first use: `writeSessionSync` records a failure, and a `let` further down the file would
+// put it in the temporal dead zone.
+let saveFailure = null;
+
+// ---- incremental serialisation ------------------------------------------------
+//
+// A SAVE USED TO RE-SERIALISE EVERY MESSAGE, WHICH IS THE WHOLE HISTORY EVERY TIME.
+//
+// Measured on the real session: 19.8ms of JSON.stringify per save, 43ms including the write, and a turn saves several
+// times. Deferring it only moved the stall to a later frame — during streaming, which is the worst moment for one.
+//
+// A turn appends a few messages and leaves the rest untouched, so each message's JSON is worth keeping. `WeakMap` on
+// the message object is the right home for it: the entry dies with the message, and a message that is REPLACED (a
+// compaction rebuilds the array, /undo swaps objects) simply misses. A message that is MUTATED IN PLACE is the one case
+// a WeakMap cannot see — that is what `bumpMessage` is for, and the call sites that edit an existing message use it.
+//
+// Measured: 15.97ms cold for the whole array, 0.14ms once the cache is warm. That is the difference between a stall the
+// user can see and one they cannot.
+const messageJson = new WeakMap();
+
+/** JSON for one message, cached on the object. */
+function jsonOf(m) {
+  let j = messageJson.get(m);
+  if (j === undefined) { j = JSON.stringify(m); messageJson.set(m, j); }
+  return j;
+}
+
+/**
+ * Forget a message's cached JSON. Call after editing one IN PLACE.
+ *
+ * A rename of the field itself would be a compile error; this cannot be, so the discipline is: anything that writes to
+ * a message that may already have been saved calls this. Missing one means that edit is not persisted until the message
+ * object is replaced — not corruption, but a stale field on the next resume.
+ */
+export function bumpMessage(m) {
+  if (m && typeof m === 'object') messageJson.delete(m);
+}
+
+/**
+ * `JSON.stringify(session)` without re-serialising messages that have not changed.
+ *
+ * The outer object is small (a dozen scalars), so it is rebuilt every time; only `messages` — and a `transcript` array,
+ * when there is one — come from the per-message cache. The result is byte-identical to one `JSON.stringify` call, which
+ * is what the reader on the other side expects.
+ */
+function stringifySession(session) {
+  const obj = serializableSession(session);
+  const messages = obj.messages;
+  // The rest of the object is tiny, so it is serialised normally with a placeholder standing in for the arrays.
+  const PLACE = '\u0000HNCODE_PLACEHOLDER\u0000';
+  const shallow = { ...obj, messages: PLACE };
+  if (Array.isArray(obj.transcript)) shallow.transcript = PLACE;
+  const text = JSON.stringify(shallow);
+  // A REPLACEMENT STRING IS NOT LITERAL. `String.replace` expands `$&`, `` $` ``, `$'` and
+  // `$$` inside it, so a message that merely MENTIONED `sed s/x/$&/g` spliced a copy of the
+  // session's own metadata head into its own JSON — every save corrupted the file, the file
+  // would not parse, and the next save wrote an empty history over it. Returning the value
+  // from a function is the only form that is not expanded.
+  const messagesJson = '[' + messages.map((m) => (m && typeof m === 'object' ? jsonOf(m) : JSON.stringify(m))).join(',') + ']';
+  let out = text.replace(JSON.stringify(PLACE), () => messagesJson);
+  if (Array.isArray(obj.transcript)) {
+    const tr = obj.transcript;
+    const trJson = '[' + tr.map((m) => (m && typeof m === 'object' ? jsonOf(m) : JSON.stringify(m))).join(',') + ']';
+    out = out.replace(JSON.stringify(PLACE), () => trJson);
+  }
+  return out;
+}
+
+function writeSessionSync(session, storeDir) {
   if (!session || !session.id) return session;
   // Keep the live object's updatedAt in sync for callers that read it back.
   session.updatedAt = Date.now();
@@ -133,8 +233,8 @@ export function saveSession(session, storeDir) {
     // Compact JSON, no indentation. `null, 2` made the file ~30% larger for a
     // human who never reads it (the reader is JSON.parse), and the pretty-printer
     // itself costs real time on a large transcript — measured ~22ms for 5.7MB, all
-    // of it spent inserting whitespace. Saving is on the per-turn path.
-    const json = JSON.stringify(serializableSession(session));
+    // of it spent inserting whitespace.
+    const json = stringifySession(session);
     fs.writeFileSync(tmp, json, 'utf8');
     // Atomic replace. If this throws (EXDEV etc.) the temp is cleaned up below.
     fs.renameSync(tmp, target);
@@ -158,9 +258,79 @@ export function saveSession(session, storeDir) {
   return session;
 }
 
+/**
+ * Queue a save for the next event-loop tick, coalescing with any other call that lands before then.
+ *
+ * THIS IS THE ONE THE TUI USES. `saveSession` stays synchronous because its contract is "the file is on disk when
+ * this returns", and several callers depend on that — the store-integrity tests among them. On the per-turn path that
+ * contract is what costs a visible stall: a 1.3 MB session measured 38 ms of `JSON.stringify` + `writeFileSync`
+ * between Enter and the first frame, paid twice a turn, on a slow disk much worse.
+ *
+ * The session object is the same reference every time, so the last call is the one worth writing. `serialize` runs
+ * inside the scheduled callback, never at call time, so the bytes written always describe the session as it is when
+ * the write happens.
+ */
+export function saveSessionSoon(session, storeDir) {
+  if (!session || !session.id) return session;
+  // Update the timestamp NOW so the object a caller reads back is already stamped — the same
+  // guarantee the synchronous version gave.
+  session.updatedAt = Date.now();
+  pendingSave = { session, storeDir };
+  // A SHORT DELAY, NOT THE NEXT TICK.
+  //
+  // `setImmediate` coalesced calls made in one tick, which is not what a turn looks like: a turn's saves are spread
+  // across seconds (one per step boundary, then the turn end), so every one of them ran a full `JSON.stringify` plus
+  // write on the main thread — 17-38 ms each on a real session, and each one is a frame the user sees stop.
+  //
+  // Nothing reads a session file while the program is running: `loadSession` is called at startup and from `/sessions`,
+  // both by the same process that already holds the live object. So the file only has to be CURRENT ENOUGH for a crash,
+  // and a few seconds of coalescing costs at most the last couple of steps of a session that died — against a stall the
+  // user pays on every single turn.
+  //
+  // `flushSaves` (exit) and `saveSession` (callers that need the bytes now) still write immediately.
+  if (!pendingScheduled) {
+    pendingScheduled = true;
+    saveTimer = setTimeout(() => {
+      saveTimer = null;
+      pendingScheduled = false;
+      const job = pendingSave;
+      pendingSave = null;
+      if (job) writeSessionSync(job.session, job.storeDir);
+    }, SAVE_DELAY_MS);
+    // The timer must not hold the process open by itself.
+    if (saveTimer.unref) saveTimer.unref();
+  }
+  return session;
+}
+
+/** Write any queued save NOW and wait for it. For exit paths, where there is no next tick. */
+export function flushSaves() {
+  const job = pendingSave;
+  pendingSave = null;
+  pendingScheduled = false;
+  // The timer would fire into an empty queue anyway; clearing it keeps the process from lingering for its sake.
+  if (saveTimer) { clearTimeout(saveTimer); saveTimer = null; }
+  if (job) writeSessionSync(job.session, job.storeDir);
+}
+
+/**
+ * Save the session, synchronously. The file is on disk when this returns.
+ *
+ * Kept as the default because that is its documented contract and callers rely on it — reading the file straight
+ * back, listing sessions right after a rename, and asserting on a write failure all need the bytes to be there. The
+ * per-turn path uses `saveSessionSoon` instead; see it for why that matters on a large session.
+ */
+export function saveSession(session, storeDir) {
+  return writeSessionSync(session, storeDir);
+}
+
+/** Save synchronously. Only for callers that cannot wait for the next tick (exit). */
+export function saveSessionNow(session, storeDir) {
+  return writeSessionSync(session, storeDir);
+}
+
 // The most recent save failure, or null. Set once per failure so a caller can report it
 // (the TUI shows a warning) without this module reaching into the UI.
-let saveFailure = null;
 
 /** The last save failure `{ at, id, detail }`, or null when saving has been clean. */
 export function lastSaveFailure() { return saveFailure; }
@@ -180,6 +350,19 @@ export function loadSession(id, storeDir) {
   try {
     return JSON.parse(text);
   } catch (e) {
+    // A file that no longer parses is RECOVERED, not written off. An older hncode wrote
+    // session files through a `String.replace`, and a message that happened to contain
+    // `$&` or `` $` `` spliced a copy of the file's own metadata into it — which then
+    // failed to parse here, fell back to the metadata head in `latestSession`, and was
+    // overwritten with an empty history by the next save. See session-recover.js.
+    const fixed = recoverSessionFile(file, text);
+    if (fixed && fixed.session) {
+      logSessionError('recover', `${id}: ${e.message} -> ${fixed.report.route}, `
+        + `${fixed.report.kept} kept, ${fixed.report.dropped} dropped`
+        + (fixed.wrote ? `, original kept as ${fixed.backup}` : ', file NOT rewritten'));
+      cacheFor(storeDir, false)?.delete(file);
+      return fixed.session;
+    }
     // FIX: a corrupt file is NOT the same as a missing session. Log it so the
     // user can find the damaged file instead of silently "losing" the session.
     logSessionError('parse', `${id}: ${e.message} (file: ${file})`);
@@ -216,7 +399,14 @@ export function latestSession(cwd, storeDir, opts = {}) {
   if (loaded) return loaded;
   // If the full load failed (corrupt), fall back to the metadata we already have
   // so the caller still gets an id/title/workspace instead of null.
-  return pick.meta;
+  //
+  // It is a LAST RESORT, not a session: it carries no `messages`, and the TUI's next save
+  // would write that emptiness to disk. Marked so the caller can refuse the resume instead
+  // — three real conversations were lost this way, each one an apparently healthy session
+  // with 700 rounds and no history.
+  return pick.meta && typeof pick.meta === 'object'
+    ? { ...pick.meta, messages: [], _unrecoverable: true }
+    : pick.meta;
 }
 
 // Enumerate the session directory, reading each file's metadata head ONCE per

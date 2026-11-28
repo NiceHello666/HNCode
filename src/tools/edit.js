@@ -4,7 +4,7 @@
 
 import fs from 'node:fs';
 import path from 'node:path';
-import { resolvePath, ensureDir, checkpointBeforeWrite } from './utils.js';
+import { resolvePath, ensureDir, checkpointBeforeWrite , similarFileHint } from './utils.js';
 import { hashStr, normalizeText } from './read.js';
 
 // Typographic quotes -> straight quotes. A model almost always emits ASCII
@@ -47,6 +47,15 @@ number (Read prints '12' then a tab, then the indented code, so you send the lea
 COUNT FIRST: in line-range mode new_string must have exactly end_line - start_line + 1 lines, and every line
 you write must be one you are replacing. A line outside the range is not deleted and survives as a duplicate.
 
+SUBSTRING MODE — new_string CONTAINS ONLY THE REPLACEMENT FOR old_string, NOTHING BEFORE OR AFTER IT.
+If old_string is one line, new_string is one line, or "" to delete that line. NEVER place the line ABOVE or
+BELOW old_string into new_string "for context" or "as replacement" — those lines are not part of old_string, so
+they get written a SECOND time. Example: to change line 12 to "x = 1", send old_string = "  x = 2" and
+new_string = "  x = 1" — just that one line. Sending new_string = "  y = 0\\n  x = 1" duplicates "  y = 0",
+because "  y = 0" was never in old_string. If the result shows a duplicated line, the cause is almost always
+this: you restated a neighbour. Fix it by removing that neighbour from new_string, NOT by restating another
+one — that multiplies the duplicates.
+
 Omitting new_string entirely is an error — pass "" to delete.
 
 AFTER A SUCCESSFUL EDIT, the result quotes the file around what you wrote — five lines either side, in the same
@@ -58,7 +67,7 @@ did not show, or when a different tool or the user has changed the file since.`,
     properties: {
       path: { type: 'string', description: 'Path to the file to edit.' },
       old_string: { type: 'string', description: 'Exact text to replace, including whitespace and newlines. Omit for pure line-range mode. COMBINE it with start_line/end_line to replace only the occurrence inside that range.' },
-      new_string: { type: 'string', description: 'Replacement text, written VERBATIM in BOTH modes — no indentation is added, removed, or re-derived. Write the leading spaces on EVERY line yourself, including the FIRST one, copying them from the Read output after its `N\\t` line-number prefix (Read prints `12\\t    return x`, so you send `    return x`). In LINE-RANGE mode it must contain EXACTLY the lines being replaced: a line that sits outside [start_line, end_line] is not deleted, so restating it here leaves a duplicate. Count them first: new_string must have exactly end_line - start_line + 1 lines. In SUBSTRING mode it replaces old_string, which is itself matched exactly including its own indentation.' },
+      new_string: { type: 'string', description: 'Replacement text, written VERBATIM in BOTH modes — no indentation is added, removed, or re-derived. Write the leading spaces on EVERY line yourself, including the FIRST one, copying them from the Read output after its `N\\t` line-number prefix (Read prints `12\\t    return x`, so you send `    return x`). In LINE-RANGE mode it must contain EXACTLY the lines being replaced: a line that sits outside [start_line, end_line] is not deleted, so restating it here leaves a duplicate. Count them first: new_string must have exactly end_line - start_line + 1 lines. In SUBSTRING mode it replaces ONLY old_string — NEVER include the line above or below old_string in new_string; those lines are not being replaced and are written a second time. To delete a line, make old_string that line and new_string "".' },
 
       replace_all: { type: 'boolean', default: false, description: 'Replace all occurrences of old_string.' },
       start_line: { type: 'integer', minimum: 1, description: 'PREFERRED MODE. 1-based first line to replace, INCLUSIVE — the range covers start_line and end_line and every line between them. Requires end_line and new_string. With old_string too, it is the first line to SEARCH for it in.' },
@@ -501,40 +510,6 @@ function buildEditDiff({ fileLines, oldText, newText, startLine, filePath }) {
 // exact case-insensitive match, same stem with a different extension, or a
 // prefix match. Saves the model a round-trip of guessing (Claude Code's
 // "Did you mean X?").
-function similarFileHint(missingPath) {
-  const dir = path.dirname(missingPath);
-  const base = path.basename(missingPath);
-  const stem = base.replace(/\.[^.]*$/, '').toLowerCase();
-  let entries;
-  try { entries = fs.readdirSync(dir); } catch { return ''; }
-  const lower = base.toLowerCase();
-  // Levenshtein distance, capped — enough to catch a typo (confg -> config).
-  const lev = (a, b) => {
-    const m = a.length, n = b.length;
-    if (Math.abs(m - n) > 2) return 3;
-    let prev = Array.from({ length: n + 1 }, (_, j) => j);
-    for (let i = 1; i <= m; i++) {
-      const cur = [i];
-      for (let j = 1; j <= n; j++) {
-        cur[j] = Math.min(prev[j] + 1, cur[j - 1] + 1, prev[j - 1] + (a[i - 1] === b[j - 1] ? 0 : 1));
-      }
-      prev = cur;
-    }
-    return prev[n];
-  };
-  let cand = entries.find((e) => e.toLowerCase() === lower);
-  if (!cand) {
-    let best = null, bestD = 3;
-    for (const e of entries) {
-      const d = lev(stem, e.replace(/\.[^.]*$/, '').toLowerCase());
-      if (d < bestD) { bestD = d; best = e; }
-    }
-    cand = best;
-  }
-  if (cand && cand !== base) return ` Did you mean "${path.join(dir, cand)}"?`;
-  return '';
-}
-
 // When old_string is not found, look for the closest line in the file and name
 // it, so the model can see what the text actually is instead of guessing.
 function nearestLineHint(content, oldStr) {

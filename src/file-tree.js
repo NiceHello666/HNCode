@@ -23,6 +23,7 @@
 import path from 'node:path';
 import { C } from './colors.js';
 import { visualWidth } from './term.js';
+import { uiText } from './i18n.js';
 
 const ELLIPSIS = '\u2026';
 const ESC = '\x1b';
@@ -153,11 +154,11 @@ export function renderTree(input) {
 
   const total = root.children.length ? countFiles(root) : 0;
   const title = filter
-    ? `Files matching "${filter}" — ${total} file(s)`
-    : `Files — ${total} file(s)`;
+    ? uiText(`Files matching "${filter}" — ${total} file(s)`)
+    : uiText(`Files — ${total} file(s)`);
   // Deliberately terse: the full phrasing ("↑↓ move · →/← open/close · Enter insert path ·
   // Ctrl+O expand all · Esc close") is 71 columns and got clipped mid-word at 70.
-  const hint = '↑↓ move · →/← open · Enter insert · Ctrl+O all · Esc close';
+  const hint = uiText('↑↓ move · →/← open · Enter insert · Ctrl+O all · Esc close');
 
   const lines = [];
   // The header and the hint are clamped to the panel like every other row. Unclamped, a

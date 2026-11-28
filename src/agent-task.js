@@ -94,6 +94,11 @@ export function createTask(ctx, kind, options = {}) {
     // so the decoder can run lazily (a chatty task costs nothing until read).
     _chunks: options._chunks || [],
     _bytes: 0,
+    // THE NOTIFICATION CALLBACK TRAVELS WITH THE TASK.
+    //
+    // `settleTask` is called from the tool that owns the process and has no ctx to look one up on, so the callback is
+    // captured here, where the ctx still is. Absent in a headless run, which is why every use of it is guarded.
+    _onDone: ctx && typeof ctx._onBackgroundTaskDone === 'function' ? ctx._onBackgroundTaskDone : null,
   };
   if (kind === 'process') {
     task.command = String(options.command || '');
@@ -219,6 +224,18 @@ export function settleTask(task, status, extra = {}) {
   task.endedAt = Date.now();
   if (extra.stopReason !== undefined) task.stopReason = extra.stopReason;
   if (extra.exitCode !== undefined && task.kind === 'process') task.exitCode = extra.exitCode;
+  // NOTIFY — A TASK THAT FINISHES IN THE BACKGROUND MUST SAY SO.
+  //
+  // Only the subagent path called a callback (`ctx._onBackgroundTaskDone`); a Bash task settled through here and nothing
+  // was told. The row sat in /tasks and the transcript never changed, so a command the user backgrounded with Ctrl+B
+  // finished silently — they could not tell success from a crash, and the model was never handed the output.
+  //
+  // The callback lives on the ctx the tools were given, so it is installed by the TUI and absent in a headless run.
+  const cb = typeof task._onDone === 'function' ? task._onDone : null;
+  if (cb) {
+    // After the state is final, and guarded: a broken callback must not undo a settled task.
+    try { cb(task); } catch { /* a notification is not worth failing the settle for */ }
+  }
 }
 
 export function listTasks(ctx) {

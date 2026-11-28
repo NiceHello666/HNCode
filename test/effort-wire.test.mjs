@@ -43,60 +43,29 @@ test('on never sends a grade on the two protocols that only accept grade words',
   }
 });
 
-test('on sends the plain enable on anthropic, with no invented budget', () => {
-  // `thinking: { type: 'enabled' }` IS the toggle; `budget_tokens` is optional. Sending a
-  // number turns "on" into "on with THIS budget", which is not what was asked.
+test('on sends a legal budget on anthropic, because the field is required', () => {
+  // `thinking: { type: 'enabled' }` WITHOUT `budget_tokens` is a 400, not a default — the
+  // field is REQUIRED whenever thinking is enabled. An earlier version of this test asserted
+  // the bare enable and called it "no invented budget"; it was pinning a request the API
+  // rejects, so a user who turned thinking on simply got an error instead of a turn.
   const wire = effortWire(cfgFor('anthropic'), 'on');
-  assert.deepEqual(wire, { thinking: { type: 'enabled' } });
-  assert.equal(wire.thinking.budget_tokens, undefined, 'no budget was invented');
+  assert.deepEqual(wire, { thinking: { type: 'enabled', budget_tokens: 8000 } });
+  assert.ok(wire.thinking.budget_tokens >= 1024, 'at or above the protocol minimum');
 });
 
-test('on and medium are NOT the same request any more', () => {
-  // The regression, stated directly: these were indistinguishable before the fix.
-  for (const protocol of PROTOCOLS) {
+test('on and medium differ where the protocol has a word for "on", and cannot on anthropic', () => {
+  // A grade word protocol can say "on" by OMITTING the field and "medium" by naming it.
+  // Anthropic has no way to express "thinking on, strength unspecified": the budget is
+  // mandatory, so the neutral figure is the only honest resolution and the two coincide.
+  // The number itself is fitted to the output cap in llm.js — see anthropicThinking.
+  for (const protocol of ['openai', 'responses']) {
     const c = cfgFor(protocol, { efforts: ['low', 'medium', 'high'] });
     assert.notDeepEqual(effortWire(c, 'on'), effortWire(c, 'medium'),
       `${protocol}: on and medium must differ`);
   }
-});
-
-// ---------------------------------------------------------------------------
-// named grades still carry their value
-// ---------------------------------------------------------------------------
-
-test('a named grade passes through as a grade word', () => {
-  const openai = cfgFor('openai');
-  assert.deepEqual(effortWire(openai, 'low'), { reasoning_effort: 'low' });
-  assert.deepEqual(effortWire(openai, 'high'), { reasoning_effort: 'high' });
-  const resp = cfgFor('responses');
-  assert.deepEqual(effortWire(resp, 'low'), { reasoning: { effort: 'low' } });
-  assert.deepEqual(effortWire(resp, 'high'), { reasoning: { effort: 'high' } });
-});
-
-test('a named grade pins a budget on anthropic, and the grades differ', () => {
-  const c = cfgFor('anthropic');
-  const low = effortWire(c, 'low').thinking.budget_tokens;
-  const high = effortWire(c, 'high').thinking.budget_tokens;
-  assert.ok(low > 0 && high > low, `low ${low} should be smaller than high ${high}`);
-  assert.deepEqual(effortWire(c, 'medium'), { thinking: { type: 'enabled', budget_tokens: 8000 } });
-});
-
-// ---------------------------------------------------------------------------
-// an unknown grade must not collapse onto a known one
-// ---------------------------------------------------------------------------
-
-test('a user-defined grade does not silently become 8000', () => {
-  // config.toml documents `efforts = ["xhigh"]` as a thing a user may write. The old
-  // fallback made it byte-identical to `medium` — a known grade with a known budget — which
-  // meant "extra high" quietly requested the MIDDLE strength.
-  const c = cfgFor('anthropic', { efforts: ['xhigh'] });
-  const wire = effortWire(c, 'xhigh');
-  assert.deepEqual(wire, { thinking: { type: 'enabled' } }, 'no budget is invented');
-  assert.notDeepEqual(wire, effortWire(c, 'medium'), 'and it is NOT medium (the old fallback)');
-  // It DOES equal `on`, and that is deliberate: both mean "enable thinking, budget unknown".
-  // There is no honest number to send for a grade we have never heard of, so the field is
-  // omitted and the provider chooses. Inventing one would be the bug this test guards.
-  assert.deepEqual(wire, effortWire(c, 'on'));
+  const anth = cfgFor('anthropic', { efforts: ['low', 'medium', 'high'] });
+  assert.deepEqual(effortWire(anth, 'on'), effortWire(anth, 'medium'),
+    'anthropic: the neutral budget is the only legal form of "on"');
 });
 
 test('an unknown grade sends no grade word on the grade-word protocols', () => {
@@ -165,16 +134,26 @@ test('a grade outside the declared list is still sendable', () => {
     'an unknown grade is not turned into a number this side');
 });
 
-test('an unknown grade never invents a budget, on any protocol', () => {
-  // Measured across the three protocols, because each carries the grade differently and each could
-  // invent its own default:
+test('a user-defined anthropic grade asks for the neutral budget, not a neighbouring one', () => {
+  // config.toml documents `efforts = ["xhigh"]`. There is no honest budget for a grade this
+  // side has never heard of, and the protocol does not accept a bare enable — so the neutral
+  // figure is requested, and llm.js fits it to the output cap. What matters is that it is a
+  // number this side CHOSE to mean "unspecified", not one borrowed from `low` or `high`.
+  const c = cfgFor('anthropic', { efforts: ['xhigh'] });
+  const wire = effortWire(c, 'xhigh');
+  assert.deepEqual(wire, { thinking: { type: 'enabled', budget_tokens: 8000 } });
+  assert.notDeepEqual(wire, effortWire(c, 'low'));
+  assert.notDeepEqual(wire, effortWire(c, 'high'));
+});
+
+test('an unknown grade invents no budget on the two grade-word protocols', () => {
+  // Each protocol carries the grade differently and each could invent its own default:
   //   openai      the field is omitted
   //   responses   the field is omitted
-  //   anthropic   thinking is enabled WITHOUT a budget — enabling is honest, a number would not be
-  for (const protocol of PROTOCOLS) {
+  // Anthropic has no way to omit it, so it is covered by the test above.
+  for (const protocol of ['openai', 'responses']) {
     const c = cfgFor(protocol, { efforts: ['off', 'low'] });
     const wire = effortWire(c, 'xhigh');
-    const budget = wire && wire.thinking ? wire.thinking.budget_tokens : undefined;
-    assert.equal(budget, undefined, `${protocol} invented a budget for an unknown grade: ${JSON.stringify(wire)}`);
+    assert.deepEqual(wire, {}, `${protocol} invented a grade: ${JSON.stringify(wire)}`);
   }
 });

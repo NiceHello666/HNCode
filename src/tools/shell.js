@@ -69,6 +69,25 @@ function whichSync(name) {
  * cmd's, not PowerShell's.
  */
 export function detectShell() {
+  // POSIX FIRST, AND ON ITS OWN PATH.
+  //
+  // The PowerShell probe used to run on EVERY platform, so on Linux or macOS it looked for `pwsh`, then
+  // `powershell`, then `cmd.exe`, found none of them, and reported "install PowerShell 7+" — advice that is wrong on
+  // a machine whose shell has been there all along. A Unix box is never looking for PowerShell and a Windows box is
+  // never looking for bash, so the two branches do not overlap at all.
+  if (process.platform !== 'win32') {
+    // `$SHELL` is the user's own choice and is what a terminal would use. `/bin/sh` is the floor: it is on every
+    // POSIX system, so the tool survives a stripped PATH the same way `cmd.exe` does on Windows.
+    const fromEnv = process.env.SHELL ? whichSync(process.env.SHELL) : null;
+    if (fromEnv) return { path: fromEnv, name: fromEnv.split('/').pop(), edition: 'posix' };
+    for (const name of ['bash', 'zsh', 'sh']) {
+      const path = whichSync(name);
+      if (path) return { path, name, edition: 'posix' };
+    }
+    const sh = fs.existsSync('/bin/sh') ? '/bin/sh' : null;
+    return sh ? { path: sh, name: 'sh', edition: 'posix' } : null;
+  }
+
   for (const name of SHELL_CANDIDATES) {
     const path = whichSync(name);
     if (path) {
@@ -128,8 +147,9 @@ export function shellSpawnArgs(command, opts = {}) {
   const shell = getShell();
   if (!shell) {
     throw new Error(
-      'No shell found (tried pwsh, powershell, and cmd.exe). '
-      + 'Install PowerShell 7+ or add it to PATH, then retry.',
+      process.platform === 'win32'
+        ? 'No shell found (tried pwsh, powershell, and cmd.exe). Install PowerShell 7+ or add it to PATH, then retry.'
+        : 'No shell found (tried $SHELL, bash, zsh and sh). Install a POSIX shell, then retry.',
     );
   }
   if (shell.edition === 'cmd') {
@@ -137,6 +157,12 @@ export function shellSpawnArgs(command, opts = {}) {
     // predictably. The command is passed as ONE argv element, so Node does the
     // quoting and we do not wrap it ourselves.
     return { bin: shell.path, args: ['/d', '/s', '/c', command], shell };
+  }
+  if (shell.edition === 'posix') {
+    // `-c` takes the command as one string, which is what every POSIX shell expects. There is no `-NoProfile`
+    // equivalent and none is wanted: a user's rc file is part of their environment, and the Windows flags exist to
+    // suppress a PowerShell banner that has no counterpart here.
+    return { bin: shell.path, args: ['-c', command], shell };
   }
   const args = ['-NoProfile'];
   if (!opts.interactive) args.push('-NonInteractive');

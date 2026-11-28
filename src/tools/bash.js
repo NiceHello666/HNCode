@@ -5,9 +5,9 @@
 
 import fs from 'node:fs';
 import cp from 'node:child_process';
-import { resolvePath, truncateBuf } from './utils.js';
+import { resolvePath, truncateBuf , similarFileHint } from './utils.js';
 import { createTask, appendTaskOutput, settleTask } from '../agent-task.js';
-import { shellSpawnArgs } from './shell.js';
+import { shellSpawnArgs, getShell } from './shell.js';
 
 // kimi-code's timeout policy (agent-core-v2/agent/tools/os/bash/bash.ts).
 export const DEFAULT_TIMEOUT_S = 60;
@@ -127,7 +127,13 @@ function killTree(child, opts = {}) {
 
 export const spec = {
   name: 'Bash',
-  description: 'Run a shell command via pwsh. Returns combined stdout+stderr. timeout default 60s (max 300s); run_in_background detaches and returns a task id.',
+  // The shell is named at runtime, not baked in: the model is told which syntax it is writing against, and on a POSIX
+  // box "via pwsh" was both wrong and an invitation to emit PowerShell.
+  get description() {
+    const shell = getShell();
+    const which = shell ? (shell.edition === 'posix' ? 'the POSIX shell' : shell.name) : 'the system shell';
+    return `Run a shell command via ${which}. Returns combined stdout+stderr. timeout default 60s (max 300s); run_in_background detaches and returns a task id.`;
+  },
   parameters: {
     type: 'object',
     properties: {
@@ -146,7 +152,7 @@ export const spec = {
     const cwdRaw = args.cwd || ctx.workspace;
     let cwd;
     try { cwd = resolvePath(cwdRaw, ctx); } catch (e) { return e.message; }
-    if (!fs.existsSync(cwd)) return `Error: cwd does not exist: ${cwdRaw}`;
+    if (!fs.existsSync(cwd)) return `Error: cwd does not exist: ${cwdRaw}${similarFileHint(cwd)}. Omit cwd to use the workspace root.`;
 
     if (args.run_in_background) return spawnBackground(args, cwd, ctx);
 
@@ -155,15 +161,10 @@ export const spec = {
     const def = bg ? DEFAULT_BACKGROUND_TIMEOUT_S : DEFAULT_TIMEOUT_S;
     const timeoutMs = args.disable_timeout ? undefined : Math.min(args.timeout ?? def, cap) * 1000;
 const command = args.command;
-    // stdin is 'ignore' by default (NUL / /dev/null): leaving it as an open pipe made any command that
-    // reads stdin (`cat`, `npm init`, …) block until the timeout.
-    //
-    // `interactive` OPTS INTO A PIPE, and only for a background run: a foreground command has nobody to
-    // type at it, while a background one can be fed through TaskInput. The pipe is closed by that tool
-    // when it is done, which is what keeps `cat` and friends from hanging.
-    if (args.interactive && !args.run_in_background) {
-      return 'Error: `interactive` requires `run_in_background: true` — a foreground run has no way to receive input.';
-    }
+    // STDIN IS A PIPE FOR EVERY RUN. The agent never types into it, but the USER can: a program that prompts
+    // (`npm init`, a REPL, a script reading a line) used to sit on /dev/null until the timeout killed it, with
+    // no way to answer. A background run is fed through TaskInput, a foreground one through the composer's
+    // Ctrl+G mode. When nobody writes, the command blocks exactly as it would in a terminal.
     let shell;
     try { shell = shellSpawnArgs(command); } catch (e) { return `Error: ${e.message}`; }
     // Check the turn's signal BEFORE spawning. The check below ran only after the
@@ -172,7 +173,7 @@ const command = args.command;
     // and Esc could not stop it.
     if (ctx.signal && ctx.signal.aborted) return 'Interrupted by user';
     const child = cp.spawn(shell.bin, shell.args, {
-      cwd, stdio: [args.interactive ? 'pipe' : 'ignore', 'pipe', 'pipe'], env: { ...process.env },
+      cwd, stdio: ['pipe', 'pipe', 'pipe'], env: { ...process.env },
     });
 
     const chunks = [];
@@ -284,6 +285,12 @@ if (child.stdout) child.stdout.on('data', push);
           command: args.command,
           description: args.description || args.command,
           child, chunks,
+          // The TUI reaches this to answer a prompt the command is waiting on.
+          stdin: child.stdin,
+          write: (s) => {
+            if (settled || !child.stdin || child.stdin.destroyed || !child.stdin.writable) return false;
+            try { child.stdin.write(s); return true; } catch { return false; }
+          },
           detach: () => {
             if (settled) return null;
             settled = true;
@@ -365,21 +372,27 @@ function spawnBackground(args, cwd, ctx) {
   // still read it. (In the TUI the parent rarely exits, but headless -p mode
   // does, and a background job should outlive the prompt.)
   //
-  // AN INTERACTIVE RUN CANNOT BE DETACHED. Measured on Windows: `detached: true` with piped stdout
-  // returns exit 0 and NO output, while the same command not detached returns its output normally — the
-  // detached process gets no working pipe back to us. Interactive needs that pipe in both directions, so
-  // it stays attached. The trade: it will not outlive the parent, which is the same lifetime its stdin
-  // already has.
+  // AND NOT ON WINDOWS AT ALL. The note above says `detached: true` with piped stdout returns exit 0 and no output; the
+  // same is true for a NON-interactive background command, which is the ordinary Ctrl+B case. Measured with pwsh:
+  //
+  //     detached=false  "exit 3"      -> exit 3, output intact
+  //     detached=true   "exit 3"      -> exit 0, output EMPTY
+  //     detached=true   "echo hello"  -> exit 0, output EMPTY
+  //
+  // So on Windows the process stays attached: its output and its exit code are the whole point of a background task, and
+  // a task that reports success whatever happened is worse than one that dies with its parent. Elsewhere the detach is
+  // what makes a job outlive headless `-p`, so it is kept.
+  const canDetach = process.platform !== 'win32' && !args.interactive;
   let shell;
   try { shell = shellSpawnArgs(command, { interactive: args.interactive }); } catch (e) { return `Error: ${e.message}`; }
   const child = cp.spawn(shell.bin, shell.args, {
-    cwd, detached: !args.interactive, stdio: [args.interactive ? 'pipe' : 'ignore', 'pipe', 'pipe'], env: { ...process.env },
+    cwd, detached: canDetach, stdio: [args.interactive ? 'pipe' : 'ignore', 'pipe', 'pipe'], env: { ...process.env },
   });
   const task = createTask(ctx, 'process', {
     description: args.description || args.command,
     command: args.command,
     pid: child.pid,
-    detached: !args.interactive,
+    detached: canDetach,
   });
   // The stdin pipe, when the caller asked for one. Kept on the TASK so `TaskInput` can reach it from a
   // task id alone — a tool receives an id, not a handle. Only `interactive` gets here, so a plain

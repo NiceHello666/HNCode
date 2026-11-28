@@ -60,6 +60,51 @@ const ONESHOT_MS = 20000;
 function win() { return process.platform === 'win32'; }
 
 /**
+ * The clipboard programs for a POSIX box, in preference order, chosen by what is actually installed.
+ *
+ * The old code hardcoded `xclip` for everything that was not macOS, which fails on two common machines: a Wayland
+ * session, where `wl-copy` is the native tool and `xclip` often is not installed at all; and any box without X11
+ * tooling, where the command was not found and the throw surfaced as "clipboard unavailable" with no hint about the
+ * fix.
+ *
+ * macOS is not consulted here: `pbcopy`/`pbpaste` ship with the system, so naming them is enough.
+ */
+function posixClipboard() {
+  if (process.platform === 'darwin') {
+    return { copy: ['pbcopy', []], paste: ['pbpaste', []] };
+  }
+  const has = (name) => {
+    try { return cp.execFileSync('which', [name], { stdio: ['ignore', 'pipe', 'ignore'] }).length > 0; }
+    catch { return false; }
+  };
+  // Wayland first when the session says so: on a Wayland desktop `xclip` may be present but talking to XWayland, where
+  // the selection does not reach native windows.
+  const wayland = !!process.env.WAYLAND_DISPLAY;
+  const order = wayland
+    ? ['wl-copy', 'xclip', 'xsel']
+    : ['xclip', 'xsel', 'wl-copy'];
+  for (const name of order) {
+    if (!has(name)) continue;
+    if (name === 'wl-copy') return { copy: ['wl-copy', []], paste: ['wl-paste', ['--no-newline']] };
+    if (name === 'xclip') return { copy: ['xclip', ['-selection', 'clipboard']], paste: ['xclip', ['-selection', 'clipboard', '-o']] };
+    return { copy: ['xsel', ['--clipboard', '--input']], paste: ['xsel', ['--clipboard', '--output']] };
+  }
+  return null;
+}
+
+/** Run a clipboard program, returning true on success. Never throws. */
+function runClipboard(spec, input) {
+  if (!spec) return false;
+  try {
+    const r = cp.spawnSync(spec[0], spec[1], {
+      input: input === undefined ? undefined : Buffer.from(input, 'utf8'),
+      timeout: 5000,
+    });
+    return !!r && r.status === 0;
+  } catch { return false; }
+}
+
+/**
  * Put text on the clipboard.
  *
  * WINDOWS: `clip.exe` on STDIN, with the PowerShell path as the fallback.
@@ -108,9 +153,10 @@ export function copyText(text) {
     if (r && r.status === 0) return true;
     return setClipboardText(s);
   }
-  const cmd = process.platform === 'darwin' ? 'pbcopy' : 'xclip -selection clipboard';
-  cp.execSync(cmd, { input: Buffer.from(s, 'utf8'), timeout: 5000 });
-  return true;
+  // POSIX: whichever of wl-copy / xclip / xsel is actually installed.
+  const clip = posixClipboard();
+  if (!clip) return false;
+  return runClipboard(clip.copy, s);
 }
 
 /** `Set-Clipboard` via PowerShell. False when no PowerShell can be run. */
@@ -318,8 +364,11 @@ function readOnce() {
     const s = String(b64).replace(/[^A-Za-z0-9+/=]/g, '');
     return Buffer.from(s, 'base64').toString('utf8');
   }
-  const cmd = process.platform === 'darwin' ? 'pbpaste' : 'xclip -selection clipboard -o';
-  return cp.execSync(cmd, { encoding: 'utf8', timeout: 5000 });
+  const clip = posixClipboard();
+  if (!clip) throw new Error('no clipboard tool (tried wl-paste, xclip and xsel)');
+  const r = cp.spawnSync(clip.paste[0], clip.paste[1], { encoding: 'utf8', timeout: 5000 });
+  if (!r || r.status !== 0) throw new Error(`${clip.paste[0]} failed`);
+  return String(r.stdout || '');
 }
 
 // Async read: uses the warm helper when available. Returns { text, via } so the

@@ -453,6 +453,11 @@ const filtered = (Array.isArray(cfg.toolFilter) && cfg.toolFilter.length
     this.ctx.onOutput = (chunk) => {
       if (chunk && this._currentToolId) this.onEvent({ type: 'tool_output', id: this._currentToolId, chunk });
     };
+    // A command whose output ended mid-line and then went quiet is most likely sitting at a prompt. The tool
+    // cannot answer it for the user, so it says so and the UI offers the composer.
+    this.ctx.onStdinWaiting = (waiting) => {
+      if (this._currentToolId) this.onEvent({ type: 'tool_stdin_waiting', id: this._currentToolId, waiting: !!waiting });
+    };
     // The Read snapshot pool lives ON THE AGENT, not on a per-turn ctx. It records
     // what the model has read (and the hashes at that moment) so a later Edit can
     // refuse to act on a stale snippet. /undo rewinds files on disk, i.e. it makes
@@ -684,6 +689,11 @@ const filtered = (Array.isArray(cfg.toolFilter) && cfg.toolFilter.length
     let toolCalls = [];
     let emittedEnd = false;
     let thought = '';
+    // Anthropic thinking blocks, WITH their signatures. They belong to the assistant
+    // message: the next request in the turn must replay them or the provider rejects the
+    // tool result that follows (see toAnthropic in llm.js). Reset per step because each
+    // step is a separate reply.
+    let thoughtBlocks = [];
     // decide whether running out of steps actually left the turn unfinished.
     let hadToolCallsOnFinalStep = false;
     // How many times this turn has continued an answer the output cap cut in half.
@@ -702,6 +712,11 @@ const filtered = (Array.isArray(cfg.toolFilter) && cfg.toolFilter.length
           // "thinking…" block. They are NOT part of the assistant message.
           thought += e.text;
           this.onEvent({ type: 'think', text: e.text });
+          break;
+        case 'thought_block':
+          // A signed thinking block from the provider. Opaque to us; kept whole so it can
+          // be sent back verbatim, which is the only way it is accepted.
+          if (e.block) thoughtBlocks.push(e.block);
           break;
         case 'truncated':
           // The reply hit max_tokens and was cut off mid-answer. Remember it: the
@@ -788,7 +803,7 @@ const filtered = (Array.isArray(cfg.toolFilter) && cfg.toolFilter.length
         }
       }
       if (this.stopRequested) { this.onEvent({ type: 'stopped' }); break; }
-      text = ''; toolCalls = []; emittedEnd = false; thought = '';
+      text = ''; toolCalls = []; emittedEnd = false; thought = ''; thoughtBlocks = [];
       this._truncated = false;
       // Report the start of each model round so the TUI can count steps/rounds.
       this.onEvent({ type: 'step_start', step, round: step + 1 });
@@ -1056,14 +1071,20 @@ const filtered = (Array.isArray(cfg.toolFilter) && cfg.toolFilter.length
 
       // Append the assistant message. NEVER push one that carries neither text
       // nor tool_calls: upstream rejects it with "content or tool_calls must be
-      // set".
+      // set". A signed thinking block counts as content for this protocol — a reply
+      // that only thought and called a tool carries nothing else, and dropping it
+      // breaks the pairing its tool result depends on.
       const hasText = !!(text && text.trim());
       const hasCalls = toolCalls.length > 0;
-      if (hasText || hasCalls) {
+      const hasThoughtBlocks = thoughtBlocks.length > 0;
+      if (hasText || hasCalls || hasThoughtBlocks) {
         const assistantMsg = {
           role: 'assistant',
           content: hasText ? text : null,
           toolCalls: hasCalls ? toolCalls : undefined,
+          // Not part of the answer, never rendered from here: it is the provider's own
+          // accounting of its reasoning, replayed verbatim on the next request.
+          thoughtBlocks: hasThoughtBlocks ? thoughtBlocks : undefined,
         };
         // Mixin seam: llmResponse - plugins may rewrite the assistant text before it is saved.
         try { const out = await runPatch('llmResponse', { content: assistantMsg.content, toolCalls: assistantMsg.toolCalls }, (c) => c); if (out) { if (out.content !== undefined) assistantMsg.content = out.content; if (out.toolCalls !== undefined) assistantMsg.toolCalls = out.toolCalls; } } catch (e) { console.error('[hncode-plugin] llmResponse error:', e.message); }
