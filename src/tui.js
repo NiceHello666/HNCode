@@ -12526,7 +12526,7 @@ const agents = readAgentsMd(state.cwd || state.workspace || cfg.workspace, state
     // The user's message is on disk before the agent has done anything. A crash
     // this early used to lose the entire prompt, because the first save was at
     // turn end.
-    try { sess.saveSession(session); } catch { }
+    try { sess.saveSessionSoon(session); } catch { }
 
     // Called at every step boundary. `messages` is the array the agent appends to,
     // so re-filtering it into the session and writing to disk keeps the saved
@@ -13576,7 +13576,7 @@ const agents = readAgentsMd(state.cwd || state.workspace || cfg.workspace, state
     // than restarting it at zero (the numbers have to sum across the whole
     // session for a cost readout to mean anything).
     session.usage = state.usage || {};
-    sess.saveSession(session);
+    sess.saveSessionSoon(session);
     const turnMs = state.turnStart ? Date.now() - state.turnStart : 0;
     // The live row is `<phrase> <gray>[<time> | <tokens>]`. At the end we keep the same row
     // shape and only rewrite the WORD, so the brackets, the duration and the token count
@@ -13623,7 +13623,7 @@ const agents = readAgentsMd(state.cwd || state.workspace || cfg.workspace, state
     if (turnMs > 0) {
       state.lastTurnMs = turnMs;
       session.lastTurnMs = turnMs;
-      sess.saveSession(session);
+      sess.saveSessionSoon(session);
       // The turn is on screen but may NOT be on disk. A save failure was silent apart
       // from a line in ~/.hncode/session-errors.log, and a session whose transcript had
       // grown past the string limit failed every save for over an hour without the user
@@ -14721,7 +14721,7 @@ export async function startTUI(opts) {
       onSubmit: (values) => {
         session.title = String((values && values.title) || '').slice(0, 200);
         state.sessionTitle = session.title;
-        try { saveSession(session); } catch { /* the next save carries it */ }
+        try { saveSessionSoon(session); } catch { /* the next save carries it */ }
         // The terminal's title belongs to the session, so renaming here has to reach it too — otherwise the tab
         // keeps the old name until something else happens to write it.
         try { writeWindowTitle(session, stdout); } catch { /* the title is decoration */ }

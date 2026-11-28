@@ -33,7 +33,13 @@ export function toolResultRows(msg, width, expanded) {
   // stray blank line would render as a lone "↳ " with no content.
   while (rawLines.length && rawLines[0].trim() === '') rawLines.shift();
   while (rawLines.length && rawLines[rawLines.length - 1].trim() === '') rawLines.pop();
-  const MAX_RESULT_LINES = expanded ? Infinity : 12;
+  // COLLAPSED IS A GLANCE; EXPANDED IS A READ, NOT A DUMP.
+  //
+  // Expanded used to be `Infinity`, so Ctrl+O on a command that printed 3000 lines put all 3000 into the transcript: the
+  // conversation above it scrolled away, the scrollbar became meaningless, and every frame afterwards paid to lay out
+  // rows nobody would read. The cap here is what a person can actually scan; past that the output belongs in a file,
+  // which is what the hint says.
+  const MAX_RESULT_LINES = expanded ? 400 : 12;
   // The exit-code line is bookkeeping for the AGENT and is NEVER shown to the user — success or failure. A failure is
   // already legible from the RED result text below. `[error: …]` is kept: it carries the message, not just a code.
   const visible = rawLines.filter((ln) => !/^\[exit code:/.test(ln.trim()));
@@ -49,7 +55,7 @@ export function toolResultRows(msg, width, expanded) {
   if (hasDiff) {
     // Same collapse rule as elsewhere: a short preview by default, everything once Ctrl+O expands. 16 rows (not 12)
     // because a change renders as a PAIR: `- old` then `+ new`.
-    const MAX = expanded ? Infinity : 16;
+    const MAX = expanded ? 400 : 16;
     // Show the unified diff WITH context rows (ctx = dim) so a change is not two orphaned blocks; `gap` rows mark where
     // unchanged lines were elided.
     const total = msg.diff.length;
@@ -104,7 +110,11 @@ export function toolResultRows(msg, width, expanded) {
     }
     if (total > emitted) {
       diffRows.push({
-        text: col(`… (${total - emitted} more lines, ctrl+o to expand)`, C.gray),
+        // A DEAD-END Ctrl+O IS WORSE THAN NO HINT. Collapsed it expands; already expanded there is nothing left to
+        // reveal, so the line says how much was withheld instead of inviting a key that would do nothing.
+        text: col(expanded
+          ? `… (${total - emitted} more lines not shown; the full diff went to the model)`
+          : `… (${total - emitted} more lines, ctrl+o to expand)`, C.gray),
         ind: cont, raw: true,
       });
     }
@@ -184,10 +194,18 @@ export function toolResultRows(msg, width, expanded) {
       });
     });
     if (visible.length > MAX_RESULT_LINES) {
-      // The hint says HOW to see the rest: "… N more lines" alone gave the user no way to know Ctrl+O would reveal it.
-      // Only reachable while COLLAPSED: expanded, `MAX_RESULT_LINES` is Infinity.
+      // THE HINT SAYS HOW TO SEE THE REST, and what "the rest" is depends on where we are.
+      //
+      // Collapsed: Ctrl+O expands — that is the whole point of the line.
+      // Already expanded: there is no more to reveal here, so inviting another Ctrl+O would be a dead end. Say how much
+      // was withheld and where it does live, which is the tool result the model was given (and, when the result was
+      // spilled, the file it was written to).
+      const rest = visible.length - MAX_RESULT_LINES;
+      const text = expanded
+        ? `… ${rest} more line${rest === 1 ? '' : 's'} not shown; the full output went to the model (ctrl+o to collapse)`
+        : `… ${rest} more lines, ctrl+o to expand`;
       diffRows.push({
-        text: `… ${visible.length - MAX_RESULT_LINES} more lines, ctrl+o to expand`,
+        text,
         ind: cont,
         color: failed ? C.red : C.gray,
       });
