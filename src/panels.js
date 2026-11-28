@@ -5,6 +5,7 @@
 
 import { C } from './colors.js';
 import { col, fitAnsi, wrapWords } from './text.js';
+import { uiText } from './i18n.js';
 
 // ---- title strip ----------------------------------------------------------
 
@@ -167,7 +168,7 @@ export function renderTodoPanel(state, w, hoverTop, dragTop) {
   const out = [];
   const ruleColor = dragTop ? C.scrollThumbActive : (hoverTop ? C.hover : C.border);
   out.push(col('─'.repeat(w), ruleColor));
-  out.push(col('  Todo', C.cyan + C.bold));
+  out.push(col(uiText('  Todo'), C.cyan + C.bold));
   const want = todoRowCount(state);
   // CREATION ORDER, ALWAYS. Which rows fit is still the panel's decision — it takes the first `want` in order.
   const rows = todos.slice(0, want);
@@ -177,10 +178,10 @@ export function renderTodoPanel(state, w, hoverTop, dragTop) {
     const counts = { done: 0, in_progress: 0, pending: 0 };
     for (const t of todos) if (!rows.includes(t)) counts[t.status] = (counts[t.status] || 0) + 1;
     const dist = [['done', 'done'], ['in_progress', 'in progress'], ['pending', 'pending']]
-      .filter(([k]) => counts[k] > 0).map(([k, label]) => `${counts[k]} ${label}`).join(', ');
+      .filter(([k]) => counts[k] > 0).map(([k, label]) => `${counts[k]} ${uiText(label)}`).join(', ');
     // The hint appears exactly when rows are hidden — which is exactly when Ctrl+T is useful — so this is where the key
     // has to be discoverable.
-    out.push(col(`  … +${hidden} more${dist ? ` (${dist})` : ''} · ctrl+t to expand · drag the top rule to resize`, C.gray));
+    out.push(col(`  ${uiText(`… +${hidden} more`)}${dist ? ` (${dist})` : ''} ${uiText('· ctrl+t to expand · drag the top rule to resize')}`, C.gray));
   }
   return out;
 }
@@ -231,7 +232,7 @@ export function renderQueuePanel(state, w, hoverTop, dragTop) {
   const out = [];
   const ruleColor = dragTop ? C.scrollThumbActive : (hoverTop ? C.hover : C.border);
   out.push(col('─'.repeat(w), ruleColor));
-  out.push(col('  Queue', C.cyan + C.bold));
+  out.push(col(uiText('  Queue'), C.cyan + C.bold));
 
   const want = queueRowCount(state);
   const rows = queued.slice(0, want);
@@ -243,12 +244,13 @@ export function renderQueuePanel(state, w, hoverTop, dragTop) {
 
   const hidden = queued.length - rows.length;
   if (hidden > 0) {
+    const more = uiText(`… +${hidden} more`);
     const hint = state.running
-      ? `… +${hidden} more · ↑ to edit · ctrl-s to steer immediately · drag top rule to resize`
-      : `… +${hidden} more · ↑ to edit · will send now · drag top rule to resize`;
+      ? `${more} · ${uiText('↑ to edit · ctrl-s to steer immediately')} · ${uiText('drag top rule to resize')}`
+      : `${more} · ${uiText('↑ to edit · will send now')} · ${uiText('drag top rule to resize')}`;
     out.push(col('  ' + hint, C.gray));
   } else {
-    const hint = state.running ? '↑ to edit · ctrl-s to steer immediately' : '↑ to edit · will send now';
+    const hint = state.running ? uiText('↑ to edit · ctrl-s to steer immediately') : uiText('↑ to edit · will send now');
     out.push(col('  ' + hint, C.gray));
   }
 

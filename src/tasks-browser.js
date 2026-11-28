@@ -15,6 +15,7 @@
 import { C } from './colors.js';
 import { visualWidth } from './term.js';
 import { STATUS_LABEL } from './agent-task.js';
+import { uiText } from './i18n.js';
 
 const ELLIPSIS = '\u2026';
 const ESC = '\x1b';
@@ -127,11 +128,11 @@ export function renderTasksBrowser(state, cols, rows) {
   const visible = visibleTasks(state.tasks, state.filter);
   const counts = countByStatus(visible);
 
-  const segs = [C.cyan + C.bold + ' TASK BROWSER ' + C.reset, C.gray + ' filter=' + (state.filter === 'all' ? 'ALL' : 'ACTIVE') + ' ' + C.reset];
-  if (counts.running) segs.push(C.green + ' ' + counts.running + ' running ' + C.reset);
-  if (counts.completed) segs.push(C.gray + ' ' + counts.completed + ' completed ' + C.reset);
-  if (counts.failed) segs.push(C.red + ' ' + counts.failed + ' interrupted ' + C.reset);
-  segs.push(C.gray + ' ' + visible.length + ' total ' + C.reset);
+  const segs = [C.cyan + C.bold + uiText(' TASK BROWSER ') + C.reset, C.gray + ' filter=' + uiText(state.filter === 'all' ? 'ALL' : 'ACTIVE') + ' ' + C.reset];
+  if (counts.running) segs.push(C.green + ' ' + counts.running + uiText(' running ') + C.reset);
+  if (counts.completed) segs.push(C.gray + ' ' + counts.completed + uiText(' completed ') + C.reset);
+  if (counts.failed) segs.push(C.red + ' ' + counts.failed + uiText(' interrupted ') + C.reset);
+  segs.push(C.gray + ' ' + visible.length + uiText(' total ') + C.reset);
   const header = fitExactly(segs.join(''), cols);
 
   const key = (s) => C.cyan + C.bold + s + C.reset;
@@ -191,7 +192,7 @@ export function renderTasksBrowser(state, cols, rows) {
   const listInnerW = listW - 2;
   let listLines;
   if (!visible.length) {
-    listLines = [C.gray + (state.filter === 'active' ? 'No active tasks. Tab = show all.' : 'No background tasks in this session.') + C.reset];
+    listLines = [C.gray + uiText(state.filter === 'active' ? 'No active tasks. Tab = show all.' : 'No background tasks in this session.') + C.reset];
   } else {
     listLines = visible.map((t, i) => {
       const selected = i === state.selectedIndex;
@@ -206,7 +207,7 @@ export function renderTasksBrowser(state, cols, rows) {
       const idCol = t.kind === 'agent' ? C.green : t.kind === 'question' ? C.orange : C.blue;
       const idText = selected ? idCol + C.bold + t.taskId + C.reset : idCol + t.taskId + C.reset;
       const pad = ' '.repeat(Math.max(0, 20 - visWidth(t.taskId)));
-      const badge = statusColorToken(t.status) + (STATUS_LABEL[t.status] || t.status) + C.reset;
+      const badge = statusColorToken(t.status) + uiText(STATUS_LABEL[t.status] || t.status) + C.reset;
       const prefix = lead + ptr + idText + pad + ' ' + badge;
       const budget = Math.max(0, listInnerW - visWidth(prefix) - 1);
       if (budget < 4) return fitExactly(prefix, listInnerW);
@@ -243,7 +244,7 @@ export function renderTasksBrowser(state, cols, rows) {
     const val = (s) => C.white + String(s) + C.reset;
     detailLines.push(label('Task ID:') + val(task.taskId));
     detailLines.push(label('Kind:') + val(task.kind));
-    detailLines.push(label('Status:') + statusColorToken(task.status) + (STATUS_LABEL[task.status] || task.status) + C.reset);
+    detailLines.push(label(uiText('Status:')) + statusColorToken(task.status) + uiText(STATUS_LABEL[task.status] || task.status) + C.reset);
     detailLines.push(label('Description:') + val(singleLine(task.description) || '-'));
     if (task.kind === 'process') {
       if (task.command && task.command !== task.description) detailLines.push(label('Command:') + val(singleLine(task.command)));

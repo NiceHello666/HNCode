@@ -5,6 +5,7 @@
 
 import { C } from './colors.js';
 import { col, visualCol, wrapWords } from './text.js';
+import { uiText } from './i18n.js';
 import { fmtTokens } from './format.js';
 import { SPIN_PLACEHOLDER } from './animate.js';
 
@@ -32,13 +33,13 @@ export function compactionRows(msg, width, expanded, spin) {
     const detail = (msg.tokensBefore != null && msg.tokensAfter != null)
       ? col(` (${fmtTokens(msg.tokensBefore)} → ${fmtTokens(msg.tokensAfter)} tokens)`, C.gray) : '';
     const hint = (msg.text || '').trim()
-      ? col(` (Ctrl-O to ${expanded ? 'hide' : 'show'} compaction summary)`, C.gray) : '';
-    head = bullet + col('Compaction complete', C.green + C.bold) + detail + hint;
+      ? col(uiText(` (Ctrl-O to ${expanded ? 'hide' : 'show'} compaction summary)`), C.gray) : '';
+    head = bullet + col(uiText('Compaction complete'), C.green + C.bold) + detail + hint;
   } else if (canceled) {
-    head = bullet + col('Compaction cancelled', C.yellow + C.bold)
+    head = bullet + col(uiText('Compaction cancelled'), C.yellow + C.bold)
       + (msg.reason ? col(' (' + msg.reason + ')', C.gray) : '');
   } else {
-    head = bullet + col('Compacting context…', C.cyan + C.bold);
+    head = bullet + col(uiText('Compacting context…'), C.cyan + C.bold);
   }
   const out = [{ text: head, ind: '', raw: true }];
   // WHERE THE EARLIER CONVERSATION WENT.
@@ -50,8 +51,8 @@ export function compactionRows(msg, width, expanded, spin) {
   if (done) {
     const trimmed = Number(msg.trimmed) || 0;
     const note = trimmed > 0
-      ? `${trimmed} earlier message${trimmed === 1 ? '' : 's'} left the screen — summarised above, still in the session file (/recap to read it back)`
-      : 'the full conversation is still in the session file (/recap to read it back)';
+      ? uiText(`${trimmed} earlier message${trimmed === 1 ? '' : 's'} left the screen — summarised above, still in the session file (/recap to read it back)`)
+      : uiText('the full conversation is still in the session file (/recap to read it back)');
     out.push({ text: INDENT + col(note, C.gray), ind: INDENT, raw: true });
   }
   if (msg.instruction) {
@@ -103,14 +104,14 @@ export function thinkingRows(msg, width, expanded) {
     // The spinner frame is NOT baked in here: a glyph that changes every tick would invalidate this row's cache and
     // re-wrap the whole reasoning block each time, which is what made long thinking look laggy. The caller substitutes
     // the live frame outside the cache instead.
-    out.push({ text: SPIN_PLACEHOLDER + ' thinking…', ind: '', color: C.gray });
+    out.push({ text: SPIN_PLACEHOLDER + uiText(' thinking…'), ind: '', color: C.gray });
     const vis = contentLines.length > PREVIEW ? contentLines.slice(-PREVIEW) : contentLines;
     for (const l of vis) out.push({ text: it(l), ind: INDENT, color: C.gray });
   } else {
     const shown = contentLines.slice(0, PREVIEW);
     shown.forEach((l, i) => out.push({ text: it(l), ind: i === 0 ? '● ' : INDENT, color: C.gray }));
     if (contentLines.length > PREVIEW) {
-      out.push({ text: `… (${contentLines.length - PREVIEW} more lines, ctrl+o to expand)`, ind: INDENT, color: C.gray });
+      out.push({ text: uiText(`… (${contentLines.length - PREVIEW} more lines, ctrl+o to expand)`), ind: INDENT, color: C.gray });
     }
   }
   return out;

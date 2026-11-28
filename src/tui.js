@@ -144,6 +144,11 @@ import { probeTerminal, terminalCaps, syncOutputUsable, kittyKeysUsable, isLight
 import { noteTerminalFlush, getTerminalFlushTick } from './flush-tick.js';
 import { forkOf } from './fork.js';
 import { appendLog } from './log-file.js';
+// The terminal UI's own strings. Only what a PERSON reads is translated — command
+// descriptions, the help panel, menu hints, turn states. Never the system prompt, never a
+// tool description: those are instructions to the model, and a half-translated instruction
+// set would be worse than an English one.
+import { t, tOr, noticeText, uiText, setUiLang as i18nSetUiLang, getUiLang as i18nGetUiLang } from './i18n.js';
 // See src/row-cache.js for why the bound is by USE, not by position, and why the key
 // is content: a key that missed one layout input would serve rows drawn for a
 // different frame, which is a mis-drawn screen rather than a stale cache.
@@ -300,10 +305,47 @@ function costEntry(cost) {
   };
 }
 
+// ---- the UI's language ----
+//
+// One module-level value, set once from `cfg.lang` when the TUI starts. The alternative — a
+// parameter threaded through every renderer — would touch dozens of signatures for a value
+// that never changes while the process runs.
+//
+// English is the fallback at every level: an unimplemented language, an untranslated
+// command description and a missing key all come back as the English text in the code.
+let uiLang = 'en';
+
+/** Point the UI at a language id. Called once, from startTUI. */
+export function setUiLang(lang) { uiLang = lang === 'zh' ? 'zh' : 'en'; i18nSetUiLang(uiLang); }
+/** The language the UI is currently speaking. */
+export function getUiLang() { return i18nGetUiLang(); }
+
+/**
+ * Translate one key, falling back to `fallback` — the English text at the call site.
+ *
+ * Use this rather than `t()`: a command's English description belongs beside the command,
+ * not duplicated in a second file that can drift away from it. `vars` fills the `{name}`
+ * placeholders in the TRANSLATED string; the fallback is returned verbatim, since it
+ * carries its own literals already.
+ */
+export function tr(key, fallback, vars) {
+  const s = tOr(uiLang, key, fallback);
+  if (!vars || s === fallback) return s;
+  let out = s;
+  for (const k of Object.keys(vars)) out = out.split('{' + k + '}').join(String(vars[k]));
+  return out;
+}
+
+/**
+ * Translate a dialog TITLE. Titles are composed all over the command handlers, with no
+ * key at the call site, so they are matched like notices — including ones that interpolate
+ * a name ("Add A Model To X"), via uiText's placeholder normalisation.
+ */
+export function trTitle(title) {
+  return uiText(title);
+}
+
 // ---- Slash command registry ----
-// Mirrors kimi-code-cli's BUILTIN_SLASH_COMMANDS (registry.ts): name, aliases,
-// description, and an argument hint. Commands are sorted by priority so the
-// most useful appear first in the `/` menu.
 // Monotonic counter for /search: each query bumps it so a slow ripgrep result
 // from an earlier keystroke is discarded instead of overwriting newer hits.
 let searchSeq = 0;
@@ -371,8 +413,6 @@ export const COMMANDS = [
   { name: 'files', aliases: ['tree'], desc: 'Browse the workspace as a tree; Enter inserts the path', priority: 60, argumentHint: '[path-filter]' },
   { name: 'checkpoints', aliases: ['cp'], desc: 'List per-file checkpoints and restore one file on its own', priority: 55, argumentHint: '[list | restore <n> | diff <n>]' },
   { name: 'save-history', desc: 'Keep the display-only transcript (notices, warnings, compaction, plan cards, reasoning) in the saved session', priority: 60, argumentHint: '[on|off|thinking|nothinking]' },
-  { name: 'save-history', desc: 'Keep the display-only transcript (notices, warnings, compaction, plan cards, reasoning) in the saved session', priority: 60, argumentHint: '[on|off|thinking|nothinking]' },
-  
   { name: 'export-md', aliases: ['export'], desc: 'Export current session as a Markdown file', priority: 40, argumentHint: '[output-path]' },
   { name: 'import-session', aliases: ['import'], desc: 'Attach a Markdown file to the prompt so the AI reads it without a tool call', priority: 40, argumentHint: '<file.md>' },
   { name: 'copy', desc: 'Copy the last assistant message to the clipboard', priority: 40 },
@@ -409,9 +449,24 @@ export const COMMANDS = [
   { name: 'update', desc: 'Check for and install a newer version', priority: 40, argumentHint: '[-y]' },
   { name: 'auto-update', desc: 'Toggle automatic background updates (check at startup + every 30 min)', priority: 40, argumentHint: '[on|off]' },
   { name: 'auto-compact', aliases: ['autocompact'], desc: 'Auto context compaction: toggle, or set the trigger/keep ratios', priority: 40, argumentHint: '[on|off | threshold <n> | keep <n>]' },
+  { name: 'lang', desc: 'Switch the interface language (zh / en)', priority: 60, argumentHint: '[zh|en]' },
   { name: 'version', desc: 'Show version information', priority: 20 },
   { name: 'exit', aliases: ['quit', 'q'], desc: 'Exit the application', priority: 20 },
 ].sort((a, b) => (b.priority || 0) - (a.priority || 0) || a.name.localeCompare(b.name));
+
+/**
+ * The command list as the user sees it: names as typed, descriptions translated.
+ *
+ * Done at RENDER time rather than at registration, so `/lang zh` takes effect on the next
+ * frame without rebuilding the registry. A command with no translation keeps its English
+ * description, which is why the fallback is the text itself.
+ */
+function localizedCommands() {
+  return allCommands().map((c) => {
+    const translated = tOr(uiLang, `cmd.${c.name}`, null);
+    return translated ? { ...c, desc: translated, description: translated } : c;
+  });
+}
 
 // The shortcuts the web UI shows as buttons. They are ordinary slash commands —
 // the browser runs them through the same `dispatch` the keyboard uses, so nothing
@@ -1561,7 +1616,7 @@ function messageLines(msg, width, workspace, expanded, spin, pulseStart, rawMode
           out.push({ text: C.codeBg + writeRow + C.bgReset, ind: i === 0 ? '↳ ' : indent, raw: true });
       });
       const shown = Math.min(lines.length, MAX);
-      if (totalLines > shown) out.push({ text: col(`… ${totalLines - shown} more lines, ctrl+o to expand`, C.gray), ind: indent, raw: true });
+      if (totalLines > shown) out.push({ text: col(uiText(`… ${totalLines - shown} more lines, ctrl+o to expand`), C.gray), ind: indent, raw: true });
     }
 
     // The Edit diff is NOT drawn here: it rides on the tool_result message and is
@@ -4063,7 +4118,7 @@ const queueH = takeover ? 0 : queuePanelHeight(state);
     // the cursor starts there rather than on a field that does not exist.
     if (!f.hideFields) fields.forEach((field, i) => {
         const active = i === f.fieldIdx;
-        const label = col((field.label + ':').padEnd(f.labelW + 1), active ? C.cyan : C.gray);
+        const label = col((uiText(field.label) + ':').padEnd(f.labelW + 1), active ? C.cyan : C.gray);
         const shown = active ? renderFieldValue(field, true) : renderFieldValue(field, false);
         fieldBodyRows.push(body.length);
         body.push(label + shown);
@@ -4090,13 +4145,13 @@ const queueH = takeover ? 0 : queuePanelHeight(state);
       const typeStr = types.map((t) => t === f.type
         ? col((typeActive ? '> ' : '  ') + t, typeActive ? (C.cyan + C.bold) : C.cyan)
         : col('  ' + t, C.gray)).join('  ');
-      const typeLabel = col(`${f.typeLabel}:`.padEnd(f.labelW + 1), typeActive ? C.cyan : C.gray);
-      const typeHint = f.type ? '' : col('  ← choose', C.yellow);
+      const typeLabel = col(`${uiText(f.typeLabel)}:`.padEnd(f.labelW + 1), typeActive ? C.cyan : C.gray);
+      const typeHint = f.type ? '' : col(uiText('  ← choose'), C.yellow);
       body.push(typeLabel + typeStr + typeHint);
       typeBodyRow = body.length - 1;
     }
     body.push('');
-    body.push(col(f.hint || 'Tab next field · Enter submit · Esc cancel', C.gray));
+    body.push(col(f.hint ? uiText(f.hint) : uiText('Tab next field · Enter submit · Esc cancel'), C.gray));
     body.push(RULE);
     // The form is a POPUP, like the picker — it used to be a full-screen takeover,
     // which meant /provider and /model editing blanked the whole screen and hid the
@@ -4114,8 +4169,8 @@ const queueH = takeover ? 0 : queuePanelHeight(state);
     // terminal, so a full-width rule computed here would not fit. The overlay
     // step turns it into the box's inner width once that is known.
     const RULE = { __rule: true };
-    const titleSuffix = pick.searchable === false ? '' : ' (type to search)';
-    const hintText = pick.hint || '↑↓ navigate · Enter select · Esc cancel';
+    const titleSuffix = pick.searchable === false ? '' : ` (${tr('tui.hint.typeToSearch', 'type to search')})`;
+    const hintText = pick.hint || tr('tui.hint.navSelect', '↑↓ navigate · Enter select · Esc cancel');
     const body = [
       col(pick.title || '', C.cyan + C.bold) + col(titleSuffix, C.gray),
       RULE,
@@ -4185,18 +4240,22 @@ const queueH = takeover ? 0 : queuePanelHeight(state);
     const itemBodyRows = [];
     // Empty state: distinguish "still searching" from "no hits".
     if (!shown.length) {
-      const msg = pick._loading ? 'Searching…' : (pick.searchable !== false && query ? 'No matches' : '');
+      const msg = pick._loading ? uiText('Searching…') : (pick.searchable !== false && query ? uiText('No matches') : '');
       if (msg) body.push(col('  ' + msg, C.gray));
     }
     shown.forEach((item, j) => {
       const idx = first + j;
       const isSel = idx === selIdx;
       const ptr = isSel ? col('> ', C.cyan) : '  ';
-      const label = col(String(item.label), isSel ? (C.cyan + C.bold) : C.white);
-      const sub = item.sub != null && item.sub !== '' ? col('  ' + String(item.sub), C.gray) : '';
+      // Every picker's rows pass through here, so this is the one place that translates
+      // their visible text — /provider, /model, /settings, the context menu and any
+      // plugin picker. Dynamic values (a provider name, a URL) have no entry and come
+      // back unchanged.
+      const label = col(uiText(String(item.label)), isSel ? (C.cyan + C.bold) : C.white);
+      const sub = item.sub != null && item.sub !== '' ? col('  ' + uiText(String(item.sub)), C.gray) : '';
       // The "current" marker sits right after the name (not right-aligned at the far
       // edge), with a wider gap so it does not crowd the label.
-      const cur = item.current ? col('   ← current', C.green) : '';
+      const cur = item.current ? col(uiText('   ← current'), C.green) : '';
       // `valueTag` is the setting's CURRENT VALUE. It goes after the description, not
       // right-aligned: the card sizes itself to its widest row, so padding a value out to
       // the terminal width made every row full-width and the card filled the screen.
@@ -5104,7 +5163,12 @@ const queueH = takeover ? 0 : queuePanelHeight(state);
     const todoTopRow = lines.length;
     const todoPanel = renderTodoPanel(state, w, state.todoResizeHover, state.todoResizeDrag);
     // The rule and the `  Todo` line are the grab area; the item rows below are not.
-    for (let r = 0; r < Math.min(2, todoPanel.length); r++) {
+    // A dialog floats over these rows. Keeping the drag hitbox live let the todo rule
+    // "pass through" the dialog and swallow clicks on the picker/menu item above it —
+    // the hit list is searched last-first, so this full-width row won over the control
+    // the user actually aimed at. Draw the panel as usual, but hand the pointer to
+    // the dialog while one is open.
+    for (let r = 0; r < Math.min(2, todoPanel.length) && !dialog; r++) {
       addHit(todoTopRow + r, 0, w - 1, { kind: 'todoResize' });
     }
     for (const l of todoPanel) lines.push(l);
@@ -5116,7 +5180,7 @@ const queueH = takeover ? 0 : queuePanelHeight(state);
     // Same rule as the todo panel: the header is the handle, not every row.
     const queueTopRow = lines.length;
     const queuePanel = renderQueuePanel(state, w, state.queueResizeHover, state.queueResizeDrag);
-    for (let r = 0; r < Math.min(2, queuePanel.length); r++) {
+    for (let r = 0; r < Math.min(2, queuePanel.length) && !dialog; r++) {
       addHit(queueTopRow + r, 0, w - 1, { kind: 'queueResize' });
     }
     for (const l of queuePanel) lines.push(l);
@@ -5313,7 +5377,7 @@ const queueH = takeover ? 0 : queuePanelHeight(state);
       lines.push(menuRow(mark + nameField + hint + ' '.repeat(pad) + desc));
     });
     const footer = isArgLevel
-      ? `(${sel}/${totalMatches})  Enter or Tab to insert · Esc to dismiss`
+      ? `(${sel}/${totalMatches})  ${tr('tui.hint.insertDismiss', 'Enter or Tab to insert · Esc to dismiss')}`
       : `(${sel}/${totalMatches})`;
     lines.push(menuRow(col(footer, C.gray)));
   }
@@ -5347,7 +5411,7 @@ const queueH = takeover ? 0 : queuePanelHeight(state);
       addHit(lines.length, 2, mInner, { kind: 'mentionItem', index: globalIndex });
       lines.push(menuRow(mark + label + ' '.repeat(pad)));
     });
-    lines.push(menuRow(col(`(${sel}/${totalMatches})  Enter or Tab to insert · Esc to dismiss`, C.gray)));
+    lines.push(menuRow(col(`(${sel}/${totalMatches})  ${tr('tui.hint.insertDismiss', 'Enter or Tab to insert · Esc to dismiss')}`, C.gray)));
   }
 
   const cwd = state.cwd || '';
@@ -6390,12 +6454,12 @@ export function makeState({ cfg, session, opts }) {
 // prefix is stripped so the status line never shows a number.
 export function setTip(state) {
   if (TIPS.length === 0) return;
-  if (TIPS.length === 1) { state.tip = stripTipPrefix(TIPS[0]); return; }
+  if (TIPS.length === 1) { state.tip = uiText(stripTipPrefix(TIPS[0])); return; }
   let i;
   do { i = Math.floor(Math.random() * TIPS.length); }
   while (i === state._tipIndex);
   state._tipIndex = i;
-  state.tip = stripTipPrefix(TIPS[i]);
+  state.tip = uiText(stripTipPrefix(TIPS[i]));
 }
 
 function stripTipPrefix(s) {
@@ -6774,7 +6838,7 @@ export function refreshMenu(state) {
   // matches skill names directly).
   const cmdList = skillIntent
     ? []
-    : rankByMatch(allCommands(), prefix);
+    : rankByMatch(localizedCommands(), prefix);
   state.menuList = [...cmdList, ...filteredSkills];
   state.menuSel = Math.min(state.menuSel, Math.max(0, state.menuList.length - 1));
   state.menuOpen = state.menuList.length > 0;
@@ -7098,8 +7162,9 @@ export async function dispatch(cmdRaw, arg, state, cfg, session, h, submit, stdo
           // width of the whole card. The description is not lost — it is what the edit
           // form shows, which is where the user is about to change the value anyway.
           const changed = isSet(cfg, d.key) && value !== d.default;
+          const label = tr('setting.label.' + d.key, d.ui.label || d.key);
           items.push({
-            label: d.ui.label || d.key,
+            label,
             // A prose value is summarised by its SIZE. Printing the paragraph truncated to
             // forty characters told the user nothing except that it did not fit.
             valueTag: d.kind === 'text' ? proseSummary(value) : value,
@@ -7110,7 +7175,7 @@ export async function dispatch(cmdRaw, arg, state, cfg, session, h, submit, stdo
             // needs — none of it belongs on the row.
             setKey: d.key,
             setKind: d.kind,
-            setHint: d.ui ? d.ui.hint : '',
+            setHint: tr('setting.hint.' + d.key, d.ui ? d.ui.hint : ''),
           });
         }
       }
@@ -7281,6 +7346,29 @@ export async function dispatch(cmdRaw, arg, state, cfg, session, h, submit, stdo
     }
 
 
+    case 'lang': {
+      // `/lang` with no argument reports the current one; with an argument it switches.
+      //
+      // The choice is PERSISTED to config.toml, because it is not a per-turn setting: a
+      // person who reads Chinese wants the next launch in Chinese too, and asking again
+      // every session is the kind of friction that makes a tool feel foreign.
+      const want = String(raw || '').trim().toLowerCase();
+      if (!want) {
+        const now = getUiLang();
+        app(`Interface language: ${now === 'zh' ? '中文' : 'English'}  (/lang zh|en)`);
+        return;
+      }
+      if (want !== 'zh' && want !== 'en') {
+        appErr('Usage: /lang zh|en');
+        return;
+      }
+      setUiLang(want);
+      try { setConfigString('lang', want); } catch { /* an unwritable config must not undo the switch */ }
+      if (cfg) cfg.lang = want;
+      app(want === 'zh' ? '界面语言：中文' : 'Interface language: English');
+      return;
+    }
+
     case 'model': {
       const models = (cfg.raw && cfg.raw.models) || {};
       let names = Object.keys(models);
@@ -7400,7 +7488,7 @@ export async function dispatch(cmdRaw, arg, state, cfg, session, h, submit, stdo
               searchable: true,
               onPick: (pit) => {
                 openForm({
-                  title: `Add A Model To ${pit.label}`,
+                  title: tr('tui.title.addModelTo', 'Add A Model To {name}', { name: pit.label }),
                   fields: [
                     { key: 'model', label: 'Model ID' },
                     { key: 'display_name', label: 'Display Name' },
@@ -7475,7 +7563,7 @@ export async function dispatch(cmdRaw, arg, state, cfg, session, h, submit, stdo
           sub: (pr[name].base_url || pr[name].baseUrl || '').replace(/^https?:\/\//, '') || '(no base_url)',
           current: name === cfg.provider,
         }));
-        rows.push({ label: '＋ Add provider…', sub: 'create a new [providers.*] entry', action: 'add' });
+        rows.push({ label: uiText('＋ Add provider…'), sub: uiText('create a new [providers.*] entry'), action: 'add' });
         return rows;
       };
       const pr = (cfg.raw && cfg.raw.providers) || {};
@@ -8846,15 +8934,17 @@ export async function dispatch(cmdRaw, arg, state, cfg, session, h, submit, stdo
       // The commands were one flat list — 91 entries, each with a one-line description, in registration order.
       // Nothing in that showed what was related to what, or let a user find one without reading all of them.
       const filter = String(raw || '').trim().toLowerCase();
+      // Titles and the shortcut column come from the i18n table. A key with no translation
+      // falls back to the English text written beside it here, so the panel is never blank.
       const groups = [
-        ['Everyday', ['settings', 'set', 'model', 'provider', 'permission', 'yolo']],
-        ['Session', ['new', 'sessions', 'all-sessions', 'resume', 'save', 'export', 'compact', 'goal', 'init', 'jump']],
-        ['Context', ['context', 'tokens', 'usage', 'cost', 'memory', 'personal', 'output-style']],
-        ['Work', ['plan', 'focus', 'swarm', 'team', 'btw', 'tasks']],
-        ['Extend', ['skills', 'plugins', 'import-skill', 'plugin-manager']],
-        ['Diagnostics', ['doctor', 'status', 'version', 'raw', 'reduced-motion', 'help']],
+        [tr('tui.help.groupEveryday', 'Everyday'), ['settings', 'set', 'model', 'provider', 'permission', 'yolo', 'lang']],
+        [tr('tui.help.groupSession', 'Session'), ['new', 'sessions', 'all-sessions', 'resume', 'save', 'export', 'compact', 'goal', 'init', 'jump']],
+        [tr('tui.help.groupContext', 'Context'), ['context', 'tokens', 'usage', 'cost', 'memory', 'personal', 'output-style']],
+        [tr('tui.help.groupWork', 'Work'), ['plan', 'focus', 'swarm', 'team', 'btw', 'tasks']],
+        [tr('tui.help.groupExtend', 'Extend'), ['skills', 'plugins', 'import-skill', 'plugin-manager']],
+        [tr('tui.help.groupDiagnostics', 'Diagnostics'), ['doctor', 'status', 'version', 'raw', 'reduced-motion', 'help']],
       ];
-      const byName = new Map(allCommands().map((c) => [c.name, c]));
+      const byName = new Map(localizedCommands().map((c) => [c.name, c]));
       const shown = new Set();
       const row = (c) => `  /${c.name.padEnd(14)} ${(c.argumentHint || '').padEnd(26)} ${c.description || c.desc}`;
       const hits = (c) => !filter || `${c.name} ${c.desc || c.description || ''}`.toLowerCase().includes(filter);
@@ -8870,42 +8960,45 @@ export async function dispatch(cmdRaw, arg, state, cfg, session, h, submit, stdo
       }
       // Anything the groups did not name still has to be reachable — a command missing from this list is a
       // command the user cannot discover, so the remainder is listed rather than dropped.
-      const rest = allCommands().filter((c) => !shown.has(c.name)).filter(hits);
+      const rest = localizedCommands().filter((c) => !shown.has(c.name)).filter(hits);
       if (rest.length) {
-        panel.push('Other');
+        panel.push(tr('tui.help.other', 'Other'));
         for (const c of rest) panel.push(row(c));
         panel.push('');
       }
       if (!panel.some((l) => l.startsWith('  /'))) {
-        panel.push(`No command matches "${filter}".`, '');
+        panel.push(tr('tui.help.noMatch', 'No command matches "{filter}".', { filter }), '');
       }
-      h.openPanel(filter ? `hncode — commands matching "${filter}"` : 'hncode — commands', [
+      const title = filter
+        ? tr('tui.help.matching', 'hncode — commands matching "{filter}"', { filter })
+        : tr('tui.help.commands', 'hncode — commands');
+      h.openPanel(title, [
         ...panel,
-        'Skills',
-        `  /${SKILL_PREFIX}<name>     run an installed skill (Tab completes the name)`,
-    '  /import-skill <file.md | owner/repo>  add a skill from a file, or install a repository of them',
-        '  /skills                  open the skill manager (Tab switches tabs)',
-        '  /skills install <name>   download one from the repo, without the panel',
-        '  /skills remove <name>    delete the local copy',
-        '  /plugins                 open the plugin manager',
-        '  /plugins install <name>  download one from the repo',
+        tr('tui.help.skills', 'Skills'),
+        `  /${SKILL_PREFIX}<name>     ${tr('tui.help.skillRun', 'run an installed skill (Tab completes the name)')}`,
+        `  /import-skill <file.md | owner/repo>  ${tr('tui.help.skillImport', 'add a skill from a file, or install a repository of them')}`,
+        `  /skills                  ${tr('tui.help.skillOpen', 'open the skill manager (Tab switches tabs)')}`,
+        `  /skills install <name>   ${tr('tui.help.skillInstall', 'download one from the repo, without the panel')}`,
+        `  /skills remove <name>    ${tr('tui.help.skillRemove', 'delete the local copy')}`,
+        `  /plugins                 ${tr('tui.help.pluginOpen', 'open the plugin manager')}`,
+        `  /plugins install <name>  ${tr('tui.help.pluginInstall', 'download one from the repo')}`,
         '',
-        'Shortcuts',
-        '  Enter          send the message',
-        '  Shift+Enter    insert a newline',
-        '  Ctrl+Shift+C   copy the selection (or the last answer)',
-        '  Ctrl+Shift+V   paste the clipboard (multi-line pastes collapse)',
-        '  ↑ / ↓          input history (empty composer) · scroll the chat',
-        '  /              open the command menu · Tab completes',
-        '  !              on an empty prompt: switch to shell mode (Esc/Backspace to leave)',
-        '  Esc            cancel the menu / dialog · interrupt the turn',
-        '  Ctrl+E         open config.toml in editor',
-        '  Ctrl-B         move a running Bash command to the background',
-        '  Ctrl-S         steer queued input into the running turn',
-        '  ↑ (queued)     recall the last queued message for editing',
-        '  Ctrl-O         expand/collapse tool output and thinking',
-        '  Ctrl-T         expand/collapse the todo panel',
-        '  Ctrl-C twice   exit hncode',
+        tr('tui.help.shortcuts', 'Shortcuts'),
+        `  Enter          ${tr('tui.key.send', 'send the message')}`,
+        `  Shift+Enter    ${tr('tui.key.newline', 'insert a newline')}`,
+        `  Ctrl+Shift+C   ${tr('tui.key.copy', 'copy the selection (or the last answer)')}`,
+        `  Ctrl+Shift+V   ${tr('tui.key.paste', 'paste the clipboard (multi-line pastes collapse)')}`,
+        `  ↑ / ↓          ${tr('tui.key.history', 'input history (empty composer) · scroll the chat')}`,
+        `  /              ${tr('tui.key.commands', 'open the command menu · Tab completes')}`,
+        `  !              ${tr('tui.key.shell', 'on an empty prompt: switch to shell mode (Esc/Backspace to leave)')}`,
+        `  Esc            ${tr('tui.key.esc', 'cancel the menu / dialog · interrupt the turn')}`,
+        `  Ctrl+Y         ${tr('tui.key.viewOutput', 'open the full tool output or reply in a viewer')}`,
+        `  Ctrl-B         ${tr('tui.key.background', 'move a running Bash command to the background')}`,
+        `  Ctrl-S         ${tr('tui.key.steer', 'steer queued input into the running turn')}`,
+        `  ↑ (queued)     ${tr('tui.key.recall', 'recall the last queued message for editing')}`,
+        `  Ctrl-O         ${tr('tui.key.expand', 'expand/collapse tool output and thinking')}`,
+        `  Ctrl-T         ${tr('tui.key.todo', 'expand/collapse the todo panel')}`,
+        `  Ctrl-C twice   ${tr('tui.key.quit', 'exit hncode')}`,
       ]);
       return;
     }
@@ -10659,8 +10752,7 @@ export async function dispatch(cmdRaw, arg, state, cfg, session, h, submit, stdo
     }
     case 'statusline':
       openPicker({
-        title: 'Status line items',
-        title: 'Status line items',
+        title: trTitle('Status line items'),
         items: (() => {
           // `sub` must be set here, not only in onPick: the picker renders
           // item.sub, so without an initial value every toggle showed a blank
@@ -11568,6 +11660,7 @@ const BUILTIN_KEYS = new Set([
   'c-s',   // steer the running turn
   'c-t',   // expand/collapse the todo panel
   'c-v',   // paste
+  'c-y',   // the full, scrollable output/reply viewer (was Ctrl+E — see the key handler)
   'c-x',   // (reserved; Ctrl+Shift+X is paste-and-run)
   'c-s-c', // copy the selection or last answer
   'c-s-v', // paste as a bracketed paste
@@ -13832,6 +13925,9 @@ export function writeWindowTitle(session, stdout) {
 // ---- TUI entry point ----
 export async function startTUI(opts) {
   const { cfg } = opts;
+  // THE UI LANGUAGE, BEFORE ANYTHING IS DRAWN. The first frame already carries command
+  // descriptions and hints, so this cannot wait until after the session is restored.
+  setUiLang(cfg.lang);
   // `let`, and mirrored on `state.session`, because /move REPLACES the session: the command
   // hands back a new object, and every later save would otherwise keep writing the old one —
   // which is how /move left the session stamped with the directory it was moved away from.
@@ -14402,7 +14498,12 @@ export async function startTUI(opts) {
   };
   let noticeTimer = null;
   function notice(text, kind = 'info') {
-    state.notice = text;
+    // THE ONE PLACE A NOTICE REACHES THE USER, so it is also the one place the UI's
+    // language is applied. Command messages are composed at their call site and have no key
+    // to look up; a whole-sentence match against the table translates the ones that are
+    // fixed text and leaves a message that interpolates a value alone, because a
+    // half-substituted sentence reads worse than a correct English one.
+    state.notice = noticeText(uiLang, String(text == null ? '' : text));
     state.noticeKind = kind;
     renderFrame();
     if (noticeTimer) clearTimeout(noticeTimer);
@@ -14640,11 +14741,11 @@ export async function startTUI(opts) {
       footer = p.footerFor(item, footer) || footer;
     }
     state.picker = {
-      title: p.title || '',
+      title: trTitle(p.title || ''),
       items: p.items || [],
       sel: Math.max(0, Math.min((p.items || []).length - 1, p.sel || 0)),
       searchable: p.searchable !== false,
-      hint: p.hint || null,
+      hint: p.hint ? noticeText(uiLang, p.hint) : null,
       keepInput: !!p.keepInput,
       onPick: p.onPick || (() => true),
       onDelete: p.onDelete || null,
@@ -14842,7 +14943,7 @@ export async function startTUI(opts) {
     }));
     const labelW = spec.labelW || Math.max(0, ...fields.map((f) => f.label.length + 1));
     state.form = {
-      title: spec.title || '',
+      title: trTitle(spec.title || ''),
       fields,
       fieldIdx: 0,
       // The first option of THIS form's list, not a hardcoded protocol name. A form that
@@ -14890,7 +14991,7 @@ export async function startTUI(opts) {
     const ls = text.split('\n');
     const row = Math.max(0, Math.min(ls.length - 1, spec.caretRow || 0));
     state.editor = {
-      title: spec.title || 'Edit',
+      title: trTitle(spec.title || 'Edit'),
       hint: spec.hint || 'Ctrl+S save · Esc cancel · Enter newline · arrows move',
       text,
       caretRow: row,
@@ -15088,7 +15189,7 @@ export async function startTUI(opts) {
 
   function openPanel(title, lines) {
 
-    state.panel = { title: title || '', lines: lines || [], top: 0 };
+    state.panel = { title: trTitle(title || ''), lines: lines || [], top: 0 };
     state.picker = null; state.pickerQuery = ''; state.pickerCategory = null; state.form = null;
     state.menuOpen = false; state.menuList = []; state.menuSel = 0;
     renderFrame();
@@ -17266,10 +17367,10 @@ export async function startTUI(opts) {
       const ed = state.editor;
       const hasEditorSel = !!(ed.sel && editorSelectionRange());
       const items = [
-        { label: 'Copy', sub: hasEditorSel ? 'copy the selected text' : 'nothing selected', action: 'editor-copy', primary: hasEditorSel },
-        { label: 'Cut', sub: hasEditorSel ? 'cut the selected text' : 'nothing selected', action: 'editor-cut' },
-        { label: 'Paste', sub: 'paste at the caret, replacing any selection', action: 'editor-paste', primary: !hasEditorSel },
-        { label: 'Select all', sub: 'select the whole text', action: 'editor-select-all' },
+        { label: uiText('Copy'), sub: uiText(hasEditorSel ? 'copy the selected text' : 'nothing selected'), action: 'editor-copy', primary: hasEditorSel },
+        { label: uiText('Cut'), sub: uiText(hasEditorSel ? 'cut the selected text' : 'nothing selected'), action: 'editor-cut' },
+        { label: uiText('Paste'), sub: uiText('paste at the caret, replacing any selection'), action: 'editor-paste', primary: !hasEditorSel },
+        { label: uiText('Select all'), sub: uiText('select the whole text'), action: 'editor-select-all' },
       ];
       openPicker({
         title: 'Edit',
@@ -17307,13 +17408,13 @@ export async function startTUI(opts) {
     const hasSel = !!(state.selection && state.selection.anchor && state.selection.head);
     const hasComposerSel = !!(state.composerSel && state.composerSel.anchor !== state.composerSel.head);
     const items = [];
-    if (hasSel) items.push({ label: 'Copy', sub: 'copy the selected text', action: 'copy', primary: true });
-    if (hasComposerSel) items.push({ label: 'Copy', sub: 'copy the selected composer text', action: 'copy-composer', primary: true });
-    if (hasComposerSel) items.push({ label: 'Cut', sub: 'cut the selected composer text to the clipboard', action: 'cut-composer' });
-    items.push({ label: 'Copy last answer', sub: 'copy the last assistant message', action: 'copy-last' });
-    items.push({ label: 'Clear selection', sub: 'drop the current selection', action: 'clear' });
-    if (hasComposerSel) items.push({ label: 'Clear composer selection', sub: 'drop the composer selection', action: 'clear-composer' });
-    items.push({ label: 'Paste', sub: 'paste the clipboard into the composer', action: 'paste' });
+    if (hasSel) items.push({ label: uiText('Copy'), sub: uiText('copy the selected text'), action: 'copy', primary: true });
+    if (hasComposerSel) items.push({ label: uiText('Copy'), sub: uiText('copy the selected composer text'), action: 'copy-composer', primary: true });
+    if (hasComposerSel) items.push({ label: uiText('Cut'), sub: uiText('cut the selected composer text to the clipboard'), action: 'cut-composer' });
+    items.push({ label: uiText('Copy last answer'), sub: uiText('copy the last assistant message'), action: 'copy-last' });
+    items.push({ label: uiText('Clear selection'), sub: uiText('drop the current selection'), action: 'clear' });
+    if (hasComposerSel) items.push({ label: uiText('Clear composer selection'), sub: uiText('drop the composer selection'), action: 'clear-composer' });
+    items.push({ label: uiText('Paste'), sub: uiText('paste the clipboard into the composer'), action: 'paste' });
     openPicker({
       title: 'Actions',
       items,
@@ -18091,7 +18192,13 @@ export async function startTUI(opts) {
       return;
     }
 
-    // CTRL+E SHOWS THE WHOLE THING, IN A SCROLLABLE VIEWER.
+    // CTRL+Y SHOWS THE WHOLE THING, IN A SCROLLABLE VIEWER.
+    //
+    // It used to be Ctrl+E. That collision was real: `/model` advertises Ctrl+E for "edit the
+    // selected model", the global viewer sat EARLIER in this handler, and no overlay check
+    // guarded it — so the viewer opened over the picker and the advertised edit never ran.
+    // Ctrl+E now belongs only to the picker hook and the external editor; Ctrl+Y is free and
+    // has no meaning anywhere in the TUI.
     //
     // Ctrl+O above is a glance: it expands what is on screen and stops at a cap, because a 3000-line command in the
     // transcript buries the conversation it belongs to. That cap is the right default and the wrong answer for the one
@@ -18100,7 +18207,13 @@ export async function startTUI(opts) {
     //
     // It works on whatever result is NEWEST, whether or not that result was cut: the key should not depend on the reader
     // having noticed a "more lines" hint first.
-    if (t.key === 'c-e' && !state.editor) {
+    //
+    // AN OPEN DIALOG OWNS ITS KEYS. This ran before the picker's own handler, so `/model`'s Ctrl+E — "edit the selected
+    // model" — never fired: the viewer opened instead, over the picker, and the hint on screen advertised a key that did
+    // something else. Any overlay that is up now means the key belongs to it, and the branch below is the only place
+    // that decides.
+    const overlayForKey = state.picker || state.form || state.panel || state.menuOpen || state.editor;
+    if (t.key === 'c-y' && !state.editor && !overlayForKey) {
       const target = [...state.chat].reverse().find((m) => m
         && (m.role === 'tool_result' || m.role === 'assistant')
         && String(m.text || '').trim());

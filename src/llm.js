@@ -115,10 +115,28 @@ export function toOpenAi(messages) {
 }
 
 // Internal canonical messages -> Anthropic request shape. Returns {system, messages}.
-export function toAnthropic(messages) {
+//
+// TWO SHAPES HERE ARE NOT OPTIONAL, and both were wrong:
+//
+//  * PARALLEL TOOL RESULTS GO IN ONE USER MESSAGE. The protocol pairs an assistant's
+//    `tool_use` blocks with the `tool_result` blocks that answer them, and puts every
+//    result for one assistant turn in the SAME user message. Emitting one user message
+//    per result produced a run of consecutive user messages, which the API does not
+//    describe and several gateways reject.
+//
+//  * THINKING BLOCKS MUST BE SENT BACK. With thinking enabled, the last assistant
+//    message before a tool result must BEGIN with a `thinking` block, and the block
+//    carries the `signature` the provider issued. Dropping it turned every second step
+//    of a thinking session into a 400: `Expected `thinking` or `redacted_thinking`, but
+//    found `tool_use``. The signature is opaque, so it is stored on the message and
+//    replayed verbatim; it is only sent when thinking is on for this request, because
+//    blocks from a disabled-thinking turn are not accepted.
+export function toAnthropic(messages, opts = {}) {
   const sys = [];
   const out = [];
-  for (const m of messages) {
+  const includeThinking = opts.includeThinking === true;
+  for (let i = 0; i < messages.length; i++) {
+    const m = messages[i];
     if (m.role === 'system') { sys.push(m.content); continue; }
     if (m.role === 'user') {
       const c = isMediaContent(m.content) ? toAnthropicContent(m.content) : [{ type: 'text', text: m.content }];
@@ -126,26 +144,40 @@ export function toAnthropic(messages) {
       continue;
     }
     if (m.role === 'tool') {
-      out.push({
-        role: 'user',
-        content: [{
+      // Gather this assistant turn's results into ONE user message, in call order.
+      const blocks = [];
+      let j = i;
+      for (; j < messages.length && messages[j].role === 'tool'; j++) {
+        const r = messages[j];
+        blocks.push({
           type: 'tool_result',
-          tool_use_id: m.toolCallId,
-          content: isMediaContent(m.content) ? toAnthropicContent(m.content) : m.content,
-        }],
-      });
+          tool_use_id: r.toolCallId,
+          content: isMediaContent(r.content) ? toAnthropicContent(r.content) : String(r.content == null ? '' : r.content),
+        });
+      }
+      out.push({ role: 'user', content: blocks });
+      i = j - 1;
       continue;
     }
     if (m.role === 'assistant') {
       const blocks = [];
+      if (includeThinking && Array.isArray(m.thoughtBlocks)) {
+        for (const b of m.thoughtBlocks) {
+          if (!b || typeof b !== 'object') continue;
+          if (b.type === 'redacted_thinking' && b.data) blocks.push({ type: 'redacted_thinking', data: b.data });
+          else if (b.type === 'thinking' && b.signature) {
+            blocks.push({ type: 'thinking', thinking: b.thinking == null ? '' : String(b.thinking), signature: b.signature });
+          }
+        }
+      }
       if (m.content) blocks.push({ type: 'text', text: m.content });
       for (const tc of (m.toolCalls || [])) {
         blocks.push({ type: 'tool_use', id: tc.id, name: tc.name, input: tc.args });
       }
-      out.push({ role: 'assistant', content: blocks });
+      if (blocks.length) out.push({ role: 'assistant', content: blocks });
     }
   }
-return { system: sys.join('\n\n').trim(), messages: out };
+  return { system: sys.join('\n\n').trim(), messages: out };
 }
 
 /** Responses: content parts use `input_text` / `input_image`. */
@@ -230,17 +262,62 @@ function authHeaders(cfg) {
   return h;
 }
 
+// Anthropic thinking, in the one form this model will actually accept.
+//
+// THREE RULES, and the old code broke all three:
+//
+//  * `thinking: {type:'enabled'}` IS NOT A VALID BODY. `budget_tokens` is REQUIRED with
+//    `enabled`. The previous mapping omitted it for the plain "on" toggle, so a user who
+//    turned thinking on got a 400 rather than a thinking turn.
+//  * `budget_tokens` MUST BE AT LEAST 1024 AND STRICTLY LESS THAN `max_tokens`. The old
+//    grades are 2000/8000/16000/32000 while the default output cap is 10000, so `high`
+//    and `max` asked for more thinking than the whole reply budget — a guaranteed 400.
+//    The budget is therefore fitted to the cap here, leaving room for the answer itself.
+//  * NEWER MODELS TAKE `thinking: {type:'adaptive'}` PLUS `output_config: {effort}`, and
+//    REJECT the legacy `enabled`/`budget_tokens` form. Which class a model belongs to is
+//    not something this side can guess from its id, so a model entry opts in with
+//    `adaptive_thinking = true`; everything else keeps the legacy shape.
+//
+// Returns `{ thinking, output_config? }`, or null when thinking cannot be requested at
+// all with this cap — in which case the turn runs without it rather than failing.
+const MIN_THINKING_BUDGET = 1024;
+// The answer needs room of its own; a request whose budget equals the cap leaves nothing
+// for the reply and the model answers with an empty, `max_tokens`-truncated message.
+const ANSWER_RESERVE = 1024;
+const DEFAULT_ON_BUDGET = 8000;
+
+function anthropicThinking(cfg, opts, wire) {
+  if (!wire || !wire.thinking) return null;
+  const maxTokens = Number(cfg.maxOutputTokens) || 0;
+  const models = (cfg.raw && cfg.raw.models) || {};
+  const entry = models[cfg.model] || {};
+  const adaptive = entry.adaptive_thinking === true || entry.adaptiveThinking === true;
+  if (adaptive) {
+    const grade = cfg.effort && cfg.effort !== 'on' ? String(cfg.effort) : '';
+    return { thinking: { type: 'adaptive' }, output_config: grade ? { effort: grade } : undefined };
+  }
+  const requested = Number(wire.thinking.budget_tokens) || DEFAULT_ON_BUDGET;
+  if (maxTokens > 0) {
+    const room = maxTokens - ANSWER_RESERVE;
+    if (room < MIN_THINKING_BUDGET) return null;   // too small a cap to think AND answer
+    const budget = Math.min(requested, room);
+    return { thinking: { type: 'enabled', budget_tokens: budget } };
+  }
+  return { thinking: { type: 'enabled', budget_tokens: Math.max(MIN_THINKING_BUDGET, requested) } };
+}
+
 function buildBody(cfg, messages, streaming = true, opts = {}) {
   const common = { stream: streaming, max_tokens: cfg.maxOutputTokens };
   if (cfg.temperature != null) common.temperature = cfg.temperature;
   if (cfg.topP != null) common.top_p = cfg.topP;
   if (cfg.presencePenalty != null) common.presence_penalty = cfg.presencePenalty;
   // Ask for the token accounting on the FINAL stream frame. Without this the
-  // OpenAI-compatible stream carries no `usage` at all, so the only token numbers
-  // available were our own estimates (see /usage, which divided the transcript's
-  // JSON length by 3.5). `includeUsage` is cleared after a 400 (see request):
-  // servers that predate the field reject the whole request.
-  if (streaming && opts.includeUsage !== false) common.stream_options = { include_usage: true };
+  // OpenAI-compatible stream carries no `usage` at all. Anthropic reports usage on
+  // message_start/message_delta natively, and rejects this OpenAI-only field; Responses
+  // has its own accounting and does not use it either. `includeUsage` is cleared after a
+  // 400 (see request) for older OpenAI-compatible servers.
+  if (streaming && cfg.protocol !== 'anthropic' && cfg.protocol !== 'responses'
+      && opts.includeUsage !== false) common.stream_options = { include_usage: true };
   // effort (see config.effortWire): OpenAI-compatible sends `reasoning_effort`,
   // Anthropic sends a `thinking` budget. Models that think by default need no
   // flag, so nothing is sent when the effort is off/unset.
@@ -255,7 +332,10 @@ function buildBody(cfg, messages, streaming = true, opts = {}) {
   // block: it is pure input cost on top of a request that only wants one line.
   const defs = Object.prototype.hasOwnProperty.call(opts, 'tools') ? openAiToolDefs(opts.tools) : openAiToolDefs(llmToolsList);
   if (cfg.protocol === 'anthropic') {
-    const { system, messages: am } = toAnthropic(messages);
+    // The thinking mode is decided ONCE here, so the body, the budget and the replayed
+    // blocks cannot disagree with each other. See anthropicThinking.
+    const think = opts.noReasoning ? null : anthropicThinking(cfg, opts, wire);
+    const { system, messages: am } = toAnthropic(messages, { includeThinking: !!think });
     const body = {
       model: cfg.innerModel, system, messages: am,
       // `tool_choice: none` is the protocol-level refusal. Omitting the tool definitions entirely, which
@@ -264,8 +344,18 @@ function buildBody(cfg, messages, streaming = true, opts = {}) {
       // use is the only form both providers accept.
       tools: opts.toolChoice === 'none' ? anthropicToolDefs(opts.tools || llmToolsList) : (opts.noTools ? undefined : anthropicToolDefs(opts.tools || llmToolsList)),
       tool_choice: opts.toolChoice === 'none' ? { type: 'none' } : undefined,
-      ...common, ...wire,
+      ...common,
     };
+    // `wire` describes thinking too, but its shape depends on the model class and on the
+    // output cap, so the decision above supersedes it.
+    for (const [k, v] of Object.entries(wire)) {
+      if (k === 'thinking' || k === 'output_config') continue;
+      body[k] = v;
+    }
+    if (think) {
+      body.thinking = think.thinking;
+      if (think.output_config) body.output_config = think.output_config;
+    }
     if (!body.tools || !body.tools.length) delete body.tools;
     // NO PRESENCE PENALTY ON THIS PROTOCOL: it has no equivalent, and an unknown field is an error
     // here rather than something quietly ignored.
@@ -560,6 +650,10 @@ export class LLM {
     const state = {
       tools: new Map(), indexToId: {}, doneEmitted: false,
       inThink: !!this._inThink, tagPending: this._tagPending || '',
+      // Anthropic thinking blocks, keyed by content-block index. Collected while the
+      // block streams and handed to `thought_block` on its stop event, because the
+      // signature only arrives at the end and the block is useless without it.
+      think: new Map(),
     };
     try {
       while (true) {
@@ -858,6 +952,18 @@ function processAnthropic(d, onEvent, state) {
       const id = cb.id; const name = cb.name;
       state.tools.set(d.index, { id, name, argsJson: '', done: false });
       onEvent({ type: 'tool_start', id, name });
+      return 'continue';
+    }
+    // A thinking block opens here, and its `signature` arrives on the closing delta. Both
+    // halves have to be kept: the next request must replay this block or the API rejects
+    // the turn's tool result (see toAnthropic).
+    if (cb && cb.type === 'thinking') {
+      state.think.set(d.index, { type: 'thinking', thinking: '', signature: '' });
+      return 'continue';
+    }
+    if (cb && cb.type === 'redacted_thinking' && cb.data) {
+      onEvent({ type: 'thought_block', block: { type: 'redacted_thinking', data: cb.data } });
+      return 'continue';
     }
     return 'continue';
   }
@@ -868,8 +974,16 @@ function processAnthropic(d, onEvent, state) {
     // block, which renders as a bare `●` row. The renderer drops those as well — this
     // is the cheaper place to stop it, and it keeps `state.chat` free of them.
     if (delta.type === 'text_delta') feedContent(delta.text || '', onEvent, state);
-    else if (delta.type === 'thinking_delta' && delta.thinking) onEvent({ type: 'think', text: delta.thinking });
-    else if (delta.type === 'input_json') {
+    else if (delta.type === 'thinking_delta') {
+      const blk = state.think.get(d.index);
+      if (blk) blk.thinking += delta.thinking || '';
+      if (delta.thinking) onEvent({ type: 'think', text: delta.thinking });
+    }
+    // The signature lands on a `signature_delta` just before the block closes.
+    else if (delta.type === 'signature_delta') {
+      const blk = state.think.get(d.index);
+      if (blk && delta.signature) blk.signature = delta.signature;
+    } else if (delta.type === 'input_json') {
       const blk = state.tools.get(d.index);
       if (blk) { blk.argsJson += delta.partial_json || ''; onEvent({ type: 'tool_args', id: blk.id, chunk: delta.partial_json || '' }); }
     }
@@ -878,6 +992,13 @@ function processAnthropic(d, onEvent, state) {
   if (t === 'content_block_stop') {
     const blk = state.tools.get(d.index);
     if (blk && !blk.done) { blk.done = true; onEvent({ type: 'tool_end', id: blk.id }); }
+    // A completed thinking block is handed over WITH its signature. Without one the block
+    // cannot be replayed, and the provider would reject the next request in the turn.
+    const tb = state.think.get(d.index);
+    if (tb) {
+      state.think.delete(d.index);
+      if (tb.signature) onEvent({ type: 'thought_block', block: tb });
+    }
     return 'continue';
   }
   return 'continue';
@@ -973,7 +1094,11 @@ export function consumeNonStreaming(protocol, json, onEvent) {
     if (json.stop_reason === 'max_tokens') onEvent({ type: 'truncated' });
     for (const cb of content) {
       if (cb.type === 'text' && cb.text) feedContent(cb.text, onEvent, state);
-      else if (cb.type === 'tool_use') {
+      else if (cb.type === 'thinking' && cb.signature) {
+        onEvent({ type: 'thought_block', block: { type: 'thinking', thinking: String(cb.thinking || ''), signature: cb.signature } });
+      } else if (cb.type === 'redacted_thinking' && cb.data) {
+        onEvent({ type: 'thought_block', block: { type: 'redacted_thinking', data: cb.data } });
+      } else if (cb.type === 'tool_use') {
         onEvent({ type: 'tool_start', id: cb.id, name: cb.name });
         onEvent({ type: 'tool_args', id: cb.id, chunk: JSON.stringify(cb.input || {}) });
         onEvent({ type: 'tool_end', id: cb.id });

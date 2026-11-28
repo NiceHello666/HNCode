@@ -5,6 +5,7 @@
 
 import { C } from './colors.js';
 import { col, fitAnsi, visualCol, wrapWords } from './text.js';
+import { uiText } from './i18n.js';
 import { renderMdText } from './markdown.js';
 
 /**
@@ -24,7 +25,7 @@ export function planRows(msg, width) {
   const full = (l, r) => bar(l + '─'.repeat(inner) + r);
   // Header: the card's single column is captioned "Plan".
   out.push({ text: full('╭', '╮'), ind: '', raw: true });
-  out.push({ text: bar('│') + fitAnsi(col(' Plan', C.cyan + C.bold), inner) + bar('│'), ind: '', raw: true });
+  out.push({ text: bar('│') + fitAnsi(col(' ' + uiText('Plan'), C.cyan + C.bold), inner) + bar('│'), ind: '', raw: true });
   out.push({ text: bar('├' + '─'.repeat(inner) + '┤'), ind: '', raw: true });
   const lines = String(msg.text || '').replace(/\r\n/g, '\n').split('\n');
   while (lines.length && lines[lines.length - 1].trim() === '') lines.pop();
@@ -76,7 +77,7 @@ export function bgTaskRows(msg, width, expanded) {
     }
     if (lines.length > MAX) {
       // Only reachable while COLLAPSED: expanded, `MAX` is the whole list and this cannot fire.
-      out.push({ text: col(`… ${lines.length - MAX} more lines, ctrl+o to expand`, C.gray), ind: indent, raw: true });
+      out.push({ text: col(uiText(`… ${lines.length - MAX} more lines, ctrl+o to expand`), C.gray), ind: indent, raw: true });
     }
   }
   return out;

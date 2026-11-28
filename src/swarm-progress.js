@@ -23,6 +23,7 @@
 
 import { C } from './colors.js';
 import { visualWidth } from './term.js';
+import { uiText } from './i18n.js';
 
 const ESC = '\x1b';
 function visWidth(s) { return visualWidth(String(s).replace(/\x1b\[[0-9;?]*[a-zA-Z]/g, '')); }
@@ -43,7 +44,10 @@ const PHASE = {
   failed:     { label: 'Failed.',          color: C.red },
   cancelled:  { label: 'Cancelled.',       color: C.gray },
 };
-export function phaseInfo(phase) { return PHASE[phase] || PHASE.working; }
+export function phaseInfo(phase) {
+  const p = PHASE[phase] || PHASE.working;
+  return { ...p, label: uiText(p.label) };
+}
 
 const BAR_EMPTY = '-';
 const BAR_FULL = '#';
