@@ -7,6 +7,7 @@ import path from 'node:path';
 import fs from 'node:fs';
 import crypto from 'node:crypto';
 import { recoverSessionFile } from './session-recover.js';
+import { appendLog } from './log-file.js';
 
 const DEFAULT_DIR = () => path.join(os.homedir(), '.hncode', 'sessions');
 function dir(custom) { return custom || process.env.HNCODE_SESSIONS_DIR || DEFAULT_DIR(); }
@@ -37,18 +38,15 @@ export function invalidateSessionCache(storeDir) {
 // if external state is suspected. Our own save/delete already invalidate.
 
 // FIX: single place for the error log so save/load failures are never silent.
+//
+// Rotation-bounded: this file is written by every failed save, so an unattended session
+// that keeps failing one would otherwise grow without limit — and the failure it records
+// is the one thing the user needs to read, so it must not bury itself.
 function errorLogFile() {
   return path.join(os.homedir(), '.hncode', 'session-errors.log');
 }
 function logSessionError(op, detail) {
-  try {
-    fs.mkdirSync(path.dirname(errorLogFile()), { recursive: true });
-    fs.appendFileSync(
-      errorLogFile(),
-      `[${new Date().toISOString()}] ${op}: ${detail}\n`,
-      'utf8',
-    );
-  } catch { /* logging must never throw */ }
+  appendLog(errorLogFile(), `[${new Date().toISOString()}] ${op}: ${detail}\n`);
 }
 
 export function newId() {

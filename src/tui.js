@@ -143,7 +143,7 @@ import { probeTerminal, terminalCaps, syncOutputUsable, kittyKeysUsable, isLight
 // it. See src/flush-tick.js.
 import { noteTerminalFlush, getTerminalFlushTick } from './flush-tick.js';
 import { forkOf } from './fork.js';
-// Rendered rows live in a shared, bounded store rather than on the message objects.
+import { appendLog } from './log-file.js';
 // See src/row-cache.js for why the bound is by USE, not by position, and why the key
 // is content: a key that missed one layout input would serve rows drawn for a
 // different frame, which is a mis-drawn screen rather than a stale cache.
@@ -14481,9 +14481,8 @@ export async function startTUI(opts) {
         try {
           const sixels = (out.match(/\x1bPq/g) || []).length;
           const rows = [...out.matchAll(/\x1b\[(\d+);1H/g)].map((m) => Number(m[1]));
-          const dir = path.join(process.env.USERPROFILE || process.env.HOME || '.', '.hncode');
-          try { fs.mkdirSync(dir, { recursive: true }); } catch {}
-          fs.appendFileSync(path.join(dir, 'paint.log'), JSON.stringify({
+          const dir = process.env.HNCODE_HOME || path.join(os.homedir(), '.hncode');
+          appendLog(path.join(dir, 'paint.log'), JSON.stringify({
             at: Date.now(),
             forceFull,
             bytes: out.length,
@@ -20394,7 +20393,7 @@ function quit() {
    * screen simply does not react. A terminal may send Ctrl+C as raw 0x03, as a kitty CSI-u
    * sequence, or as SIGINT with no bytes at all — and each of those needs a different fix.
    * This records which one actually arrived, so the question is answered by bytes rather
-   * than by guessing. Append-only and best-effort: a failed write must never break input.
+   * than by guessing. Rotation-bounded and best-effort: a failed write must never break input.
    */
   function traceKey(kind, value) {
     try {
@@ -20406,7 +20405,7 @@ function quit() {
           return n < 0x20 ? `\\x${n.toString(16).padStart(2, '0')}` : c;
         }).join('')
         : JSON.stringify(value);
-      fs.appendFileSync(path.join(dir, 'keys.log'),
+      appendLog(path.join(dir, 'keys.log'),
         `${new Date().toISOString()} ${kind} ${shown}\n`);
     } catch { /* diagnostics must never break the keyboard */ }
   }
@@ -20443,7 +20442,7 @@ function quit() {
         handles: process._getActiveHandles ? process._getActiveHandles().map((h) => h && h.constructor && h.constructor.name).filter(Boolean) : [],
         session: session && session.id,
       }) + '\n';
-      fs.appendFileSync(path.join(dir, 'exit.log'), line);
+      appendLog(path.join(dir, 'exit.log'), line);
     } catch { /* diagnostics must never be the reason an exit fails */ }
   }
   process.on('exit', (code) => {
